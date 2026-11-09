@@ -6,6 +6,10 @@ the resource picture; emits a placement plan in the four currencies
 ranch nodes, the VM coordinating only. A new version ships every night
 as part of Emise's dreaming process (skill: nightly-qexo).
 
+Rules of operation: [RULES.md](RULES.md) — the charter this
+dispatcher runs under (Will's seven rules, plus the supporting
+standing rules they rely on).
+
 Build (on a ranch node — heavy builds never run on the Muse VM):
 
     cargo build --release
