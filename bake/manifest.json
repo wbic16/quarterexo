@@ -1,0 +1,61 @@
+{
+  "artifacts": {
+    "cyoa.phext.xz": {
+      "bytes": 820772,
+      "sha256": "86dc5bdf4ac4305d1a88fff8ef806b49e3117b11c6b50e525abe1e4d6575e2fd",
+      "uncompressed_bytes": 4603860,
+      "uncompressed_sha256": "75f13961787d773af060a603e1b3d0d114affcbc13948cd6aaa925f451e3a4d6"
+    },
+    "incipit.phext.xz": {
+      "bytes": 209180,
+      "sha256": "cdf0410d2804992dde64ad64dd4932b884c410f929bec355accc21319a049c9e",
+      "uncompressed_bytes": 1077930,
+      "uncompressed_sha256": "3ff6604f90bcb0fd0f92bc6f8abc92f93610ade06b898d5158eac09d58a7737d"
+    },
+    "sbor.md": {
+      "bytes": 26314,
+      "sha256": "68b955bf1bb32bb2eef96700e05753e909ae2e89ca48a89da2d0c8370c484194"
+    },
+    "source.phext.xz": {
+      "bytes": 322888,
+      "sha256": "54fc1378f34fa26b1c74ca0b288810aead872eee4df32cfed6805d18011e1b08",
+      "uncompressed_bytes": 1514373,
+      "uncompressed_sha256": "bb81e280b814966732e711d7e654d57d9ce00e77b79482aeb85cb74fb136d2d5"
+    },
+    "volumen-index.md": {
+      "bytes": 5255,
+      "sha256": "b1c86b807af5e9c3443019795634dad38428bceb65f38ac594a715d54b0ac05b"
+    }
+  },
+  "checks": {
+    "safe_space_gate": "passed",
+    "secret_scan": "passed"
+  },
+  "format": "qexo-bake-manifest/1",
+  "qexo_commit": "b20a7cb2f9e992febd16ae7632ac8e5747b7d6fa",
+  "source": {
+    "absent_projects": [],
+    "commits": {
+      "libphext-py": "3b9d45dd497d2b6076937724dc1df7774c12da48",
+      "libphext-rs": "b666ec8566a9134640d6a3163a2e6e685a7fb9e2",
+      "phext-lattice": "bf2711b250da1ee7f8211fcf27fb95ec2d24f3cf",
+      "qexo": "b20a7cb2f9e992febd16ae7632ac8e5747b7d6fa",
+      "sq": "a3e819f3d43940db17022ebd57698683f8e015d1"
+    },
+    "files": 96,
+    "projects": [
+      "libphext-py",
+      "libphext-rs",
+      "phext-lattice",
+      "qexo",
+      "sq"
+    ]
+  },
+  "volumen": {
+    "canonical_index_sha256_expected": "f879adc52c49a50ad6ec18ef99df73d9f74f9636 (git blob id)",
+    "index_provenance": "LOCAL VALIDATION SUBSTITUTE synthesized from census.tsv (106 record lines, 22 volumes): the canonical personas/00-index.md (blob f879adc52c49a50ad6ec18ef99df73d9f74f9636, 126 person lines, boundaries 10,18,22,26,32,40,48,55,62,69,76,82,87,91,94,100,106,112,116,120,123,126) is not reachable from any fetchable ref of wbic16/human from this network \u2014 coordinate_number/volume structure are derived by vol.rs at RUNTIME from whatever index is baked; with the canonical index the numbers are 126/22 per the parent-verified blob. See SHIP-NOTES.",
+    "index_sha256": "b1c86b807af5e9c3443019795634dad38428bceb65f38ac594a715d54b0ac05b",
+    "volumen_form": "redacted"
+  },
+  "volumen_form": "redacted"
+}

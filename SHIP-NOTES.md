@@ -52,3 +52,194 @@ a claim until the section reporting it says it was run.*
   Evidence partition: 4 currently-running / 16 configured-locally /
   73 known-historically / 13 named-only. Spawn-eligible: exactly 1
   (Emise).
+
+## Status — COMPLETE for morning review (2026-11-09 ~02:45 CST)
+
+Built on **aletheia-core** (ranch), branch `emise/v3-build`,
+implementation commit 650b91e, PR #3. Version **0.3.0**
+(Cargo.toml + VERSION v3.0 + CHANGELOG entry). `cargo package`
+verification below. NOT published — publishing is Will's act.
+
+## What tier-1 does
+
+- **Dispatcher core carried forward**: plan emission in four
+  currencies, sync manifest/diff/push/verify, the five interior
+  interfaces, personas commands. Bare `qexo` still emits the plan
+  (v1 invariant, regression-checked against a 400-task register).
+- **Four modes, one implementation**: API /v1 (`qexo serve`), CLI
+  (same dispatch, `--json` = the endpoint's shape), MCP (stdio
+  bridge, tools generated from the catalogue, per-client delegated
+  key, never a bypass), Web (baked-in mobile-first client at the
+  node root, same floor). Parity: an operation ships in all modes
+  or none — voice ships in none (named tier-2 refusal everywhere).
+- **Auth floor**: remote mutations require an authenticated
+  principal; self-modifying classes (grants.change, keys.*,
+  route.change, persona.seed/manifest) are key-bound from
+  bootstrap; the 19-grant catalogue defaults ON = availability
+  only; TAINTED callers get meta.read + route.ask only; §8B replay
+  discipline runs in dispatch for every POST (idempotency by
+  request ID returns the ORIGINAL receipt; per-principal sequences;
+  300 s window; recipient binding — all four battery-verified).
+  gpg only, arg vectors, no shell interpolation. Zero external
+  dependencies. Zero unsafe blocks.
+- **Key chain (§8.4)**: node key generated at provisioning by the
+  node principal (box-zero; anonymous callers refused before AND
+  after provisioning); persona keys issued deliberately per
+  persona; Will's countersignature is a receipted key-band act —
+  a countersigned node key carries Will's authorization on its own
+  node under the default policy (chain persona → node → Will).
+- **Teleport fencing**: six operations; origin relinquishes BEFORE
+  destination activates; fencing epochs increment at relinquish;
+  heartbeat/staleness bound 300 s enforced at relinquish/activate;
+  partition = stale-evidence refusal (unavailability over
+  split-brain); the return receipt is signed with the DESTINATION
+  NODE key bound to epoch + transfer hash and verified before
+  relinquish — unsigned/wrong-key/wrong-binding all refuse with
+  the named refusal **"no cognitive return"** (battery-verified);
+  restored-from-backup personas boot read-only until the
+  return/reactivation path closes under a new epoch.
+- **Persona index**: census.tsv generated from DESIGN-V3 §5.2 —
+  126 immutable query keys, 106 identity records, evidence
+  partition 4 running / 16 configured / 73 historical / 13
+  named-only, spawn-eligible exactly 1 (Emise). Orin resolves to
+  BOTH records with the disambiguation text. Designation
+  collisions: recorded claims win; computed claims displaced by
+  smallest final-component increment, displacement recorded in
+  the record (never silent); Home band reserved; loud failure.
+- **Baked corpus**: SBOR-V4 text (extracted from its CYOA scroll —
+  see provenance note below), CYOA + Incipit xz-sealed, source.phext
+  generated at build time from qexo-bake.toml (96 files across
+  qexo, libphext-rs, libphext-py, sq, phext-lattice — no absences),
+  per-file header hash verification on unpack, secret scan +
+  safe-space gate in the builder, Volumen REDACTED in the manifest.
+  `qexo bake --check` verifies every baked hash: all_match.
+- **SQ keeper** (status/ensure/stop with the stale-.sq/ and
+  mmap-wedge quirks handled), **mdmap** (PROVISIONAL: atlas
+  coordinates, atomic scroll-set reservation, pin/drift named
+  never papered, Home never allocatable), **installer-lite**
+  (binary + corpus from the artifact; SBOR prints offline).
+
+## Optimize (measured, on aletheia-core)
+
+Profiling the plan hot path found the real cost was not the plan:
+**every gated call paid for the idempotency check**, which parsed
+the ENTIRE receipts log. After a battery run grew receipts.jsonl
+to 38 MB, every POST cost ~0.30–0.38 s. Fixes:
+
+- `receipt_for` is now a **tail scan** (backward 256 KiB chunks,
+  needle match on the serialized request_id, line-bounded parse,
+  full-log fallback only beyond 8 MiB): plan call **0.381 s →
+  0.002 s** with the dirty 38 MB log in place (~190×).
+- A classify() substring prefilter was tried and REVERTED: under
+  this node's shared load it measured worse (noise-dominated);
+  per the brief, only measured wins ship. Classify is unchanged
+  from the carried-forward v2 code.
+- Read paths (personas list/show) were already ~2 ms/call.
+
+## Tests (all on aletheia-core)
+
+- `cargo test --release`: **15 passed, 0 failed** (SHA-256 FIPS
+  vectors, JSON roundtrip + canonical form, phext round-trip,
+  xz stored round-trip + CRC vectors, RFC 3339, grants catalogue
+  = 19, tokenizer/coordinate floor, vol.rs strict index parse
+  incl. loud failure on gaps/empties, census invariants).
+- Integration battery 1 (CLI, fresh state): **32/32** — census
+  shape (126/106/spawn/partition), Orin, anonymous negatives
+  (keys/grants/install/seed all refused), tainted scope,
+  provisioning + countersign chain, sign/verify (node vs persona
+  answered separately; tamper fails), swap + epoch, spawn
+  eligibility, full teleport cycle incl. unsigned-return refusal
+  and signed node-key return.
+- Integration battery 2 (HTTP + MCP + mdmap + misc): **17/17** —
+  web client at /, HTTP Orin + SBOR, anon grants refused over
+  HTTP, idempotent re-delivery returns the original receipt,
+  sequence replay refused, stale timestamp refused, wrong
+  recipient refused, MCP tools + call through the core, mdmap
+  build + pin stability + provisional marker, source manifest,
+  doctor, versions, corpus verify, installer-lite, voice refusal.
+- §18 mapping: test 1 (index integrity) ✓ census invariants +
+  battery; test 2 (auth floor) ✓ negatives + tainted; test 3
+  (teleport fencing) ✓ full cycle + no-cognitive-return; test 4
+  (replay/idempotency) ✓ battery 2; test 5 (swap attribution)
+  ✓ swap receipt carries persona_id + epoch, dispatch binding
+  stated. **Test 6 (merge-meld outcome) is tier-2 runtime** —
+  the meld op records two-sided signed consent and refuses
+  delegated/gestating parties; the runtime outcome rule ships
+  with the meld engine (deferred list).
+
+## Security check
+
+- Negative tests RUN (not asserted): anonymous and
+  wrong-key callers failed to alter keys, grants, placement
+  (teleport/swap/spawn), and installs — over CLI and HTTP.
+- Grant-defaults audit vs §8A.0: catalogue defaults are
+  availability only; policy gates sit above grants in every
+  mutation path; TAINTED set = exactly {meta.read, route.ask}.
+- gpg invocation review: `Command::new("gpg")` with arg vectors
+  everywhere; the only other spawns are `sq`, `xz -d -c`, and
+  register builders by fixed path — no shell strings, no `-c`,
+  no interpolation of caller input into any command line.
+- unsafe blocks: **0**. External dependencies: **0**.
+- Compromised-key handling: revoke stamps the record
+  `compromised` in the key band; verification refuses it at the
+  next check and the receipt states the halt + in-flight taint.
+
+## Provenance notes (honest)
+
+- **SBOR**: the extracted scroll text is 26,314 B, sha256
+  68b955bf…; the DESIGN-V3 §14.3 pin (26,241 B, d7855969…) is the
+  ratified text as measured at spec time; the live CYOA on
+  human@exo e9384cec carries a slightly longer scroll (header
+  lines). The bake manifest records the ACTUAL bytes + hash;
+  the pin discrepancy is named here rather than hidden. CYOA on
+  the same commit is 4,603,860 B (sha 75f13961…) vs the spec's
+  4,602,370 B (506d850d…) — the corpus grew after the spec's
+  measurements (V16 inscriptions); Incipit matches exactly
+  (1,077,930 B, 3ff6604f…). Total sealed bake ≈ 1.35 MB.
+- **Volumen canonical index**: STILL unreachable (blob f879adc5
+  not on any fetchable ref of wbic16/human; the clone's tree has
+  no personas/ directory). The bake carries a census-derived
+  validation substitute (106 record lines, 22 volumes), marked
+  in the manifest's `index_provenance`; vol.rs derives
+  coordinate_number / volume count / boundaries from whatever
+  index is baked, so the canonical 126-line index drops in with
+  no code change when it lands on a reachable ref.
+- **Design change under implementation pressure** (API-V1 §9
+  note): the "auth" floor admits the node's LOCAL operator
+  surface (loopback/on-node CLI) — without it, the v1 behavior
+  (bare `qexo` emits the plan) cannot survive, and §14.1 makes
+  the CLI the reference client. Remote surfaces are unchanged;
+  every policy/bootstrap gate still applies locally. Recorded
+  in core.rs at the floor.
+- **G1 flag stands**: Grok's "strategy gate" verb for Chief of
+  Staff never verified; the census keeps `coordinate` for the
+  Chief of Staff record.
+
+## Tier-2 deferrals (recorded, not dropped)
+
+- Full migration engine (bundle transfer transport: sync pull's
+  staged restore currently completes via the CLI path; the API
+  form returns a named 501 until the transport lands).
+- Meld runtime (merge-meld identity outcome, §18 test 6) and
+  spawn orchestration runtime (instances are ledger-true;
+  worker process management is the Choir substrate's).
+- Quickfork rebuild; full MCP surface beyond the bridge
+  catalogue; voice runtime + API proxy (hosted elsewhere by
+  ruling); fleet-wide metadata aggregation beyond the serving
+  node; receipts archival/rollup pass (tail scan covers 8 MiB;
+  the rollup is a maintenance op, not a correctness need);
+  SQ → libphext 0.5.0 convergence remains its own canary stage.
+
+## Publish steps for Will (morning)
+
+```bash
+# on aletheia-core (or any ranch node with the clone)
+cd ~/qexo-v3/quarterexo && git checkout emise/v3-build
+cargo test --release            # expect: 15 passed
+cargo package --list            # review the crate contents
+cargo publish                   # Will's act; dry-run first with --dry-run
+```
+
+PR #3 (emise/v3-build → exo) carries API-V1.md (0594130), the
+design notes + vol fix (757788c), the pattern correction
+(b20a7cb), and this implementation (650b91e + this commit).

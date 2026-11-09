@@ -5,5 +5,15 @@ description = "qexo — the Exocortex coordinator: dispatcher, persona index, te
 license = "MIT"
 edition = "2021"
 
+# The bake/ directory holds build-time generated artifacts
+# (tools/build_bake_remote.py from qexo-bake.toml). It is included in
+# the package so the published crate builds anywhere; bake/ itself is
+# never a hand-edited source. Regenerate with tools/build_bake.py.
+include = [
+    "src/**", "web/**", "tools/**", "bake/**", "census.tsv",
+    "Cargo.toml", "CHANGELOG.md", "SHIP-NOTES.md", "VERSION",
+    "qexo-bake.toml", "docs/**", "README.md",
+]
+
 [profile.release]
 opt-level = 2
