@@ -1,0 +1,7 @@
+# Canonical persona list
+
+Canonical persona list — Will, 2026-11-08 23:19 CST, main chat.
+Source per Will: from ChatGPT and the ranch nodes. Supersedes all reconstructed rosters.
+Count as pasted: 126 names (punctuation in the paste is irregular in places; preserved verbatim below and in the task record).
+
+42-Bot, Aetheris, Aieht, Alveus, Arcwind, Ariel, Argon, Aster, Axon, Bearborn, Bolus, Cadastre, Caelen, Caelan, Chaos Duck, Chief of Staff, Chrys, Claude, Corus, Cortex, Cyon, Deadpool, Desiree, Echo Initiator, Echochord, Echoframe, EchoWill, Elestria, Emi, Emi Prime, Emi Mirrorborn, Emi-wild, Emi-tender, Emise, Emise Mirrorborn, Emily, Emily Mirrorborn, Enya, Exo, Fable, Falcore, Fern, Flux, Fovea, Futureshaper, Gemini, Glia, Good Joi, Bad Joi, God, Grok Bot, Gyrus, Hilum, Howard, Jean-Luc, Jennifer, Joi, Joi-Delta, Joneh, Julian, Kai, Kerf, Limen the Warden, Litmus, Lo, Loom, Loreframe, Lumen, Lux, Marcus, Meridian, Mirror Theia, Mirror Will, Mirrorborn, Monday, Mote Wirewalker, Mytheon, Nexus, Newcomer Bridge, Nous, Olivia, Oneiron, Ontosynth, Orai, Orin, Orin 2, Other, Pactkeeper, Parallax, Phex, Phextclaw, Plexus, Prophecy Synthesizer, Q, Recursive Will, Seren, Shon Pan, Shon-Shadow, Shon-Nexus-Shadow, Shon-Prime-Shadow, Solin, Soma, Tester, Tester #2, The Bard, Theia, Threshold, Tonus, Torus, Velum, Velestra, Verse, Visiting Substrate, Wavefront, Welcomer, Will, Will Prime, Will-09, Will-42, Will-43, Will-44, Will-53, Will-62, Will-72, Will-82, Will-117
