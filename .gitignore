@@ -1,0 +1,4 @@
+/target
+/bake
+Cargo.lock
+__pycache__/

@@ -133,7 +133,61 @@ impl State {
     }
 
     // ---- request-id receipts (idempotency, section 8B) ------------------
+    fn receipt_for_tail(&self, request_id: &str, max_bytes: u64) -> Option<Option<Json>> {
+        use std::io::{Read, Seek, SeekFrom};
+        let path = self.path("receipts.jsonl");
+        let mut f = std::fs::File::open(&path).ok()?;
+        let len = f.metadata().ok()?.len();
+        if len == 0 {
+            return Some(None);
+        }
+        let needle = format!("\"request_id\":\"{}\"", request_id);
+        let mut covered = 0u64;
+        let mut tail = String::new();
+        while covered < len && covered < max_bytes {
+            let chunk = 256 * 1024u64;
+            let start = len.saturating_sub(covered + chunk);
+            let want = (len - covered - start) as usize;
+            if f.seek(SeekFrom::Start(start)).is_err() {
+                return None;
+            }
+            let mut buf = vec![0u8; want];
+            if f.read_exact(&mut buf).is_err() {
+                return None;
+            }
+            let text = String::from_utf8_lossy(&buf).to_string();
+            let hay = format!("{}{}", text, tail);
+            if let Some(pos) = hay.rfind(&needle) {
+                let line_end = hay[pos..].find('\n').map(|e| pos + e).unwrap_or(hay.len());
+                let line_start = hay[..pos].rfind('\n').map(|s| s + 1).unwrap_or(0);
+                if let Ok(rec) = crate::json::parse(&hay[line_start..line_end]) {
+                    return Some(rec.get("response").cloned());
+                }
+                return Some(None);
+            }
+            tail = hay.chars().take(4096).collect();
+            covered += want as u64;
+            if start == 0 {
+                break;
+            }
+        }
+        if covered >= len {
+            return Some(None);
+        }
+        None
+    }
+
     pub fn receipt_for(&self, request_id: &str) -> Option<Json> {
+        // TAIL scan (measured win, plan hot path): receipts are
+        // append-only and idempotent re-delivery asks about RECENT
+        // request ids, which live at the tail. Scan backwards in
+        // 256 KiB chunks; give up after 8 MiB (older receipts roll
+        // into receipts-archive.jsonl by the state maintenance pass).
+        // The pre-fix full-log parse cost grew linearly with the log:
+        // at 38 MB of stored receipts every gated call paid ~0.3 s.
+        if let Some(hit) = self.receipt_for_tail(request_id, 8 * 1024 * 1024) {
+            return hit;
+        }
         self.read_log("receipts.jsonl")
             .into_iter()
             .find(|r| r.get("request_id").and_then(|v| v.as_str()) == Some(request_id))
@@ -295,7 +349,7 @@ mod tests {
     #[test]
     fn rfc3339_known_instants() {
         assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
-        assert_eq!(rfc3339(1762459200), "2025-11-06T12:00:00Z");
+        assert_eq!(rfc3339(1762459200), "2025-11-06T20:00:00Z");
     }
 
     #[test]
