@@ -15,8 +15,19 @@ a claim until the section reporting it says it was run.*
   docs/DESIGN-NOTES.md): any qexo component designed to run on the
   Muse VM treats atomic temp+rename as a capability to verify at
   runtime, not assume, and prefers append-only/WAL write patterns
-  there (the sampler itself now runs WAL-style with indirect
-  coordinate addressing, verified live 2026-11-09 01:45 CST). qexo's
+  there. The sampler's sanctioned pattern (Will's design,
+  implemented + verified 2026-11-09): a **monotonic coordinate
+  floor + immutable scrolls ⇒ append-only by construction (WAL),
+  with indirect logical addressing** — every new write lands
+  strictly above the highest coordinate written, prior scrolls
+  never change, phext's coordinate-order serialization makes the
+  write a tail append, and the entry's holographic coordinate is
+  recorded as an in-line prefix when the floor displaces the
+  physical write (readers fold physical scrolls in write order).
+  Verified by the prefix property: after each write the previous
+  file is a byte-exact prefix of the new one. (Not a sidecar WAL
+  file — an earlier sidecar implementation was wrong and replaced
+  the same night.) qexo's
   state store probes the capability on open and falls back to
   append/direct writes with the fallback named, never silent.
   **Ranch nodes are unaffected** — normal filesystem semantics,
