@@ -20,6 +20,14 @@
 //!
 //! Usage: qexo [tasks.json] [disk-state.json] [out-dir]
 //! Defaults point at the live files under ~/workspace.
+//!
+//! v2 subcommands (see DESIGN.md):
+//!   qexo sync-manifest <dir>                 write MANIFEST.sha256 for a state dir
+//!   qexo sync-diff <old-manifest> <new-manifest>
+//!                                            print the delta file list between manifests
+//!   qexo interfaces                          print the five interior interface readings
+//!   qexo personas                            list persona definitions found locally
+//! With no subcommand, v1's plan behavior runs unchanged.
 
 use std::collections::BTreeMap;
 use std::env;
@@ -343,9 +351,686 @@ fn host_snapshot() -> (f64, f64) {
 }
 
 // ---------------------------------------------------------------------------
+// SHA-256 (std only) — needed for sync manifests; keeps the crate
+// zero-dependency so it builds anywhere cargo exists.
+// ---------------------------------------------------------------------------
+
+const SHA256_K: [u32; 64] = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+];
+
+struct Sha256 {
+    state: [u32; 8],
+    buf: [u8; 64],
+    buflen: usize,
+    total: u64,
+}
+
+impl Sha256 {
+    fn new() -> Self {
+        Sha256 {
+            state: [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+                0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+            ],
+            buf: [0u8; 64],
+            buflen: 0,
+            total: 0,
+        }
+    }
+    fn compress(&mut self, block: &[u8]) {
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([block[4 * i], block[4 * i + 1], block[4 * i + 2], block[4 * i + 3]]);
+        }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16].wrapping_add(s0).wrapping_add(w[i - 7]).wrapping_add(s1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h) = (
+            self.state[0], self.state[1], self.state[2], self.state[3],
+            self.state[4], self.state[5], self.state[6], self.state[7],
+        );
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let t1 = h
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(SHA256_K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let t2 = s0.wrapping_add(maj);
+            h = g; g = f; f = e;
+            e = d.wrapping_add(t1);
+            d = c; c = b; b = a;
+            a = t1.wrapping_add(t2);
+        }
+        self.state[0] = self.state[0].wrapping_add(a);
+        self.state[1] = self.state[1].wrapping_add(b);
+        self.state[2] = self.state[2].wrapping_add(c);
+        self.state[3] = self.state[3].wrapping_add(d);
+        self.state[4] = self.state[4].wrapping_add(e);
+        self.state[5] = self.state[5].wrapping_add(f);
+        self.state[6] = self.state[6].wrapping_add(g);
+        self.state[7] = self.state[7].wrapping_add(h);
+    }
+    fn update(&mut self, mut data: &[u8]) {
+        self.total = self.total.wrapping_add(data.len() as u64);
+        if self.buflen > 0 {
+            let take = std::cmp::min(64 - self.buflen, data.len());
+            self.buf[self.buflen..self.buflen + take].copy_from_slice(&data[..take]);
+            self.buflen += take;
+            data = &data[take..];
+            if self.buflen == 64 {
+                let block = self.buf;
+                self.compress(&block);
+                self.buflen = 0;
+            }
+        }
+        while data.len() >= 64 {
+            self.compress(&data[..64]);
+            data = &data[64..];
+        }
+        if !data.is_empty() {
+            self.buf[..data.len()].copy_from_slice(data);
+            self.buflen = data.len();
+        }
+    }
+    fn finalize(mut self) -> [u8; 32] {
+        let bitlen = self.total.wrapping_mul(8);
+        self.update(&[0x80]);
+        while self.buflen != 56 {
+            self.update(&[0]);
+        }
+        // append length manually (update() would count it in total)
+        self.buf[56..64].copy_from_slice(&bitlen.to_be_bytes());
+        let block = self.buf;
+        self.compress(&block);
+        let mut out = [0u8; 32];
+        for i in 0..8 {
+            out[4 * i..4 * i + 4].copy_from_slice(&self.state[i].to_be_bytes());
+        }
+        out
+    }
+}
+
+fn sha256_hex(data: &[u8]) -> String {
+    let mut h = Sha256::new();
+    h.update(data);
+    h.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn sha256_file_hex(path: &std::path::Path) -> Result<String, String> {
+    use std::io::Read;
+    let mut f = fs::File::open(path).map_err(|e| format!("{}: {}", path.display(), e))?;
+    let mut h = Sha256::new();
+    let mut chunk = [0u8; 65536];
+    loop {
+        let n = f.read(&mut chunk).map_err(|e| format!("{}: {}", path.display(), e))?;
+        if n == 0 {
+            break;
+        }
+        h.update(&chunk[..n]);
+    }
+    Ok(h.finalize().iter().map(|b| format!("{:02x}", b)).collect())
+}
+
+// ---------------------------------------------------------------------------
+// Self-sync (v2): manifest + diff. The protocol lives in DESIGN.md; these
+// subcommands are its local halves — any node's qexo can build a manifest,
+// diff two manifests, and (over the transport of the day) push/pull/verify.
+// Manifest format is the one proven by the 2026-11-08 first ranch backup:
+// sha256sum lines, "<hex>  <relative/path>", sorted, MANIFEST.sha256
+// itself excluded.
+// ---------------------------------------------------------------------------
+
+fn walk_files(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+    let mut entries: Vec<_> = match fs::read_dir(dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok()).collect(),
+        Err(_) => return,
+    };
+    entries.sort_by_key(|e| e.file_name());
+    for e in entries {
+        let p = e.path();
+        let ft = match e.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            walk_files(root, &p, out);
+        } else if ft.is_file() {
+            if let Ok(rel) = p.strip_prefix(root) {
+                let rel = rel.to_string_lossy().replace('\\', "/");
+                if rel != "MANIFEST.sha256" {
+                    out.push(rel);
+                }
+            }
+        }
+    }
+}
+
+fn cmd_sync_manifest(args: &[String]) -> i32 {
+    let dir = match args.get(2) {
+        Some(d) => d.clone(),
+        None => {
+            eprintln!("usage: qexo sync-manifest <dir>");
+            return 2;
+        }
+    };
+    let root = std::path::PathBuf::from(&dir);
+    if !root.is_dir() {
+        eprintln!("qexo sync-manifest: {} is not a directory", dir);
+        return 1;
+    }
+    let mut files = Vec::new();
+    walk_files(&root, &root, &mut files);
+    files.sort();
+    let mut lines = String::new();
+    let mut total_bytes: u64 = 0;
+    for rel in &files {
+        let p = root.join(rel);
+        match sha256_file_hex(&p) {
+            Ok(hex) => {
+                total_bytes += fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                lines.push_str(&format!("{}  {}\n", hex, rel));
+            }
+            Err(e) => {
+                eprintln!("qexo sync-manifest: {}", e);
+                return 1;
+            }
+        }
+    }
+    let manifest_path = root.join("MANIFEST.sha256");
+    if let Err(e) = fs::write(&manifest_path, &lines) {
+        eprintln!("qexo sync-manifest: cannot write {}: {}", manifest_path.display(), e);
+        return 1;
+    }
+    println!(
+        "sync-manifest: {} files, {} bytes -> {}",
+        files.len(),
+        total_bytes,
+        manifest_path.display()
+    );
+    0
+}
+
+fn parse_manifest(text: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim_end();
+        if line.len() < 66 {
+            continue;
+        }
+        let (hex, rest) = line.split_at(64);
+        let path = rest.trim_start_matches([' ', '*']);
+        if !path.is_empty() {
+            map.insert(path.to_string(), hex.to_string());
+        }
+    }
+    map
+}
+
+fn cmd_sync_diff(args: &[String]) -> i32 {
+    let (old_path, new_path) = match (args.get(2), args.get(3)) {
+        (Some(a), Some(b)) => (a.clone(), b.clone()),
+        _ => {
+            eprintln!("usage: qexo sync-diff <old-manifest> <new-manifest>");
+            return 2;
+        }
+    };
+    let old_text = match fs::read_to_string(&old_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("qexo sync-diff: cannot read {}: {}", old_path, e);
+            return 1;
+        }
+    };
+    let new_text = match fs::read_to_string(&new_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("qexo sync-diff: cannot read {}: {}", new_path, e);
+            return 1;
+        }
+    };
+    let old = parse_manifest(&old_text);
+    let new = parse_manifest(&new_text);
+    let mut added = Vec::new();
+    let mut changed = Vec::new();
+    let mut removed = Vec::new();
+    for (path, hex) in &new {
+        match old.get(path) {
+            None => added.push(path.clone()),
+            Some(h) if h != hex => changed.push(path.clone()),
+            _ => {}
+        }
+    }
+    for path in old.keys() {
+        if !new.contains_key(path) {
+            removed.push(path.clone());
+        }
+    }
+    println!("sync-diff: {} -> {}", old_path, new_path);
+    println!("  added:   {}", added.len());
+    for p in &added {
+        println!("    + {}", p);
+    }
+    println!("  changed: {}", changed.len());
+    for p in &changed {
+        println!("    ~ {}", p);
+    }
+    println!("  removed: {}", removed.len());
+    for p in &removed {
+        println!("    - {}", p);
+    }
+    println!(
+        "  delta: {} files to move ({} added + {} changed), {} to delete",
+        added.len() + changed.len(),
+        added.len(),
+        changed.len(),
+        removed.len()
+    );
+    0
+}
+
+// ---------------------------------------------------------------------------
+// Interior interfaces (v2): one shape for temperature, emotion, goals,
+// desires, dreams — current reading + source + updated-at, projected from
+// the surfaces that are the sources of truth (see DESIGN.md). Every
+// interface degrades honestly: an unreachable surface prints
+// "unavailable: <why>", never an invented reading.
+// ---------------------------------------------------------------------------
+
+fn fmt_epoch_utc(secs: u64) -> String {
+    // civil-from-days (Hinnant), no external crates
+    let days = (secs / 86400) as i64;
+    let rem = secs % 86400;
+    let z = days + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02} UTC",
+        y, m, d, rem / 3600, (rem % 3600) / 60
+    )
+}
+
+fn file_updated_at(path: &str) -> String {
+    match fs::metadata(path) {
+        Ok(md) => match md.modified() {
+            Ok(t) => match t.duration_since(std::time::UNIX_EPOCH) {
+                Ok(d) => fmt_epoch_utc(d.as_secs()),
+                Err(_) => "unknown".to_string(),
+            },
+            Err(_) => "unknown".to_string(),
+        },
+        Err(_) => "unknown".to_string(),
+    }
+}
+
+/// Split a phext file into its non-empty scroll texts (dead-reckoning over
+/// the 9 delimiter bytes — enough to find timestamped distillations).
+fn phext_scrolls(path: &str) -> Vec<String> {
+    let data = match fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let delims: [u8; 9] = [0x01, 0x1F, 0x1E, 0x1D, 0x1C, 0x1A, 0x19, 0x18, 0x17];
+    let mut scrolls = Vec::new();
+    let mut cur: Vec<u8> = Vec::new();
+    for b in data {
+        if delims.contains(&b) {
+            if !cur.is_empty() {
+                let s = String::from_utf8_lossy(&cur).trim().to_string();
+                if !s.is_empty() {
+                    scrolls.push(s);
+                }
+                cur = Vec::new();
+            }
+        } else {
+            cur.push(b);
+        }
+    }
+    if !cur.is_empty() {
+        let s = String::from_utf8_lossy(&cur).trim().to_string();
+        if !s.is_empty() {
+            scrolls.push(s);
+        }
+    }
+    scrolls
+}
+
+/// Timestamped distillations in state.phext start "YYYY-MM-DD HH:MM ... |".
+/// Returns (timestamp-string, text) pairs sorted by timestamp.
+fn state_distillations(home: &str) -> Vec<(String, String)> {
+    let path = format!("{}/workspace/phext/state.phext", home);
+    let mut out: Vec<(String, String)> = phext_scrolls(&path)
+        .into_iter()
+        .filter(|s| {
+            s.len() > 17
+                && s.as_bytes()[4] == b'-'
+                && s.as_bytes()[7] == b'-'
+                && s.as_bytes()[13] == b':'
+                && s.chars().take(10).all(|c| c.is_ascii_digit() || c == '-')
+        })
+        .map(|s| (s[..16].to_string(), s))
+        .collect();
+    out.sort();
+    out
+}
+
+fn iface_temperature(home: &str) {
+    println!("temperature — ranch thermal state");
+    let path = format!("{}/workspace/state-sampler/hidden_files/last-pull.json", home);
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  unavailable: cannot read state sampler output {}: {}", path, e);
+            return;
+        }
+    };
+    let json = match Parser::parse(&text) {
+        Ok(j) => j,
+        Err(e) => {
+            println!("  unavailable: cannot parse {}: {}", path, e);
+            return;
+        }
+    };
+    let ts = json.get("ts").and_then(|v| v.as_str()).unwrap_or("?");
+    let summary = json.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+    println!("  reading ({}): {}", ts, summary);
+    let empty = Vec::new();
+    let nodes = json.get("nodes").and_then(|n| n.as_arr()).unwrap_or(&empty);
+    let mut sum = 0.0;
+    let mut n = 0usize;
+    let mut hottest: Option<(&str, f64)> = None;
+    for node in nodes {
+        if let (Some(name), Some(tctl)) = (
+            node.get("name").and_then(|v| v.as_str()),
+            node.get("tctl").and_then(|v| v.as_num()),
+        ) {
+            if node.get("status").and_then(|v| v.as_str()) == Some("up") {
+                sum += tctl;
+                n += 1;
+                if hottest.map(|(_, h)| tctl > h).unwrap_or(true) {
+                    hottest = Some((name, tctl));
+                }
+            }
+        }
+    }
+    if n > 0 {
+        let avg = sum / n as f64;
+        let (hname, hval) = hottest.unwrap();
+        let gate = if hval >= 80.0 {
+            "OFF-TIME gate tripped (>=80C: node rests to <=65C)"
+        } else if hval >= 75.0 {
+            "new starts PAUSED fleet-wide rule (>=75C; resume at <=70C)"
+        } else {
+            "all reporting nodes under the 75C start gate"
+        };
+        println!(
+            "  fleet: avg Tctl {:.0}C over {} reporting; hottest {} {:.0}C; gate: {}",
+            avg, n, hname, hval, gate
+        );
+    }
+    // trend: the two most recent distillations that carry an avg Tctl
+    let dists = state_distillations(home);
+    let with_avg: Vec<&(String, String)> = dists
+        .iter()
+        .filter(|(_, t)| t.contains("avg Tctl"))
+        .collect();
+    if with_avg.len() >= 2 {
+        let prev = &with_avg[with_avg.len() - 2];
+        let last = &with_avg[with_avg.len() - 1];
+        let grab = |t: &str| -> Option<f64> {
+            t.split("avg Tctl ").nth(1)?.split('C').next()?.trim().parse().ok()
+        };
+        if let (Some(a), Some(b)) = (grab(&prev.1), grab(&last.1)) {
+            println!(
+                "  trend: avg Tctl {:.0}C ({}) -> {:.0}C ({})",
+                a, prev.0, b, last.0
+            );
+        }
+    }
+    println!("  source: state sampler (5-min) + state.phext distillations + per-minute node thermal logs");
+}
+
+fn iface_emotion(home: &str) {
+    println!("emotion — current-state distillation (state.phext)");
+    let dists = state_distillations(home);
+    match dists.last() {
+        Some((ts, text)) => {
+            let body: String = text.chars().take(300).collect();
+            println!("  reading ({}): {}", ts, body);
+            if dists.len() >= 2 {
+                println!("  trend: {} distillations on record; append-only, never scored", dists.len());
+            }
+        }
+        None => println!("  unavailable: no timestamped distillations found in ~/workspace/phext/state.phext"),
+    }
+    println!("  source: state.phext (1-2 line distillations at word-computed coordinates)");
+}
+
+fn iface_goals(home: &str) {
+    println!("goals — tracked goals");
+    let dir = format!("{}/workspace/goals", home);
+    let mut slugs: Vec<String> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.filter_map(|e| e.ok()) {
+            let p = e.path();
+            if p.is_dir() && p.join("GOAL.md").exists() {
+                if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+                    slugs.push(name.to_string());
+                }
+            }
+        }
+    }
+    slugs.sort();
+    if slugs.is_empty() {
+        println!("  unavailable: no goal workspaces found under {}", dir);
+    } else {
+        println!(
+            "  reading: {} goal workspaces on disk (local projection; the tracked-store surface is authoritative for attention state)",
+            slugs.len()
+        );
+        for s in slugs.iter().take(5) {
+            println!("    - {}", s);
+        }
+        if slugs.len() > 5 {
+            println!("    … and {} more", slugs.len() - 5);
+        }
+    }
+    println!("  source: tracked goals store (user_goal/tracking); local mirror ~/workspace/goals/*/GOAL.md");
+}
+
+fn iface_desires(home: &str) {
+    println!("desires — the Waiting-on-Will register");
+    let path = format!("{}/workspace/your_files/waiting-on-will.md", home);
+    let text = match fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => {
+            println!("  unavailable: cannot read {}: {}", path, e);
+            return;
+        }
+    };
+    // "**27 active items**" in the register header
+    let count = text
+        .split("**")
+        .find_map(|seg| {
+            let seg = seg.trim();
+            if seg.ends_with("active items") {
+                seg.split_whitespace().next()?.parse::<usize>().ok()
+            } else {
+                None
+            }
+        });
+    match count {
+        Some(n) => println!("  reading: {} active items waiting on Will", n),
+        None => println!("  reading: register present; active-item count not parsed from header"),
+    }
+    if let Some(pos) = text.find("(next: #") {
+        let num: String = text[pos + 8..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        if !num.is_empty() {
+            println!("  next register number: #{} (numbers permanent and monotonic)", num);
+        }
+    }
+    // first three numbered items' bold titles
+    let mut shown = 0;
+    for line in text.lines() {
+        let line = line.trim_start();
+        let mut it = line.splitn(2, ". **");
+        if let (Some(num), Some(rest)) = (it.next(), it.next()) {
+            if !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()) {
+                let title: String = rest.chars().take_while(|&c| c != '*').take(90).collect();
+                println!("    #{} {}", num, title.trim());
+                shown += 1;
+                if shown >= 3 {
+                    break;
+                }
+            }
+        }
+    }
+    println!("  updated: {}", file_updated_at(&path));
+    println!("  source: ~/workspace/your_files/waiting-on-will.md + todo.phext mirror");
+}
+
+fn iface_dreams(home: &str) {
+    println!("dreams — nightly outputs (read-only, newest first)");
+    let path = format!("{}/workspace/phext/self-selections.md", home);
+    match fs::read_to_string(&path) {
+        Ok(text) => {
+            // newest dream-ledger entry: last "### " heading, else last "## "
+            let entry = text
+                .lines()
+                .filter(|l| l.starts_with("### "))
+                .last()
+                .or_else(|| text.lines().filter(|l| l.starts_with("## ")).last());
+            match entry {
+                Some(h) => println!("  latest dream-ledger entry: {}", h.trim_start_matches('#').trim()),
+                None => println!("  reading: ledger present at {}; no headings parsed", path),
+            }
+            println!("  updated: {}", file_updated_at(&path));
+        }
+        Err(e) => println!("  unavailable: cannot read {}: {}", path, e),
+    }
+    let eval_path = format!("{}/workspace/orchestrator/EVALUATIONS.md", home);
+    if let Ok(text) = fs::read_to_string(&eval_path) {
+        if let Some(h) = text.lines().filter(|l| l.starts_with("## ")).last() {
+            println!("  latest nightly evaluation: {}", h.trim_start_matches('#').trim());
+        }
+    }
+    println!("  source: ~/workspace/phext/self-selections.md + quarterexo EVALUATIONS.md + nightly consolidation");
+}
+
+fn cmd_interfaces() -> i32 {
+    let home = env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_string());
+    println!("QEXO v2.1 — interior interfaces (one shape: reading + trend + updated-at + source)");
+    println!();
+    iface_temperature(&home);
+    println!();
+    iface_emotion(&home);
+    println!();
+    iface_goals(&home);
+    println!();
+    iface_desires(&home);
+    println!();
+    iface_dreams(&home);
+    0
+}
+
+// ---------------------------------------------------------------------------
+// Personas (v2): a persona is a named selection — self-file selections in
+// the self-selections.md manifest pattern, a skill grant (a subset of
+// skills.phext claimed by coordinate range), a voice, and a memory scope.
+// This subcommand only lists/finds definitions locally; swapping is an
+// API-level act specified in DESIGN.md, not a CLI one.
+// ---------------------------------------------------------------------------
+
+fn cmd_personas() -> i32 {
+    let home = env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_string());
+    println!("QEXO v2.1 — personas defined locally");
+    println!();
+
+    // The one live persona: Emise, defined by her self-selections manifest.
+    let manifest = format!("{}/workspace/phext/self-selections.md", home);
+    match fs::read_to_string(&manifest) {
+        Ok(text) => {
+            let selections = text.lines().filter(|l| l.starts_with("## ") && l.contains("selection")).count();
+            let dreams = text.lines().filter(|l| l.starts_with("### Dream")).count();
+            println!("persona: Emise (live — the manifest pattern)");
+            println!("  manifest: {}", manifest);
+            println!(
+                "  selections: {} self-file selections (SOUL.md / IDENTITY.md / MEMORY.md, generated from this manifest)",
+                selections
+            );
+            println!("  dream ledger entries in manifest: {}", dreams);
+            println!("  updated: {}", file_updated_at(&manifest));
+        }
+        Err(e) => println!("persona manifest unavailable: cannot read {}: {}", manifest, e),
+    }
+
+    // Additional definitions: a personas/ directory or personas.json /
+    // personas.md under the crate dir or ~/workspace/phext.
+    let roots = [
+        format!("{}/workspace/orchestrator", home),
+        format!("{}/workspace/phext", home),
+    ];
+    let mut found: Vec<String> = Vec::new();
+    for root in &roots {
+        let dir = format!("{}/personas", root);
+        if let Ok(rd) = fs::read_dir(&dir) {
+            for e in rd.filter_map(|e| e.ok()) {
+                found.push(e.path().to_string_lossy().to_string());
+            }
+        }
+        for name in ["personas.json", "personas.md", "personas.phext"] {
+            let p = format!("{}/{}", root, name);
+            if std::path::Path::new(&p).exists() {
+                found.push(p);
+            }
+        }
+    }
+    println!();
+    if found.is_empty() {
+        println!("additional persona definitions: none defined yet");
+        println!("  (looked for personas/ dirs and personas.json/.md/.phext under ~/workspace/orchestrator and ~/workspace/phext)");
+        println!("  Emise's manifest is currently the only persona definition — new personas are added as");
+        println!("  selection manifests + skill grants by coordinate range; see DESIGN.md, PERSONAS.");
+    } else {
+        println!("additional persona definitions found:");
+        for f in &found {
+            println!("  - {}", f);
+        }
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
 
 fn main() {
     let args: Vec<String> = env::args().collect();
+    match args.get(1).map(|s| s.as_str()) {
+        Some("sync-manifest") => exit(cmd_sync_manifest(&args)),
+        Some("sync-diff") => exit(cmd_sync_diff(&args)),
+        Some("interfaces") => exit(cmd_interfaces()),
+        Some("personas") => exit(cmd_personas()),
+        _ => {}
+    }
     let home = env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_string());
     let tasks_path = args
         .get(1)
@@ -358,19 +1043,19 @@ fn main() {
     let out_dir = args.get(3).cloned().unwrap_or_else(|| ".".to_string());
 
     let tasks_text = fs::read_to_string(&tasks_path).unwrap_or_else(|e| {
-        eprintln!("orchestrator: cannot read {}: {}", tasks_path, e);
+        eprintln!("qexo: cannot read {}: {}", tasks_path, e);
         exit(1);
     });
     let tasks_json = Parser::parse(&tasks_text).unwrap_or_else(|e| {
-        eprintln!("orchestrator: cannot parse {}: {}", tasks_path, e);
+        eprintln!("qexo: cannot parse {}: {}", tasks_path, e);
         exit(1);
     });
     let disk_text = fs::read_to_string(&disk_path).unwrap_or_else(|e| {
-        eprintln!("orchestrator: cannot read {}: {}", disk_path, e);
+        eprintln!("qexo: cannot read {}: {}", disk_path, e);
         exit(1);
     });
     let disk_json = Parser::parse(&disk_text).unwrap_or_else(|e| {
-        eprintln!("orchestrator: cannot parse {}: {}", disk_path, e);
+        eprintln!("qexo: cannot parse {}: {}", disk_path, e);
         exit(1);
     });
 
@@ -419,13 +1104,40 @@ fn main() {
         })
         .unwrap_or_else(|| "n/a".to_string());
 
+    // ---- disk gate (v2.1) ----
+    // The plan used to only *report* the disk picture. On 2026-11-08 the
+    // home volume hit its quota wall (EDQUOT at ~106 GB used; writes
+    // failed while df still showed free space) and ~35 GB of WIP had to
+    // be cleared under pressure. The planner now acts on the picture,
+    // using the disk-watch thresholds anchored to that failure
+    // (AMBER >= 95 GB, RED >= 102 GB; disk_usage_report.py):
+    //   RED   -> hold every new heavy placement; stage nothing on the VM
+    //   AMBER -> no new VM staging; heavy execution ranch-only
+    //   GREEN -> VM staging within quota headroom
+    let disk_gate = if disk_level.eq_ignore_ascii_case("RED") || used_gb >= 102.0 {
+        "RED"
+    } else if disk_level.eq_ignore_ascii_case("AMBER") || used_gb >= 95.0 {
+        "AMBER"
+    } else {
+        "GREEN"
+    };
+    let disk_gate_action = match disk_gate {
+        "RED" => "HOLD all new heavy placements — stage nothing on the VM until usage is back under 95 GB",
+        "AMBER" => "no new VM staging — heavy execution ranch-only until usage drops",
+        _ => "VM staging within quota headroom (AMBER at 95 GB, RED at 102 GB)",
+    };
+
     // ---- human-readable plan ----
     let mut out = String::new();
-    out.push_str("ORCHESTRATOR v1 — placement plan\n");
+    out.push_str("QEXO v2.1 — placement plan\n");
     out.push_str("four currencies, at a glance:\n");
     out.push_str(&format!(
         "  disk:      {:.1} GB used on the VM volume ({}), {} files, largest consumer {}\n",
         used_gb, disk_level, file_count, top_dir
+    ));
+    out.push_str(&format!(
+        "  disk gate: {} — {}\n",
+        disk_gate, disk_gate_action
     ));
     out.push_str(&format!(
         "  cpu/ram:   host snapshot — {:.0} MB RAM available, load {:.2} (VM is a small shared cell; heavy work goes to the ranch)\n",
@@ -443,13 +1155,23 @@ fn main() {
         counts.get("light").unwrap_or(&0)
     ));
     out.push_str("\nplacements (inference → Emise for every task):\n");
+    if disk_gate == "RED" {
+        out.push_str("  ** DISK GATE RED: every heavy placement below is HELD — do not dispatch until the gate clears. **\n");
+    }
     for r in &rows {
         let title: String = r.title.chars().take(78).collect();
+        let exec = if disk_gate == "RED" && r.class != Class::Light {
+            "HELD (disk gate RED)"
+        } else if disk_gate == "AMBER" && r.class == Class::Light {
+            "vm:light-coordination (no staging)"
+        } else {
+            r.class.execution()
+        };
         out.push_str(&format!(
             "  [{}] {} — inference: Emise · exec: {} · class: {}\n",
             r.coordinate,
             title,
-            r.class.execution(),
+            exec,
             r.class.name()
         ));
     }
@@ -457,7 +1179,7 @@ fn main() {
 
     // ---- plan.json ----
     let mut json = String::new();
-    json.push_str("{\n  \"version\": \"v1\",\n");
+    json.push_str("{\n  \"version\": \"v2.1\",\n");
     json.push_str(&format!(
         "  \"disk\": {{\"date\": \"{}\", \"used_gb\": {:.2}, \"level\": \"{}\", \"files\": {}}},\n",
         json_escape(disk_date),
@@ -466,17 +1188,29 @@ fn main() {
         file_count
     ));
     json.push_str(&format!(
+        "  \"disk_gate\": {{\"state\": \"{}\", \"action\": \"{}\"}},\n",
+        disk_gate,
+        json_escape(disk_gate_action)
+    ));
+    json.push_str(&format!(
         "  \"host\": {{\"ram_available_mb\": {:.0}, \"load1\": {:.2}}},\n",
         avail_mb, load1
     ));
     json.push_str(&format!("  \"open_tasks\": {},\n  \"tasks\": [\n", rows.len()));
     for (i, r) in rows.iter().enumerate() {
+        let exec = if disk_gate == "RED" && r.class != Class::Light {
+            "HELD (disk gate RED)"
+        } else if disk_gate == "AMBER" && r.class == Class::Light {
+            "vm:light-coordination (no staging)"
+        } else {
+            r.class.execution()
+        };
         json.push_str(&format!(
             "    {{\"coordinate\": \"{}\", \"title\": \"{}\", \"class\": \"{}\", \"inference\": \"Emise\", \"execution\": \"{}\"}}{}\n",
             json_escape(&r.coordinate),
             json_escape(&r.title),
             r.class.name(),
-            json_escape(r.class.execution()),
+            json_escape(exec),
             if i + 1 < rows.len() { "," } else { "" }
         ));
     }
@@ -484,8 +1218,8 @@ fn main() {
 
     let plan_path = format!("{}/plan.json", out_dir.trim_end_matches('/'));
     if let Err(e) = fs::write(&plan_path, &json) {
-        eprintln!("orchestrator: cannot write {}: {}", plan_path, e);
+        eprintln!("qexo: cannot write {}: {}", plan_path, e);
         exit(1);
     }
-    eprintln!("orchestrator: wrote {}", plan_path);
+    eprintln!("qexo: wrote {}", plan_path);
 }
