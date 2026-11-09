@@ -254,8 +254,22 @@ pub fn unseal(stream: &[u8]) -> Result<Vec<u8>, String> {
                 .stdout(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|e| format!("xz tool unavailable: {}", e))?;
-            child.stdin.take().unwrap().write_all(stream).map_err(|e| e.to_string())?;
+            // PIPE DEADLOCK RULE: the stream must be written from a
+            // separate thread while this thread drains stdout. A
+            // same-thread write-then-wait deadlocks whenever the
+            // stream exceeds the pipe buffer (64 KiB) — the child
+            // blocks writing stdout, the parent blocks writing
+            // stdin. Measured: this hung every corpus read of the
+            // 820 KB CYOA seal until the streams were threaded.
+            let mut stdin = child.stdin.take().unwrap();
+            let bytes = stream.to_vec();
+            let writer = std::thread::spawn(move || {
+                use std::io::Write;
+                let _ = stdin.write_all(&bytes);
+                let _ = stdin.flush();
+            });
             let output = child.wait_with_output().map_err(|e| e.to_string())?;
+            let _ = writer.join();
             if output.status.success() {
                 Ok(output.stdout)
             } else {

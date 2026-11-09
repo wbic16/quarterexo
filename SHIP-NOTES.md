@@ -134,6 +134,14 @@ to 38 MB, every POST cost ~0.30–0.38 s. Fixes:
   this node's shared load it measured worse (noise-dominated);
   per the brief, only measured wins ship. Classify is unchanged
   from the carried-forward v2 code.
+- A second real defect surfaced during battery 2: the xz unseal
+  fallback (system `xz -d -c`) wrote the sealed stream to the
+  child's stdin on the same thread that waited for its stdout —
+  a classic pipe deadlock for any stream over the 64 KiB pipe
+  buffer, i.e. every real corpus seal. Fixed with a threaded
+  stdin writer; all corpus reads then complete in milliseconds.
+  (This is why battery 2 initially appeared to "hang": the MCP
+  and mdmap sections behind it were fine.)
 - Read paths (personas list/show) were already ~2 ms/call.
 
 ## Tests (all on aletheia-core)
@@ -150,7 +158,7 @@ to 38 MB, every POST cost ~0.30–0.38 s. Fixes:
   answered separately; tamper fails), swap + epoch, spawn
   eligibility, full teleport cycle incl. unsigned-return refusal
   and signed node-key return.
-- Integration battery 2 (HTTP + MCP + mdmap + misc): **17/17** —
+- Integration battery 2 (HTTP + MCP + mdmap + misc): **19/19** —
   web client at /, HTTP Orin + SBOR, anon grants refused over
   HTTP, idempotent re-delivery returns the original receipt,
   sequence replay refused, stale timestamp refused, wrong
@@ -242,4 +250,4 @@ cargo publish                   # Will's act; dry-run first with --dry-run
 
 PR #3 (emise/v3-build → exo) carries API-V1.md (0594130), the
 design notes + vol fix (757788c), the pattern correction
-(b20a7cb), and this implementation (650b91e + this commit).
+(b20a7cb), and this implementation (650b91e, 2437f65, plus the xz deadlock fix).
