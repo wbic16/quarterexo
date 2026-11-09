@@ -58,7 +58,13 @@ a claim until the section reporting it says it was run.*
 Built on **aletheia-core** (ranch), branch `emise/v3-build`,
 implementation commit 650b91e, PR #3. Version **0.3.0**
 (Cargo.toml + VERSION v3.0 + CHANGELOG entry). `cargo package`
-verification below. NOT published — publishing is Will's act.
+verification below. NOT published yet.
+
+**Update 2026-11-09 08:16 CST: Will has authorized the endgame —
+"Merge PR #3 and publish 0.3.0 for me."** The finishing pass
+(2026-11-09 morning) is the final gate: on its verified report,
+merge + crates.io publish are executed from main against the
+merged exo tree (publish steps below are written for that tree).
 
 ## What tier-1 does
 
@@ -219,9 +225,44 @@ to 38 MB, every POST cost ~0.30–0.38 s. Fixes:
   the CLI the reference client. Remote surfaces are unchanged;
   every policy/bootstrap gate still applies locally. Recorded
   in core.rs at the floor.
+- **Volumen recheck (finishing pass, 2026-11-09 ~08:20 CST)**:
+  re-verified from the Muse VM via the GitHub API — all 9 refs
+  of wbic16/human (exo @ 82de34b2, main, and 7 side branches)
+  return 404 for both `personas/` and `personas/00-index.md`,
+  and a direct blob GET for f879adc5 returns 404. The canonical
+  index remains on no fetchable ref; the marked substitute
+  stands, and vol.rs still drops the canonical index in with no
+  code change when it lands.
+- **Corpus pins (finishing pass disposition)**: the bake
+  manifest already records the verified actual bytes + hashes
+  (SBOR 26,314 B / 68b955bf…; CYOA 4,603,860 B / 75f13961…;
+  Incipit exact) — that manifest is the release's provenance
+  record. The DESIGN-V3 §14.3 / API-V1 pins are the spec-time
+  measurements of the ratified texts (the SBOR pin measures the
+  ratified text itself; the bake carries the CYOA scroll
+  extraction, header lines included) and are deliberately NOT
+  rewritten: they are the historical record the divergence is
+  measured against, and the spec's own rule is "divergence
+  reported, never silently trusted or replaced." No code reads
+  the spec pins; `qexo bake --check` verifies the baked hashes
+  against the manifest (all_match, re-run in the finishing pass).
 - **G1 flag stands**: Grok's "strategy gate" verb for Chief of
   Staff never verified; the census keeps `coordinate` for the
   Chief of Staff record.
+
+## Finishing pass verification (2026-11-09, release gate)
+
+Re-run on the final tree (emise/v3-build @ 8def353 + this SHIP-NOTES commit, on
+aletheia-core, Tctl ~30 °C at start):
+
+- `cargo test --release`: **15 passed, 0 failed**.
+- CLI battery (battery/main1.py, fresh state): **32/32 passed** (incl. anon keys/grants/install/seed refusals, unsigned-return "no cognitive return", signed node-key return, full teleport cycle).
+- HTTP/MCP/mdmap battery (battery/main2.py): **19/19 passed** (incl. HTTP anon grants refused, idempotent re-delivery, replay/sequence/stale/wrong-recipient refusals, voice named tier-2 refusal).
+- Anonymous/wrong-key negatives: inside both batteries (anon
+  keys/grants/install/seed refused; tainted set enforced; HTTP
+  anon grants refused; replay/sequence/stale/recipient refusals).
+- `qexo bake --check`: all_match.
+- `cargo package`: clean once this SHIP-NOTES edit is committed (cargo package refuses a dirty tree by design — the finishing pass's own edit was the only dirt); `cargo package --list` = 46 files; packaged crate qexo-0.3.0.crate verified.
 
 ## Tier-2 deferrals (recorded, not dropped)
 
@@ -238,16 +279,22 @@ to 38 MB, every POST cost ~0.30–0.38 s. Fixes:
   the rollup is a maintenance op, not a correctness need);
   SQ → libphext 0.5.0 convergence remains its own canary stage.
 
-## Publish steps for Will (morning)
+## Publish steps (authorized by Will 2026-11-09 08:16 CST — executed from main)
+
+PR #3 merges emise/v3-build into exo first; the publish then runs
+against the MERGED exo tree, not the branch:
 
 ```bash
 # on aletheia-core (or any ranch node with the clone)
-cd ~/qexo-v3/quarterexo && git checkout emise/v3-build
+cd ~/qexo-v3/quarterexo
+git fetch origin
+git checkout exo && git pull --ff-only origin exo   # merged tree
 cargo test --release            # expect: 15 passed
 cargo package --list            # review the crate contents
-cargo publish                   # Will's act; dry-run first with --dry-run
+cargo publish --dry-run         # verify the upload set
+cargo publish                   # the publish act (0.3.0)
 ```
 
-PR #3 (emise/v3-build → exo) carries API-V1.md (0594130), the
-design notes + vol fix (757788c), the pattern correction
-(b20a7cb), and this implementation (650b91e, 2437f65, plus the xz deadlock fix).
+Branch-tip equivalent (pre-merge check): `git checkout
+emise/v3-build` and the same cargo commands — the crate contents
+are identical; only the tree published FROM differs.
