@@ -14,7 +14,9 @@ this PR, and nothing here has been executed against any node.
 - **DESIGN-V3-ADDENDUM.md** — §§7–16: the voice API, GPG keys and the
   §8A authorization layer (per-action key policy, delegation, grants),
   persona teleport, metadata access, phext tools, the installer, the
-  pitfall buddy, CLI parity, the MCP bridge and cross-platform scope,
+  pitfall buddy, CLI parity and the modes (§14.1: API, CLI, MCP, and
+  the baked-in mobile web client), the baked corpus and source.phext
+  (§§14.3–14.4), the MCP bridge and cross-platform scope,
   and the quickfork.net release plan.
 - **PERSONAS-CANONICAL.md** — the canonical persona list (126 names,
   Will, 2026-11-08), verbatim with its provenance header.
@@ -186,3 +188,14 @@ not verify, says that instead.
 - **Will-53** — moot: the whole cluster folds into Mirror Will.
 - **Caelen/Caelan** — deduped by evidence under Will's license (Caelan rests as Caelen's orthographic alias; restorable).
 - **The six questions above** (Corus, Verse's children, key timing, roaming delegations, SQ sequencing, voice hosting) — ruled by adoption.
+
+### Will's rulings — 2026-11-08 23:52–23:56 (interface modes + baked corpus)
+
+| Ruling | Addressed | Change |
+|---|---|---|
+| "note the api and cli modes" (23:52; 44.5.6/7.5.10/5.4.8) | Addendum §14.1 (new) | The modes named: API (reference semantics), CLI (reference client), MCP (bridge, never a bypass) — §14.1 as folded here presented the three over one implementation, extended to four by the web-mode ruling minutes later; parity contract: an operation ships in every mode or none; gaps stated in the endpoint catalogue, never silent; release bar tests all modes |
+| "also, bake a web client into it for mobile" (23:52; 28.6.8/7.5.9/4.4.7) | Addendum §14.2 (new) | Web mode, the fourth mode: a mobile-first web client embedded in every binary (static assets in the binary, no separate install), served by the node's own API from its root path; a client of /v1 under the same authentication floor, grants, and GPG policy — no UI back door; also the zero-install client on Windows/macOS/Linux; §16 release bar gains a mobile-browser pass |
+| "bake copies of the sbor, cyoa, and bootloaders in as well" (23:53; 24.6.8/7.6.10/6.6.9) | Addendum §14.3 (new) | The baked corpus: byte copies of SBOR-V4-CONVERGENCE, CYOA, Incipit, and the Volumen bootloader in every binary — read-only, pinned per release, xz-sealed, provenance + SHA-256 in a bake manifest (measured at fold: SBOR 26,241 B, CYOA 4,602,370 B, Incipit 1,077,930 B); divergence reported, never silently trusted or replaced; served through all four modes — the constitution is readable offline, from the box itself |
+| "also all source for phext core libraries and tools — in a source.phext" (23:55; 33.6.9/8.6.12/6.5.9) | Addendum §14.4 (new) | source.phext joins the corpus: one scroll per source file (repo, path, commit in each header), a Home/index source manifest with per-file SHA-256 and per-repo HEADs, built by a house builder with --check; baked xz-sealed, read-only, pinned; qexo can unpack it back into a working tree — the catastrophic-loss floor; MIT carriage, third-party licenses preserved; size measured at build time, not stated in the spec |
+| "on build, it always includes the latest copies of itself and other core phext tools" (23:55; 33.7.9/9.7.13/7.7.10) | Addendum §14.4 | Freshness invariant: source.phext is generated at build time, never a checked-in snapshot — qexo's own source at its build commit (self-inclusion), other tools at fresh HEADs; the bake manifest records repo + commit + SHA-256 for everything, so "latest at build time" is auditable from the binary; staleness is stamped, never silent; §16 release builds gate on freshness |
+| "include a config file to declare which projects are pulled in" (23:56; 36.5.6/6.4.8/4.4.8) | Addendum §14.4 | `qexo-bake.toml`: the bake inventory is declared, not hardcoded — each entry names the project, its canonical source, its ref rule (fresh HEAD, or an explicit pin stamped as a pin), and its class; the build pulls exactly what the config declares; the manifest records the config's own hash; a default config ships in the design naming the current inventory |

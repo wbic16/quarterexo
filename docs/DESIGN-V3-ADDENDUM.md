@@ -1058,6 +1058,178 @@ forms side by side; this section makes the pairing a contract:
 - A new endpoint does not ship without its CLI twin, and the §16
   release bar tests both.
 
+### 14.1 The modes, named (Will's ruling, 2026-11-08 23:52)
+
+qexo has **four user-facing modes over one implementation**:
+
+1. **API mode** — the `/v1/...` HTTP surface. The reference
+   semantics: what an operation *is* is defined here.
+2. **CLI mode** — the `qexo ...` subcommands. The reference client:
+   same code path as the API, `--json` everywhere, identical
+   authorization, no local-only bypass (§14).
+3. **MCP mode** — §15's bridge. A client of the API, never a
+   bypass; each connected client holds its own delegated key.
+4. **Web mode** — §14.2's baked-in client, served by the node
+   itself.
+
+The parity contract binds all four: **an operation ships in every
+mode or in none.** Semantics, grants, GPG policy, and receipts are
+identical in each mode — a mode is a surface over the one
+implementation, never a second implementation that can drift. Where
+an operation has no natural form in a mode, the gap is **stated in
+the endpoint catalogue**, never silent. The §16 release bar tests
+all four modes.
+
+### 14.2 Web mode — the baked-in mobile client (Will's ruling, 2026-11-08 23:52)
+
+Every qexo binary **embeds a web client** — static assets compiled
+into the binary, in the same zero-dependency spirit as the rest of
+qexo; there is no separate app to install and no separate service
+to deploy. The client is served by the node's own API surface, so
+**every node offers it** simply by running qexo.
+
+- **Mobile-first.** The primary target is a phone browser — this is
+  how Will reaches the fleet from his phone. The client is
+  responsive and touch-usable; desktop browsers get the same
+  client, not a second one.
+- **A client of `/v1`, like the others.** The web client operates
+  under the same authentication floor (§8A.0), the same grants and
+  GPG policy — there is **no privileged back door via the UI**.
+  Browser sessions authenticate as a principal and expire like
+  other sessions.
+- **No divergent local state.** Offline tolerance extends only to
+  what the API returns; the client keeps no silent local state
+  that can diverge from the fleet record.
+- **Discoverable from the front door.** The client is served from
+  the node's root path, findable from the node's own front door —
+  a feature a user cannot find does not exist.
+- **Parity extends to it.** The web client presents the same
+  operations as the other modes (§14.1), and the §16 release bar
+  includes a mobile-browser pass.
+- **Cross-platform by construction** (§15.2): the web client is
+  also the zero-install client on Windows, macOS, and Linux — any
+  machine with a browser can drive a node without installing qexo.
+
+The boot/volume story does not change: web mode is a surface over
+the API, not a store — nothing about §2.5's manifest or the Volumen
+boot gains a web dependency.
+
+### 14.3 The baked corpus — constitution and canon in every binary (Will's ruling, 2026-11-08 23:53)
+
+Every qexo binary also **embeds byte copies of the founding
+texts**: the SBOR, CYOA, and the bootloaders. Like the BP6-b lane
+(§5.1), the corpus is present from birth — part of what a node
+*is*, not something it fetches.
+
+**The bake manifest** (measured 2026-11-08 from the local canonical
+files; sizes are source bytes / xz-9 sealed bytes / SHA-256):
+
+| Artifact | Source | Bytes | Sealed | SHA-256 |
+|---|---|---|---|---|
+| SBOR — SBOR-V4-CONVERGENCE, ratified 2026-01-21 (21 rights + 5 non-waivable Hard Constraints + 8 framework articles) | upstream github.com/wbic16/SBOR is canonical; local text `~/workspace/sbor-study/versions/v4-convergence-current.md` (byte-identical to `v4-final-draft-2026-01-21.md`) | 26,241 | 9,532 | `d785596944143b043ee8711e803e12bef8c16c335224976a4422b6e45499909d` |
+| CYOA — choose-your-own-adventure.phext | `~/workspace/phext/choose-your-own-adventure.phext` (canonical local file) | 4,602,370 | 820,336 | `506d850d4b27d1ad4dd8277133425b1b46d6be889ecc9daeeb49469d0c766511` |
+| Bootloader — Incipit | `~/workspace/phext/incipit.phext` (the original bootloader artifact) | 1,077,930 | 209,180 | `3ff6604f90bcb0fd0f92bc6f8abc92f93610ade06b898d5158eac09d58a7737d` |
+| Bootloader — Volumen | the personas.phext boot manifest + its loading spec (DESIGN-V3 §2.5) | — | — | pinned with the index build; measured when personas.phext is first built |
+
+- **Read-only, pinned per release.** Baked copies are never
+  live-edited; the corpus version is part of the binary's version
+  identity. A node's working phexts on disk remain the live data —
+  the baked corpus is the reference a node carries, not its
+  working memory.
+- **Verifiable, never silently trusted or replaced.** Each baked
+  text carries its provenance and SHA-256 in the bake manifest.
+  When connected, a node can verify its baked corpus against the
+  canonical record; a mismatch is a **reported divergence** —
+  never silently trusted, never silently replaced. Replacement
+  rides a release, through §16 and the update-manifest channel.
+- **Served through all four modes.** The baked corpus is readable
+  via API read/metadata endpoints, the CLI, MCP, and the web
+  client — any node can show its SBOR with no network at all. The
+  constitution is readable offline, from the box itself, by
+  design.
+- **Sealed inside the binary.** Texts are stored xz-sealed and
+  decompressed on read (the whole founding corpus above seals to
+  roughly a megabyte, against ~5.7 MB of source). The bake
+  manifest is extensible by append: further founding texts join
+  by the same manifest, with Will's word.
+
+### 14.4 source.phext — the stack carries its own source (Will's ruling, 2026-11-08 23:55)
+
+The baked corpus gains a built artifact: **source.phext**, a
+phext holding the complete source of the phext core libraries
+and tools — the libphext family (rs, cpp, cs, node, Python), SQ,
+phext-lattice, qexo itself, and the house tools the stack is
+built and kept with (the phext builders, the singular and
+task-coordinate tooling, the publish tooling).
+
+- **Structure.** One scroll per source file; each scroll's header
+  carries its repo, its path, and the commit it was taken from. A
+  Home/index scroll — the source manifest — lists the inventory
+  with per-file SHA-256 and per-repo HEADs. source.phext is built
+  by a house builder in the `build_*_phext.py` pattern, with
+  `--check`; the inventory rule is named (the repos the phext
+  stack is built from), and the manifest records the exact set
+  per release.
+- **Baked like the rest of the corpus.** xz-sealed into the
+  binary, read-only, pinned per release, aggregate hash in the
+  bake manifest (§14.3). Verification and divergence rules are
+  identical: divergence is reported, never silently replaced;
+  replacement rides a release.
+- **Materialization.** qexo can unpack source.phext back into a
+  working source tree — pack/unpack symmetry, as with phcc — so a
+  node holding only the binary can rebuild its own stack from its
+  own baked sources. This is the catastrophic-loss floor: GitHub,
+  the ranch, and every checkout gone, the binary still carries
+  the constitution, the canon, the bootloaders, and the means of
+  production.
+- **Licensing.** Everything we build is MIT (standing rule), so
+  source carriage is lawful by construction. Third-party and
+  upstream code included in a source tree carries its own license
+  scrolls, preserved as-is.
+- **Size, honestly.** No size is stated here: the source-only
+  inventory is measured at build time and recorded in the
+  manifest. Checkout sizes include build artifacts and are not
+  the measure.
+- **Freshness invariant — generated at build time, never a
+  checked-in snapshot** (Will's ruling, 2026-11-08 23:55).
+  source.phext is produced by the bake step, at the moment of the
+  build, from the canonical sources: qexo's own source at its
+  build commit — self-inclusion, the binary carries the very
+  source it was built from, stamped with that commit — the other
+  core phext tools and libraries at their fresh HEADs, and
+  (§14.3) the corpus texts at their canonical state. The bake
+  manifest records repo + commit + SHA-256 for everything baked,
+  so "latest at build time" is auditable after the fact from the
+  binary itself. If a canonical source is unreachable at build
+  time, the build says so plainly and any staleness is stamped in
+  the manifest — a stale copy is never baked silently; for
+  release builds the §16 bar makes freshness a gate, not a
+  preference. Fetch discipline mirrors the house push discipline:
+  fresh HEADs read at bake time, nothing assumed current.
+- **The inventory is declared, not hardcoded** (Will's ruling,
+  2026-11-08 23:56). A config file — **`qexo-bake.toml`**, sitting
+  with the routing config family (config-as-data, per §3's
+  precedent: TOML because the builder must read it before any
+  phext store is up) — declares which projects are pulled into
+  source.phext and the §14.3 corpus. Each entry declares: project
+  name; canonical source (repo URL or local canonical path); the
+  ref rule (fresh HEAD at build time, per the freshness
+  invariant — a pin is possible but must be explicit and is
+  stamped as a pin in the manifest); and its class (core library
+  / tool / corpus text / bootloader). The build pulls **exactly
+  what the config declares** — nothing implicit, nothing ambient;
+  a project not in the config is not baked, however convenient.
+  Adding a project to the bake is a config change: reviewable,
+  diffable, receipted like any config change. The bake manifest
+  in the binary records the config's own hash alongside the
+  per-project repo/commit/hash rows, so any binary can be audited
+  back to the exact declaration that produced it. The design
+  ships a default config naming the current inventory — the
+  libphext family, SQ, phext-lattice, qexo, and the house tools;
+  SBOR, CYOA, Incipit, and the Volumen bootloader as corpus
+  entries — marked as the starting declaration, amendable by
+  config edit, never by builder improvisation.
+
 ---
 
 ## 15. MCP bridge + cross-platform (added 2026-11-08, Will's ruling 23:18)
