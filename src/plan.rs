@@ -109,7 +109,7 @@ pub fn build_plan(tasks_text: &str, disk_text: &str) -> Result<Json, String> {
     let empty = Vec::new();
     let all_tasks = tasks_json.get("tasks").and_then(|t| t.as_arr()).unwrap_or(&empty);
 
-    let mut rows: Vec<Json> = Vec::new();
+    let mut raw_rows: Vec<(String, String, Class)> = Vec::new();
     let (mut nv, mut nb, mut nl) = (0usize, 0usize, 0usize);
     for t in all_tasks {
         let status = t.get("status").and_then(|s| s.as_str()).unwrap_or("").to_lowercase();
@@ -125,13 +125,7 @@ pub fn build_plan(tasks_text: &str, disk_text: &str) -> Result<Json, String> {
             Class::Build => nb += 1,
             Class::Light => nl += 1,
         }
-        rows.push(Json::obj(vec![
-            ("coordinate", Json::s(coordinate)),
-            ("title", Json::s(title)),
-            ("class", Json::s(class.name())),
-            ("inference", Json::s("Emise")),
-            ("execution", Json::s(class.execution())),
-        ]));
+        raw_rows.push((coordinate.to_string(), title.to_string(), class));
     }
 
     let (avail_mb, load1) = host_snapshot();
@@ -139,6 +133,49 @@ pub fn build_plan(tasks_text: &str, disk_text: &str) -> Result<Json, String> {
     let disk_level = disk_json.get("level").and_then(|s| s.as_str()).unwrap_or("?");
     let disk_date = disk_json.get("date").and_then(|s| s.as_str()).unwrap_or("?");
     let file_count = disk_json.get("files").and_then(|n| n.as_num()).unwrap_or(0.0) as u64;
+
+    // ---- disk gate (v2.1, carried into v3 by the exo merge) ----
+    // The plan used to only *report* the disk picture. On 2026-11-08 the
+    // home volume hit its quota wall (EDQUOT at ~106 GB used; writes
+    // failed while df still showed free space) and ~35 GB of WIP had to
+    // be cleared under pressure. The planner acts on the picture, using
+    // the disk-watch thresholds anchored to that failure
+    // (AMBER >= 95 GB, RED >= 102 GB; disk_usage_report.py):
+    //   RED   -> hold every new heavy placement; stage nothing on the VM
+    //   AMBER -> no new VM staging; heavy execution ranch-only
+    //   GREEN -> VM staging within quota headroom
+    let disk_gate = if disk_level.eq_ignore_ascii_case("RED") || used_gb >= 102.0 {
+        "RED"
+    } else if disk_level.eq_ignore_ascii_case("AMBER") || used_gb >= 95.0 {
+        "AMBER"
+    } else {
+        "GREEN"
+    };
+    let disk_gate_action = match disk_gate {
+        "RED" => "HOLD all new heavy placements — stage nothing on the VM until usage is back under 95 GB",
+        "AMBER" => "no new VM staging — heavy execution ranch-only until usage drops",
+        _ => "VM staging within quota headroom (AMBER at 95 GB, RED at 102 GB)",
+    };
+
+    let rows: Vec<Json> = raw_rows
+        .iter()
+        .map(|(coordinate, title, class)| {
+            let execution = if disk_gate == "RED" && *class != Class::Light {
+                "HELD (disk gate RED)"
+            } else if disk_gate == "AMBER" && *class == Class::Light {
+                "vm:light-coordination (no staging)"
+            } else {
+                class.execution()
+            };
+            Json::obj(vec![
+                ("coordinate", Json::s(coordinate)),
+                ("title", Json::s(title)),
+                ("class", Json::s(class.name())),
+                ("inference", Json::s("Emise")),
+                ("execution", Json::s(&execution)),
+            ])
+        })
+        .collect();
 
     let total = rows.len();
     Ok(Json::obj(vec![
@@ -148,6 +185,10 @@ pub fn build_plan(tasks_text: &str, disk_text: &str) -> Result<Json, String> {
             ("used_gb", Json::n(used_gb)),
             ("level", Json::s(disk_level)),
             ("files", Json::n(file_count as f64)),
+        ])),
+        ("disk_gate", Json::obj(vec![
+            ("state", Json::s(disk_gate)),
+            ("action", Json::s(disk_gate_action)),
         ])),
         ("host", Json::obj(vec![
             ("ram_available_mb", Json::n(avail_mb)),
@@ -181,6 +222,13 @@ pub fn plan_human(plan: &Json) -> String {
             d.get("files").and_then(|n| n.as_num()).unwrap_or(0.0) as u64
         ));
     }
+    if let Some(g) = plan.get("disk_gate") {
+        out.push_str(&format!(
+            "  disk gate: {} — {}\n",
+            g.get("state").and_then(|s| s.as_str()).unwrap_or("?"),
+            g.get("action").and_then(|s| s.as_str()).unwrap_or("")
+        ));
+    }
     if let Some(h) = plan.get("host") {
         out.push_str(&format!(
             "  cpu/ram:   host snapshot — {:.0} MB RAM available, load {:.2}\n",
@@ -191,6 +239,9 @@ pub fn plan_human(plan: &Json) -> String {
     let total = plan.get("open_tasks").and_then(|n| n.as_num()).unwrap_or(0.0) as usize;
     out.push_str(&format!("  inference: Emise carries all {} open tasks\n", total));
     out.push_str("\nplacements (inference → Emise for every task):\n");
+    if plan.get("disk_gate").and_then(|g| g.get("state")).and_then(|s| s.as_str()) == Some("RED") {
+        out.push_str("  ** DISK GATE RED: every heavy placement below is HELD — do not dispatch until the gate clears. **\n");
+    }
     if let Some(tasks) = plan.get("tasks").and_then(|t| t.as_arr()) {
         for r in tasks {
             let title: String = r.get("title").and_then(|s| s.as_str()).unwrap_or("").chars().take(78).collect();
@@ -227,5 +278,34 @@ mod tests {
         let disk = r#"{"used_gb":71.0,"level":"GREEN","date":"2026-11-09","files":834350}"#;
         let plan = build_plan(tasks, disk).unwrap();
         assert_eq!(plan.get("open_tasks").unwrap().as_num(), Some(2.0));
+    }
+
+    #[test]
+    fn disk_gate_states() {
+        let tasks = r#"{"tasks":[{"coordinate":"1.1.1/1.1.1/1.1.1","title":"film encode","status":"open"},{"coordinate":"2.2.2/2.2.2/2.2.2","title":"think","status":"open"}]}"#;
+        let gate = |disk: &str| {
+            let plan = build_plan(tasks, disk).unwrap();
+            let state = plan.get("disk_gate").unwrap().get("state").unwrap().as_str().unwrap().to_string();
+            let rows = plan.get("tasks").unwrap().as_arr().unwrap();
+            let execs: Vec<String> = rows.iter().map(|r| r.get("execution").unwrap().as_str().unwrap().to_string()).collect();
+            (state, execs)
+        };
+        // GREEN by level and size: normal placements.
+        let (s, e) = gate(r#"{"used_gb":71.0,"level":"GREEN","date":"2026-11-09","files":1}"#);
+        assert_eq!(s, "GREEN");
+        assert_eq!(e[0], "ranch:aletheia-core (video — never on VM)");
+        assert_eq!(e[1], "vm:light-coordination");
+        // AMBER by size alone (>= 95 GB): light tasks lose staging.
+        let (s, e) = gate(r#"{"used_gb":96.0,"level":"GREEN","date":"2026-11-09","files":1}"#);
+        assert_eq!(s, "AMBER");
+        assert_eq!(e[1], "vm:light-coordination (no staging)");
+        // RED by level: heavy placements held, light untouched.
+        let (s, e) = gate(r#"{"used_gb":50.0,"level":"RED","date":"2026-11-09","files":1}"#);
+        assert_eq!(s, "RED");
+        assert_eq!(e[0], "HELD (disk gate RED)");
+        assert_eq!(e[1], "vm:light-coordination");
+        // RED by size alone (>= 102 GB).
+        let (s, _) = gate(r#"{"used_gb":103.0,"level":"GREEN","date":"2026-11-09","files":1}"#);
+        assert_eq!(s, "RED");
     }
 }

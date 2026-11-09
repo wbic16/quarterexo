@@ -49,6 +49,35 @@ is baked; sync pull's staged restore rides the CLI path; the full
 V16-era plan hot path was profiled and the receipt-lookup defect
 fixed (see SHIP-NOTES optimize section).
 
+## v2.1 — 2026-11-09 (disk gate)
+
+Motivating finding — the 2026-11-08 evaluation (EVALUATIONS.md,
+2026-11-09 section): the home volume hit its quota wall (EDQUOT at
+~106 GB used) and ~35 GB of WIP was cleared under pressure, while qexo
+v2 read the disk-watch state and only *reported* it — the plan it
+emitted at 71 GB GREEN would have been identical at the wall.
+
+What v2.1 does (one change: the planner acts on the disk currency):
+
+- The placement plan now computes a **disk gate** from the disk-watch
+  state, using the thresholds disk-watch anchored to the 2026-11-08
+  failure (AMBER ≥ 95 GB, RED ≥ 102 GB; the state's own level can also
+  trip the gate):
+  - **RED** — every heavy placement in the plan is marked
+    `HELD (disk gate RED)` in both the printed plan and plan.json, with
+    a banner saying not to dispatch until the gate clears.
+  - **AMBER** — light tasks are marked `no staging`; heavy execution
+    stays ranch-only.
+  - **GREEN** — plan as before, with the gate line stating the
+    headroom thresholds.
+- plan.json gains a `disk_gate` object ({state, action}) and reports
+  version `v2.1`; the plan, interfaces, and personas banners all say
+  v2.1. Cargo version 0.2.0 → 0.2.1. No other behavior changes.
+- Numbering note: the DESIGN-V3 v3.0 implementation proceeds separately
+  on the emise/v3-build branch; this is an increment of the v2 code
+  line that lives in the working tree and on exo, and does not claim
+  the v3 number.
+
 ## 0.1.0 — v1/v2 line
 
 The dispatcher lineage: plan emission, sync manifest/diff, interior
