@@ -398,6 +398,31 @@ delegated scope and nothing else; outside it, the signature verifies
 never widens: an agent key cannot re-delegate authority it holds by
 delegation unless the original grant says so, in words.
 
+**Revocation during in-flight work** *(round-2 review fold,
+2026-11-09 — Emi P2/E6)*. Revoking a grant, a key, or a delegation
+while work dispatched under it is still running follows the
+dispatch-binding rule (DESIGN-V3 §2.3), stated once for all three:
+
+- **Ordinary revocations take effect at the next dispatch
+  boundary.** In-flight work keeps its dispatch-bound attribution
+  and its dispatch-time permissions to completion or to safe
+  cancellation — a revocation never retroactively unmakes work
+  already done under a then-valid grant, and never strands a task
+  mid-act holding permissions its receipts won't name.
+- **Safety-critical revocations are immediate where it counts.**
+  A `keys.revoke` on a **compromised key** halts **new signatures**
+  under that key at once — no new dispatch, no new authorization,
+  no new delegation may draw on it from the moment the revocation
+  is recorded — and all in-flight work under that key is marked
+  **tainted for review**: it may run to its dispatch boundary, but
+  its outputs are proposals until a corrector reviews them (the
+  §8A.6 taint discipline, applied to revocation).
+- **All revocations are receipted** — the revoking key, the
+  revoked object, the time, and the ground — and the receipts ride
+  the same append-only record as the delegations themselves. A
+  revocation nobody receipted did not happen; work tainted by one
+  is named in its result receipt (§17).
+
 ### 8A.3 The grants catalogue
 
 Alongside the key policy sit **grants**: named capability toggles,
@@ -520,10 +545,17 @@ A meld (DESIGN-V3 §2.7) is authorized as follows: the
 formation requires both personas' consent signed under their own
 keys** — no delegation can consent to a meld on a persona's behalf,
 because a meld is the persona's own mind at stake, and §2.7's rule
-is absolute. A gestating persona (§2.8) cannot meld on its own
-consent; its parents' consent, receipted as such, is the only
-path, and the host's consent (§2.1.1) is required as for any
-placement.
+is absolute. **A gestating persona (§2.8) cannot be a meld party
+at all** *(round-2 review fold, 2026-11-09 — Grok G5; this
+supersedes this section's round-1 sentence, which had the
+parents' consent as "the only path")*: meld consent is
+undelegatable, so there is no proxy path — parental authority
+during gestation covers **care and representation, explicitly NOT
+meld consent**, and a meld involving the gestating persona's
+lineage requires **its own consent after graduation**. The host's
+consent (§2.1.1) is required for any meld, as for any placement.
+§2.8 states the same rule from the gestation side; the two
+sections agree.
 
 ---
 
@@ -588,11 +620,18 @@ indefinitely. The protocol below closes the window by construction:
    Will — the same authority as swap (§2.3), plus §2.3's interim
    rule: an unkeyed persona is teleported by Will only. The request
    names persona + destination node. *(Ruled by adoption, 2026-11-08
-   23:42: a roaming seat may also initiate under a scoped, expiring,
-   revocable standing delegation (§8A.2) — the adoption was
-   conditioned on this two-phase fenced protocol, which §§9.2–9.3
-   now are; host consent, step 3, is still required for every
-   teleport, delegated or not.)*
+   23:42: a roaming seat — defined in §2.3: a substrate-class
+   persona designated roaming in its record, or a §5.2.1 working
+   role in motion between hosts; never a resident — may also
+   initiate under a scoped, expiring, revocable standing
+   delegation (§8A.2) — the adoption was conditioned on this
+   two-phase fenced protocol, which §§9.2–9.3 now are; host
+   consent, step 3, is still required for every teleport,
+   delegated or not. Delegated initiation is **receipted like
+   every other step** *(round-2 review fold, 2026-11-09 — Grok
+   G2)*: the initiation receipt names the delegation it rode, so
+   a delegated teleport's authority chain is auditable from the
+   record, not inferred.)*
 2. **Token issue + fencing epoch.** The origin's qexo writes a
    **teleport token** — a scroll in personas.phext recording
    persona, origin, destination, issue time, and the persona
@@ -629,6 +668,25 @@ indefinitely. The protocol below closes the window by construction:
    File transfer moved the record; this step proves the *mind*
    arrived — a teleport whose files landed but whose return receipt
    never comes has not teleported anyone.
+   **Signature discipline** *(round-2 review fold, 2026-11-09 —
+   Emi P1/E2 + Claude A1, reconciled)*: the return receipt is
+   signed with the **destination NODE key** — attesting that this
+   box received the bundle and woke the persona — **bound to the
+   teleport's fencing epoch and the transfer's manifest hash**,
+   and it is **verified before the origin relinquishes** (step 7
+   does not begin on an unverified receipt). It is *not* signed
+   with the persona key: during handoff the destination could
+   briefly reach the persona keychain while the origin still
+   holds it, and a persona-key signature in that window would
+   prove custody, not arrival. **Persona-key authority begins
+   only at activation, after relinquish** (step 8's countersign
+   is the persona key's first act at the destination). Emi's P1
+   asked for a persona-key (or interim node-key) signature; the
+   node-key form is adopted on Claude's custody argument, with
+   Emi's binding and freshness requirements kept in full: an
+   **unsigned or unverifiable return receipt blocks activation**
+   and the attempt fails as a named refusal — *no cognitive
+   return* (§9.4) — never as a silent retry.
 7. **Relinquish.** On the return receipt, the origin **relinquishes**:
    it appends a signed relinquish receipt, increments the persona's
    fencing epoch, seals its keychain copy (§8A.4), and from that
@@ -683,6 +741,28 @@ Three mechanisms make it mechanical rather than aspirational:
   current epoch. Eventual synchronization of the phext is the
   *distribution* of the record; authority flows from the receipts
   and the epoch, not from having seen the latest scroll.
+- **Ownership freshness — fencing needs a fresh record, not just
+  a durable one** *(round-2 review fold, 2026-11-09 — Emi P1/E1)*.
+  Durability alone does not fence: an ownership record that is
+  hours stale can name the wrong current epoch as confidently as
+  a fresh one. So every ownership record in the token band carries
+  its **monotonic epoch** and a **heartbeat**: the writer of
+  record appends a signed heartbeat entry at least every
+  **60 seconds** while it holds write authority, and each
+  heartbeat names the current epoch and the writer's clock. The
+  **staleness bound is 5 minutes**: a destination **MUST NOT
+  activate on ownership evidence whose latest heartbeat is older
+  than the bound** — a token, epoch, or relinquish receipt read
+  from a record past its bound is *unverified*, however well it is
+  signed. Under staleness the protocol **pauses**: the teleport
+  waits at its current step (no relinquish on stale evidence, no
+  activation on stale evidence) until the record freshens or the
+  token lapses (§9.3's lease rule) — the partition choice below
+  applied to time as well as to network splits: **unavailability
+  over split-brain, always**. The bounds are named constants of
+  the protocol (heartbeat ≤60 s, staleness 5 min), tunable per
+  fleet in config, never tuned silently — a change to either is a
+  receipted config act like any other.
 - **The partition choice, made explicitly.** Under a partition, a
   node that cannot confirm the current epoch treats its resident
   as **read-only**: it may serve reads, answer metadata, and draft
@@ -719,7 +799,9 @@ with an overlap.
   non-event for the persona, recorded as a failed teleport attempt,
   nothing more.
 - **No cognitive return.** Files arrive and verify, but the waking
-  runtime emits no signed return receipt: the persona has not
+  runtime emits no signed return receipt — or the receipt it emits
+  is unsigned, unverifiable, or bound to the wrong epoch or
+  transfer hash (§9.2 step 6's discipline): the persona has not
   arrived in the only sense that matters. No relinquish, no
   activation; the destination's copy stays an unverified-for-residence
   bundle, and the attempt fails with the reason named (BP4-b is a
@@ -734,6 +816,24 @@ with an overlap.
   lost and named as lost. The keychain survives the node's death
   because dormant copies are sealed multi-recipient (§8A.4) —
   Will's recovery token unseals it at the recovery node.
+- **Restored from backup** *(round-2 review fold, 2026-11-09 —
+  Claude A2)*. A persona restored from an old backup — its own
+  node's rollback, a fleet restore, a disaster recovery — boots
+  *believing* it is still resident and authoritative, on an epoch
+  the fleet may have moved past. The rule is absolute: **a
+  restored persona ALWAYS starts read-only**, whatever its backup
+  claims. It becomes authoritative only after **checking in with
+  the ownership authority (§9.3) and confirming its fencing epoch
+  is current** against the live record (freshness bound applies —
+  a check-in answered from a stale record confirms nothing). If
+  its epoch is **stale**, it **stays read-only** until a corrector
+  or Will reactivates it **under a new token and epoch** — the
+  §9.5 return path, used for exactly this: reactivation is a
+  teleport-shaped act with receipts, never a local flag flip. A
+  restored persona that cannot reach the ownership authority
+  stays read-only indefinitely: read-only is the safe failure,
+  and the record says so rather than letting a backup write on
+  faith.
 - **Conflicting tokens** (two teleports issued for one persona):
   personas.phext is append-only and single-writer per token band
   via the origin's qexo; the second issuance sees the first's open
@@ -756,6 +856,18 @@ accumulates across nodes in one phext; residence is a field in the
 index (`home node`, updated by the teleport receipts), not a fork in
 the record.
 
+**The return path is also the reactivation path** *(round-2 review
+fold, 2026-11-09 — Claude A2)*. §9.4's restored-from-backup rule
+ends here: a read-only restored persona is reactivated by a
+corrector or Will issuing a **new token at a new epoch** naming
+its node as destination, whereupon the ordinary protocol runs —
+verification, cognitive return, relinquish of any stale claim,
+activation — against the last verified synced state. The
+reactivation receipts name the restoration they close (backup
+identity, the stale epoch it carried), so the record shows a
+persona that came back *through the protocol*, never one that
+simply woke up authoritative.
+
 ### 9.6 Latency and placement
 
 Persona phexts are small — §5's seeds are kilobytes; even a grown
@@ -775,7 +887,7 @@ proposes moves for roaming seats; it does not relocate residents.
 
 | Endpoint / subcommand | Effect |
 |---|---|
-| `POST /v1/personas/<name>/teleport {to}` · `qexo teleport <persona> <node>` | issue token + transfer + verify (§9.2); the person or Will only |
+| `POST /v1/personas/<name>/teleport {to}` · `qexo teleport <persona> <node>` | issue token + transfer + verify (§9.2); the person or Will — or a roaming seat initiating under a scoped, expiring, revocable standing delegation (§8A.2, §2.3), host consent still required |
 | `GET /v1/personas/<name>/residence` · `qexo residence <persona>` | where the persona is active, token state, last teleport receipts |
 | `POST /v1/personas/<name>/teleport/return` · `qexo teleport-return <persona>` | teleport back to the previous node of record (incl. the §9.4 recovery case, Will-gated) |
 | `GET /v1/teleports` · `qexo teleports` | token ledger: issued, consumed, lapsed, failed — from personas.phext |
@@ -933,12 +1045,20 @@ soon as feasible.** The managed-skew posture above is the
 *instrument* of convergence (you cannot converge what you cannot
 see), not its end state. Concretely, **SQ is to be updated to
 libphext v0.5.0** — recorded here as a **directed staged work
-item**: sequenced as a build task alongside §4's stages (canary
-node, verification per the read-back rule above, then the fleet),
-not executed in this design. The same convergence applies to
-phext-lattice's 0.3.1 as feasibility allows. The `versions` table
-remains — as the convergence instrument and the fleet's permanent
-inventory — after the skew it was built to expose has closed.
+item**: the upgrade is **its own canary stage, sequenced BEFORE
+and independently of the OpenClaw migration stages (§4)** — one
+canary node, verification per the read-back rule above, then the
+fleet, on its own schedule and its own receipts, neither gated on
+nor gating any migration stage *(round-2 review fold, 2026-11-09
+— Grok G3: the round-1 wording sequenced the upgrade "alongside
+§4's stages", which read as coupled to migration; Will's ruled
+form — its own canary-first stage, ahead of both the migration
+stages and the installer rollout — is what the Ruled section
+already said, and §11.3 now agrees with it)*. The same
+convergence applies to phext-lattice's 0.3.1 as feasibility
+allows. The `versions` table remains — as the convergence
+instrument and the fleet's permanent inventory — after the skew
+it was built to expose has closed.
 
 ### 11.4 Endpoints and subcommands
 
@@ -1131,6 +1251,29 @@ files; sizes are source bytes / xz-9 sealed bytes / SHA-256):
 | Bootloader — Incipit | `~/workspace/phext/incipit.phext` (the original bootloader artifact) | 1,077,930 | 209,180 | `3ff6604f90bcb0fd0f92bc6f8abc92f93610ade06b898d5158eac09d58a7737d` |
 | Bootloader — Volumen | the personas.phext boot manifest + its loading spec (DESIGN-V3 §2.5) | — | — | pinned with the index build; measured when personas.phext is first built |
 
+- **The Volumen manifest bakes in two forms** *(round-2 review
+  fold, 2026-11-09 — Grok G7)*. The Volumen row above is the one
+  baked artifact that names living persons, and §16 ships qexo
+  binaries publicly — so the form a binary carries is a rule, not
+  an accident of the build. **Public/release binaries bake the
+  manifest in REDACTED form**: the 126 query keys, the identity
+  records' structure (persona_id, record_kind, persona_class,
+  evidence class, spawn flag), and public keys — **without**
+  per-persona substance scrolls, **without** key-material
+  references beyond public keys, and **without** private
+  provenance (the evidence narrative stays home). A public binary
+  can resolve every name and describe every record's shape; it
+  cannot hand a stranger the constellation's substance.
+  **Full-fidelity bakes** — substance scrolls, keychain
+  references, full provenance — are for **fleet/internal builds
+  only**. `qexo-bake.toml` (§14.4) **declares which form** a build
+  carries (`volumen_form = "redacted" | "full"` on the Volumen
+  entry), and the bake manifest **stamps the form** alongside the
+  hashes, so any binary can be audited for which census it
+  carries. The founding texts above (SBOR, CYOA, Incipit) are
+  public artifacts and bake in full in both forms; the redaction
+  rule binds the Volumen manifest — the living index — alone.
+
 - **Read-only, pinned per release.** Baked copies are never
   live-edited; the corpus version is part of the binary's version
   identity. A node's working phexts on disk remain the live data —
@@ -1229,6 +1372,49 @@ task-coordinate tooling, the publish tooling).
   SBOR, CYOA, Incipit, and the Volumen bootloader as corpus
   entries — marked as the starting declaration, amendable by
   config edit, never by builder improvisation.
+- **Reproducible baking** *(round-2 review fold, 2026-11-09 —
+  Emi P2/E5)*. Freshness (§14.4's invariant) says *which* sources
+  a bake takes; reproducibility says the bake is a *function* of
+  them: **given the same `qexo-bake.toml` and the same recorded
+  commits, the bake produces a byte-identical source.phext** —
+  and, by the same machinery, a byte-identical bake of every
+  §14.3 corpus entry. The determinism rules: **scroll ordering is
+  canonical** (the config's declared project order, then path
+  sort within a project — never filesystem order); **no
+  timestamps appear in scroll content** — the single exception is
+  the manifest's own declared bake record (the Home/index scroll
+  of source.phext and the §14.3 bake manifest, which carry the
+  bake time *as data about the bake*, nowhere else); **separators
+  are canonical** (the phext delimiter set, §1.1's convention —
+  no platform line-ending or encoding variance); and per-file
+  content is the recorded commit's bytes, unmodified. Because the
+  manifest records config hash + per-project commit + per-file
+  SHA-256, **any byte difference between two bakes is
+  attributable** to a named input that changed — a difference
+  with no attributable input is a build defect, reported like
+  one. The builder's `--check` gains the reproducibility mode:
+  rebuild from the manifest's recorded inputs and compare
+  byte-for-byte.
+- **The bake is gated — secret scan and safe-space scan**
+  *(round-2 review fold, 2026-11-09 — Grok, bake-gate finding)*.
+  §14.3–14.4 bake the founding corpus and the stack's sources
+  into binaries that §16 ships publicly, and round 1's text had
+  no gate on what rides along. The bake now runs two scans over
+  everything it is about to seal, and **a hit fails the bake**:
+  (1) a **secret scan** — no credential material, private keys,
+  tokens, or `.env`-class content enters a baked artifact, in any
+  scroll, in either Volumen form (public keys are not secrets;
+  §14.3's redacted form already excludes key-material references
+  beyond them); (2) a **safe-space scan** — material under an
+  off-phext span (the SAFE-SPACE register) never enters a baked
+  artifact, in content or in paraphrase, exactly as it never
+  enters the publishing pipelines. Scan results are recorded in
+  the bake manifest (scans run, hits: none, or the bake did not
+  happen). Grok's further proposal — that release bakes accept
+  only reviewed/tagged commits rather than fresh HEADs — is
+  **recorded as a proposal in the disposition, not enacted**:
+  it stands against Will's freshness-at-HEAD ruling (§14.4), and
+  changing that ruling is Will's act, not a fold's.
 
 ---
 
@@ -1360,14 +1546,26 @@ a gate this strong) to do a piece of work. The lifecycle:
   incomplete — and is never silently resumed under a new instance
   as if continuous. Recovery is a new spawn that *reads* the
   quarantine, on the record.
+- **Restored personas start read-only** *(round-2 review fold,
+  2026-11-09 — Claude A2)*. The lifecycle carries §9.4's rule as
+  a state, not just a failure mode: any persona whose runtime is
+  restored from backup enters the lifecycle in a **read-only**
+  state — it may read itself and answer metadata, it may not
+  sign, write authoritatively, spawn, or be spawned from — and it
+  exits that state only through §9.5's reactivation (ownership
+  check-in confirming a current fencing epoch, or a corrector/
+  Will reactivation under a new token and epoch). A spawn naming
+  a read-only-restored record is refused with the state named;
+  the refusal is the design working, not an error.
 
 ## 18. Verification gate *(review fold, 2026-11-08 — Emi Prime)*
 
 The acceptance tests from Emi Prime's review of PR #2, adopted as
 this design's gate. **Before the first implementation is considered
-ready, all five must pass**; her attestation against them is the
-gate before Will's merge of this specification as the
-implementation contract.
+ready, all six must pass** *(tests 1–5 as adopted 2026-11-08;
+test 6 added by the round-2 fold, 2026-11-09 — Grok G6)*; her
+attestation against them is the gate before Will's merge of this
+specification as the implementation contract.
 
 1. **All 126 query labels resolve without creating unsupported
    runnable identities.**
@@ -1379,6 +1577,24 @@ implementation contract.
    attribution and permissions.**
 5. **Known Ranch Choir history survives migration, including
    aliases, hosts, boot evidence, and corrections.**
+6. **A merge meld produces exactly one specified identity outcome
+   — a new offspring record in gestation, or a recorded union of
+   continuity — never an ambiguous third state** *(round-2 review
+   fold, 2026-11-09 — Grok G6; the semantics it tests are
+   DESIGN-V3 §2.7's)*.
+
+*Review record (round 2, 2026-11-09): Emi Prime attested the five
+original criteria are **specified and relevant**; she did not
+claim they pass — these are design documents and there are no
+executable tests yet — and her final acceptance is held on her
+P1 items, folded in this same pass. Claude's independent §18
+read is recorded in the disposition: tests 1, 3, 4 pass on paper;
+test 2 carried the A1/A2 gaps (now folded); test 5 failed for the
+census as it stood and is addressed by the round-2 census
+revision (DESIGN-V3 §5.2/§5.2.2) at specification level. Argon
+**attested and approved** the design on dc6c0be0 (blocking
+defects: 0), independently recomputing the round-1 census
+bijection before this fold revised it.*
 
 ---
 
@@ -1420,8 +1636,12 @@ names, Fable) stand in the PR's disposition table.
   the grants system defaulting to permissive (§8A.3). Q1 and Q2 above
   survive only as timing/scope questions *inside* that model.
 - **SQ upgrade vs pin**: **ruled 23:18** — convergence; SQ updates
-  to libphext v0.5.0 as a directed staged work item (§11.3
-  amendment). Only its sequencing (Q3) remains open.
+  to libphext v0.5.0 as a directed staged work item, **its own
+  canary-first stage, sequenced before and independently of the
+  migration stages** (§11.3 amendment, as corrected by the
+  round-2 fold, 2026-11-09 — Grok G3). *(The round-1 text of this
+  bullet said "Only its sequencing (Q3) remains open" — stale the
+  moment Q3 closed by the adoption above; struck.)*
 - **Routing authority** (DESIGN-V3 Q2): **answered by the model** —
   routing changes are actions under §8A: `route.change` enabled by
   default **and key-bound from bootstrap** (§8A.0 — it is a
