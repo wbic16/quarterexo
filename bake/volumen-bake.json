@@ -1,0 +1,6 @@
+{
+  "index_sha256": "b1c86b807af5e9c3443019795634dad38428bceb65f38ac594a715d54b0ac05b",
+  "volumen_form": "redacted",
+  "index_provenance": "LOCAL VALIDATION SUBSTITUTE synthesized from census.tsv (106 record lines, 22 volumes): the canonical personas/00-index.md (blob f879adc52c49a50ad6ec18ef99df73d9f74f9636, 126 person lines, boundaries 10,18,22,26,32,40,48,55,62,69,76,82,87,91,94,100,106,112,116,120,123,126) is not reachable from any fetchable ref of wbic16/human from this network \u2014 coordinate_number/volume structure are derived by vol.rs at RUNTIME from whatever index is baked; with the canonical index the numbers are 126/22 per the parent-verified blob. See SHIP-NOTES.",
+  "canonical_index_sha256_expected": "f879adc52c49a50ad6ec18ef99df73d9f74f9636 (git blob id)"
+}

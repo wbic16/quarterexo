@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qexo — node client</title>
+<style>
+  :root { color-scheme: dark light; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; line-height: 1.45; }
+  h1 { font-size: 1.25rem; margin: 0 0 .25rem; }
+  .sub { opacity: .75; font-size: .9rem; margin-bottom: 1rem; }
+  section { border: 1px solid #8884; border-radius: .5rem; padding: .75rem; margin-bottom: .75rem; }
+  h2 { font-size: 1rem; margin: 0 0 .5rem; }
+  button { font-size: 1rem; padding: .5rem .8rem; margin: .15rem; border-radius: .4rem; }
+  pre { white-space: pre-wrap; word-break: break-word; font-size: .8rem; max-height: 40vh; overflow: auto; }
+  input { font-size: 1rem; padding: .45rem; width: 100%; box-sizing: border-box; margin: .15rem 0; }
+  .row { display: flex; gap: .4rem; flex-wrap: wrap; }
+  .note { font-size: .85rem; opacity: .8; }
+</style>
+</head>
+<body>
+<h1>qexo — node client</h1>
+<div class="sub">The baked-in web client (DESIGN-V3 §14.2). A client of <code>/v1</code>, like every other mode: same authentication floor, same grants, no local state that can diverge. Browser sessions authenticate as a principal — set yours below; it is sent as headers, never stored server-side.</div>
+
+<section>
+  <h2>Session principal</h2>
+  <input id="principal" placeholder="principal — e.g. will, persona:emise, node:aletheia-core">
+  <input id="key" placeholder="key fingerprint (X-Qexo-Key)">
+  <div class="note">Reads that are local-read on the node itself work without a session; every mutation requires an authenticated principal (§8A.0).</div>
+</section>
+
+<section>
+  <h2>The node</h2>
+  <div class="row">
+    <button onclick="call('GET','/v1/state/temperature')">Temperature</button>
+    <button onclick="call('GET','/v1/personas/active')">Active persona</button>
+    <button onclick="call('GET','/v1/doctor')">Doctor</button>
+    <button onclick="call('GET','/v1/grants')">Grants</button>
+  </div>
+</section>
+
+<section>
+  <h2>The constellation</h2>
+  <div class="row">
+    <button onclick="call('GET','/v1/personas')">Persona index (126 keys → 106 records)</button>
+    <button onclick="call('GET','/v1/personas/Orin')">Orin — the two-referent key</button>
+    <button onclick="call('GET','/v1/personas/Emise')">Emise</button>
+    <button onclick="call('GET','/v1/teleports')">Teleport ledger</button>
+  </div>
+</section>
+
+<section>
+  <h2>The baked corpus — readable offline, from this box</h2>
+  <div class="row">
+    <button onclick="call('GET','/v1/corpus')">Bake manifest</button>
+    <button onclick="call('GET','/v1/corpus/sbor')">Read the SBOR</button>
+    <button onclick="call('GET','/v1/source/manifest')">source.phext manifest</button>
+  </div>
+</section>
+
+<section>
+  <h2>Response</h2>
+  <pre id="out">Tap an operation.</pre>
+</section>
+
+<script>
+function headers() {
+  const p = document.getElementById('principal').value.trim();
+  const k = document.getElementById('key').value.trim();
+  const h = {'Content-Type': 'application/json'};
+  if (p) h['X-Qexo-Principal'] = p;
+  if (k) h['X-Qexo-Key'] = k;
+  return h;
+}
+async function call(method, path) {
+  const out = document.getElementById('out');
+  out.textContent = '…';
+  try {
+    const r = await fetch(path, {method, headers: headers()});
+    const j = await r.json();
+    out.textContent = JSON.stringify(j, null, 2).slice(0, 12000);
+  } catch (e) {
+    out.textContent = 'request failed: ' + e;
+  }
+}
+</script>
+</body>
+</html>

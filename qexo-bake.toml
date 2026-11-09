@@ -1,0 +1,41 @@
+# qexo-bake.toml — the declared bake inventory (DESIGN-V3 14.4).
+#
+# source.phext is generated at build time from this inventory: tool
+# sources at their current HEAD by default, the commit stamped as the
+# pin. Nothing in the generated source.phext is ever written back.
+# The corpus order is canonical: this file's order, then path order.
+# Timestamps appear ONLY in the manifest's bake record — never in
+# sealed bytes — so the bake is byte-identical given the same config
+# and the same recorded commits.
+
+[corpus]
+# name = { repo = "...", path-in-repo / form }
+sbor    = { form = "text",    note = "SBOR-V4-CONVERGENCE, ratified 2026-01-21" }
+cyoa    = { form = "phext",   note = "choose-your-own-adventure.phext" }
+incipit = { form = "phext",   note = "incipit.phext" }
+volumen = { form = "redacted", note = "public builds bake the Volumen manifest redacted (G7): keys + structure + evidence classes + public keys only" }
+
+[[source]]
+project = "qexo"
+paths = ["src/*.rs", "Cargo.toml", "census.tsv", "docs/*.md", "tools/*.py", "*.md", "qexo-bake.toml", "VERSION", "web/*.html"]
+
+[[source]]
+project = "libphext-rs"
+paths = ["src/*.rs", "Cargo.toml", "*.md"]
+
+[[source]]
+project = "libphext-py"
+paths = ["phext/*.py", "*.md", "pyproject.toml"]
+
+[[source]]
+project = "sq"
+paths = ["src/*.rs", "Cargo.toml", "*.md"]
+
+[[source]]
+project = "phext-lattice"
+paths = ["src/*.rs", "Cargo.toml", "*.md"]
+
+# House tools (edit.phext.io utilities, Singular checker, ranch
+# tooling) join the bake when their checkouts are present on the
+# build node; absence is recorded in the manifest, never papered
+# over — a bake with a named absence is an honest bake.
