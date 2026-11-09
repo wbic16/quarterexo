@@ -14,6 +14,8 @@ include = [
     "Cargo.toml", "CHANGELOG.md", "SHIP-NOTES.md", "VERSION",
     "qexo-bake.toml", "docs/**", "README.md",
 ]
+# include globs win over .gitignore; keep bytecode caches out of the crate.
+exclude = ["tools/__pycache__/**"]
 
 [profile.release]
 opt-level = 2
