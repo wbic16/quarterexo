@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.1 — 2026-11-08 (rename)
+
+- Renamed the program from `orchestrator` to **qexo** (Will's direction, 2026-11-08 22:43). qexo is the running program on every box; quarterexo remains the name of the repo and the nightly process that improves it.
+- No behavior change: same inputs (tasks register, disk state), same four-currency plan output.
+
 ## v1 — 2026-11-08
 
 First version of the orchestrator, per Will's standing rule (2026-11-08):

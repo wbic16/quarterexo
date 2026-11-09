@@ -1,4 +1,4 @@
-//! orchestrator v1 — Will's Rust dispatcher/orchestrator, first version.
+//! qexo (formerly orchestrator) — Will's Rust dispatcher, first version. Renamed to qexo 2026-11-08 (v1.1).
 //!
 //! Reads the open-task register (tasks-source.json), the disk picture
 //! (disk-watch state.json), and a live snapshot of the host it runs on,
@@ -18,7 +18,7 @@
 //! Zero external crates: JSON is parsed with the small parser below so the
 //! crate builds on a ranch node with no network access.
 //!
-//! Usage: orchestrator [tasks.json] [disk-state.json] [out-dir]
+//! Usage: qexo [tasks.json] [disk-state.json] [out-dir]
 //! Defaults point at the live files under ~/workspace.
 
 use std::collections::BTreeMap;
@@ -317,7 +317,7 @@ fn classify(title: &str, request: &str) -> Class {
 }
 
 // ---------------------------------------------------------------------------
-// Host snapshot (of whatever machine the orchestrator runs on)
+// Host snapshot (of whatever machine qexo runs on)
 // ---------------------------------------------------------------------------
 
 fn host_snapshot() -> (f64, f64) {
