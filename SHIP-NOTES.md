@@ -262,7 +262,7 @@ aletheia-core, Tctl ~30 °C at start):
   keys/grants/install/seed refused; tainted set enforced; HTTP
   anon grants refused; replay/sequence/stale/recipient refusals).
 - `qexo bake --check`: all_match.
-- `cargo package`: verified — with one wrinkle found and fixed in this pass: `cargo package` (no --allow-dirty) refused because Cargo.toml's `include = ["tools/**", …]` sweeps a git-ignored `tools/__pycache__/*.pyc` bytecode file into the package set and cargo flags it uncommitted. Fix applied (this pass, its own commit): the stale .pyc was deleted and `exclude = ["tools/__pycache__/**"]` added beside the include list. After the fix: `cargo package` exit 0, `cargo package --list` = 46 files, crate qexo-0.3.0.crate rebuilt and byte-verified; the packaged tree also compiles + passes its tests under cargo's own verify build. NOTE for the merge: publish from exo must use the tree WITH this fix (it is on this branch).
+- `cargo package`: verified — with one wrinkle found and fixed in this pass: `cargo package` (no --allow-dirty) refused because Cargo.toml's `include = ["tools/**", …]` sweeps a git-ignored `tools/__pycache__/*.pyc` bytecode file into the package set and cargo flags it uncommitted. Fix applied (this pass, its own commit): the stale .pyc was deleted and `exclude = ["tools/__pycache__/**"]` added beside the include list. After the fix: `cargo package` exit 0, `cargo package --list` = 45 files (46 in the dirty-tree attempt had included the .pyc), crate qexo-0.3.0.crate rebuilt (sha256 e7ca0e0d…); the packaged tree also compiles + passes its tests under cargo's own verify build. NOTE for the merge: publish from exo must use the tree WITH this fix (it is on this branch).
 
 ## Tier-2 deferrals (recorded, not dropped)
 
