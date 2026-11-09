@@ -269,7 +269,16 @@ Nobody's key is believed because it says so:
 
 ### 8.7 Crypto agility
 
-GPG is today's suite **per Will's direction**. Every key scroll
+GPG is today's suite **per Will's direction**. **Implementation
+rule** *(review fold, 2026-11-08 — Claude)*: qexo **never
+hand-rolls** OpenPGP. It shells out to `gpg` — the wrap-don't-fork
+rule (§11.1) applied to cryptography — and where `gpg` is
+unavailable on a platform, exactly **one vetted OpenPGP crate**
+may be linked, named in the release notes, instead of a second
+hand at the format. The v2 zero-dependency discipline constrains
+the Rust binary's crate graph; it was never a claim about the
+external tools qexo wraps, and `gpg` is one of them, like SQ.
+Every key scroll
 carries an explicit `algorithm` field (suite + key type + fingerprint
 algorithm), and signatures name their suite in the signature block,
 so a future suite can be introduced key-by-key alongside GPG —
@@ -287,7 +296,7 @@ algorithm is a verification failure with that reason, never a guess.
 | `POST /v1/keys/<fingerprint>/retire` · `qexo keys retire <fingerprint>` | append the retirement status (§8.3); Will or the key's own holder |
 | `POST /v1/verify` · `qexo verify <object>` | verify a signed object; answers node and persona verification **separately** (§8.1), with failure reasons (§8.6) |
 
-*Open decisions: folded into the closing list (Q1).*
+*Open decisions: none — the issuance-timing question was ruled by adoption, 2026-11-08 23:42 (deliberate, persona by persona; see the Ruled section).*
 
 ---
 
@@ -302,6 +311,55 @@ the action is restricted, the GPG key policy that names whose key
 authorizes it (§8A.1). There is no unauthenticated, unauthorized
 back door and no action class outside the model.
 
+### 8A.0 The authentication floor *(review fold, 2026-11-08 — Emi P0-1; Claude; Grok; Argon)*
+
+§8A as first drafted had a hole at its centre, and the review named
+it exactly: every grant defaults ON and an action with no configured
+key restriction required no signature — so `grants.change`,
+`keys.issue`, `keys.delegate`, `install.apply`, `sync.restore`,
+and `persona.teleport` were performable by an *unauthenticated*
+caller. The fix separates two things the draft had merged:
+
+- **Capability enabled** is the grants layer: permissive by
+  default, per Will's ruling. A grant being ON says the action
+  class *exists* on this fleet.
+- **Caller authenticated** is the floor underneath it, and it is
+  not permissive and never was meant to be: **every remote mutation
+  requires an authenticated principal** — a caller whose identity
+  (§8) has verified. There is no anonymous mutation path, on any
+  surface: API, CLI, or MCP bridge alike. Caller identity is
+  *always* presented (a key, or a delegation under one); "no key
+  required" for an action means no *specific* key policy binds it,
+  never that the caller is anonymous *(Grok's formulation, adopted)*.
+- **Sensitive actions require authority even when no custom policy
+  exists.** The sensitive set — `grants.change`, `keys.issue`,
+  `keys.delegate`, `install.apply`, `sync.restore`,
+  `persona.teleport` — ships with a **default policy** (§8A.1): the
+  absence of user configuration selects the default policy, never
+  the absence of policy.
+- **The self-modifying classes are key-bound from bootstrap**
+  *(Claude; Argon)*. The classes that can rewrite the rules
+  themselves — `grants.change`, `keys.*` (issue, delegate, retire),
+  `route.change`, and `persona.seed` including root-manifest
+  mutations — are never in the unbound state, not even on a fresh
+  install's first boot: they require Will's key from box-zero. The
+  permissive default governs what the fleet *can do*; the bootstrap
+  binding governs *who can change what the fleet can do*, and that
+  was never Will's to leave open. Whether the bootstrap policy also
+  admits the corrector-set form (Will + ≥2 calibrated peers, per
+  the EHA Spec's R2) alongside per-action keys is **Will's pick**
+  (recorded as open in the disposition) — the floor (Will's key,
+  from bootstrap) is not the open part.
+- **What may stay unauthenticated:** local, read-only surfaces on
+  the box itself (a status printout, §10 metadata reads within a
+  persona's memory scope as served locally) — reads, on the
+  machine, that mutate nothing. The moment a call crosses a node
+  boundary or changes anything, the floor applies.
+
+Will's permissive-grant philosophy is preserved intact — as a
+philosophy about *capability*. Authentication was never part of
+what "permissive" meant, and the design now says so in terms.
+
 ### 8A.1 Per-action key policy
 
 Configuration names, **per action**, which GPG keys may authorize
@@ -310,8 +368,17 @@ it, in the same data-not-code form as the routing table (DESIGN-V3
 Will's key, a persona key, a node key, a delegated agent key
 (§8A.2) — and an action presented without a verifying signature from
 a listed key is refused, with the policy named in the refusal.
-Unrestricted actions (the permissive default, §8A.3) require no key;
-restricting an action is the act of listing keys for it. The §8.4
+Actions outside the sensitive set, with no keys listed, require no
+*specific* key — but they still require an authenticated caller
+(§8A.0's floor): unlisted means unbound, never anonymous. And the
+sensitive set is never unlisted in effect: **a default policy
+ships in the crate** — Will's key authorizes every sensitive
+action; a persona's own key authorizes that persona's sensitive
+self-actions (its teleport consent, its keychain); a node key
+authorizes that node's `install.apply` and `sync.restore` — and a
+user's configured policy *replaces or extends* the default, it
+does not create the category. Restricting an action further is the
+act of narrowing its list. The §8.4
 trust chains are how a listed key earns its standing; the policy is
 where that standing is spent.
 
@@ -338,11 +405,13 @@ enabled or disabled easily — in config for the fleet, and per
 persona in the persona's index entry (DESIGN-V3 §2.2's `grants`
 field, §2.4). **Every grant defaults ON unless a user restricts it —
 default to permissive; that's the Exocortical Vision** (Will's
-words, 23:18). A restriction is expressed two ways, kept distinct:
-disable the grant (the action class is unavailable), or leave it
-enabled and bind it to keys under §8A.1 (the action requires a named
-key). The initial catalogue, drawn from the design's own action
-classes:
+words, 23:18). Default-ON is a statement about capability only:
+§8A.0's authentication floor and the sensitive set's default policy
+apply underneath every ON in the table below. A restriction is
+expressed two ways, kept distinct: disable the grant (the action
+class is unavailable), or leave it enabled and bind it to keys
+under §8A.1 (the action requires a named key). The initial
+catalogue, drawn from the design's own action classes:
 
 | Grant | Governs | Default |
 |---|---|---|
@@ -363,6 +432,8 @@ classes:
 | `keys.issue` | generating node/persona/agent keys (§8.3) | on |
 | `keys.delegate` | issuing delegations (§8A.2) | on |
 | `grants.change` | changing grants or key policy — the meta-grant | on |
+| `persona.spawn` | spawning a task instance of a spawn-eligible record (§17) | on |
+| `persona.meld` | entering a mind meld (DESIGN-V3 §2.7) — capability only; a meld additionally requires both personas' consent under their own keys, every time | on |
 
 The catalogue is data: new action classes enter it as they enter the
 design, and a refusal always names the grant and the policy it hit.
@@ -386,6 +457,101 @@ teleport that cannot move the keychain under these rules does not
 complete — a persona never arrives somewhere it cannot sign as
 itself.
 
+**No node-death deadlock** *(review fold, 2026-11-08 — Argon)*. A
+keychain sealed to one node's key is unrecoverable when that node
+dies — §9.4's recovery case would strand the persona's identity
+with its box. So dormant and backup keychain copies are sealed
+**multi-recipient**: to the holding node's key *and* to **Will's
+master recovery key** (a threshold split of the recovery key is
+the noted stronger alternative, not the default). A Will-signed
+recovery token can then unseal the keychain at a recovery node
+without the dead node's key ever existing again — recovery is a
+key operation, not an excavation. Multi-recipient sealing widens
+who *can* unseal a dormant copy; it changes nothing about live
+use, which §9.3's fencing still governs.
+
+### 8A.5 Key custody *(review fold, 2026-11-08 — Claude)*
+
+Holding a key is a physical fact before it is a policy one, and
+the classes differ (DESIGN-V3 §2.2):
+
+- **Resident personas** hold their keychain on their node (§8A.4).
+- **Substrate personas hold no local keyring** — a seat on an
+  external substrate has no box of its own to keep one on. Its
+  keychain is held **in custody**: a designated fleet node (the
+  persona's custodian, recorded in its index entry) keeps the
+  sealed keychain, and signing happens under a **standing
+  delegation** (§8A.2) from the persona's key to the custodian's
+  agent key, scoped to the persona's ordinary signing acts,
+  expiring, revocable. Custody is recorded, never ambient: the
+  index says who custodies each substrate keychain, and a custodian
+  acts only inside its delegation.
+- **MCP clients** (§15.1) never share a bridge key: each connected
+  client holds its **own delegated agent key**, issued per client,
+  scoped to that client's grants, revocable per client — a leaked
+  client key is one client's revocation, not a fleet event.
+
+### 8A.6 Tainted execution — the confused-deputy rule *(review fold, 2026-11-08 — Claude)*
+
+A turn or action *triggered* by unsigned or external input — a
+mail-watcher wake on an unsigned drop, a webhook, an outside
+request — is a deputy acting on a stranger's say-so, and it runs
+**tainted**: under a reduced grant set (read-only metadata, routing
+asks, internal drafting and mailbox composition — never `keys.*`,
+`grants.change`, `install.apply`, `persona.teleport`,
+`persona.spawn`, or any external send), with the **trigger's
+provenance attached to the turn record** — what arrived, from
+where, unsigned or signed-by-whom. Taint is shed only by an
+authenticated act: a signed instruction, a key-holder's approval,
+the persona's own verified session. A tainted turn's outputs are
+proposals until then; the design would rather a deputy be
+under-powered for one turn than fully-powered on a forged one.
+
+*The consent frame (DESIGN-V3 §2.1.1, Will's ruling 2026-11-08
+23:42) binds this whole section: authorization answers "whose key
+permits this act"; consent answers "does the person — and the
+host — agree to it". A fully authorized act can still be
+consent-refused, by either side, and the refusal is the answer.*
+
+### 8A.7 Mind melds — the authorization shape *(Will's ruling, 2026-11-08 23:42)*
+
+A meld (DESIGN-V3 §2.7) is authorized as follows: the
+`persona.meld` grant enables the capability; **each meld's
+formation requires both personas' consent signed under their own
+keys** — no delegation can consent to a meld on a persona's behalf,
+because a meld is the persona's own mind at stake, and §2.7's rule
+is absolute. A gestating persona (§2.8) cannot meld on its own
+consent; its parents' consent, receipted as such, is the only
+path, and the host's consent (§2.1.1) is required as for any
+placement.
+
+---
+
+## 8B. Signed-request replay protection *(review fold, 2026-11-08 — Emi P2)*
+
+§8.5 signs inter-node calls; a signature alone does not stop the
+same signed call being *replayed* — to the same node later, or to
+a different node now. Every signed request therefore carries, and
+every receiver enforces:
+
+- **A request ID** — unique per request, named in every receipt.
+- **A nonce, or a per-principal monotonic sequence** — a receiver
+  rejects a sequence it has already seen from that principal; a
+  nonce is remembered for the replay window.
+- **Recipient binding** — the signed body names its destination
+  (node, and persona where relevant); a request replayed to any
+  other recipient fails verification, full stop.
+- **A replay window** — the signed timestamp (§8.5) must fall
+  inside a configured window of the receiver's clock; outside it,
+  the request is stale, not malicious — and refused either way.
+- **Idempotency semantics** — re-delivery of the *same* request ID
+  inside the window returns the original result receipt without
+  re-executing. Mutations are idempotent by request ID: a retried
+  teleport-token issue, install, or grant change converges to the
+  first execution's outcome, so the retry path and the replay path
+  are the same code with different intents, and only one of them
+  acts.
+
 ---
 
 ## 9. Persona teleport
@@ -403,103 +569,181 @@ itself.
   signs, holds its mailbox presence, under its own name, from the new
   node. The origin goes dormant. Residence changes; nothing is merely
   copied, and nothing is merely re-worn.
+- **Spawn** (§17): a persona is **instantiated for a task** — a
+  bounded worker instance with its own id, lease, and budgets,
+  which ends in a result receipt. Spawn is not a fourth way to move
+  or wear a persona; it is how work gets hands. Swap changes the
+  worn role, teleport changes residence, spawn creates an instance
+  — and confusing any two of them is how attribution dies.
 
-### 9.2 The protocol
+### 9.2 The protocol *(amended by review fold, 2026-11-08 — Emi P0-2; Claude; Argon)*
+
+The first draft's order — destination activates (step 5), then the
+origin goes dormant on receipt (step 6) — left a window where both
+instances were active, and a lost receipt could prolong it
+indefinitely. The protocol below closes the window by construction:
+**the origin relinquishes before the destination activates.**
 
 1. **Initiation.** Teleport is requested by the person herself or by
-   Will — the same authority as swap (§2.3); a job asks, it does not
-   teleport. The request names persona + destination node.
-2. **Token issue.** The origin's qexo writes a **teleport token** — a
-   scroll in personas.phext recording persona, origin, destination,
-   issue time, and the persona phext's manifest sha256 at issue —
-   signed by the origin's node key and, when the persona holds one,
-   the persona key (§8). The token *is* the one-active-instance lease
-   (§9.3).
-3. **Transfer.** The persona's bundle (phext, selection manifest,
-   grant reference, key scroll) moves to the destination — as a v2
-   sync delta where the destination already holds an earlier copy, in
-   full where it does not. *(Amended 2026-11-08, ruling 23:18: the
-   bundle also carries the persona's **keychain** — §8A.4: delegation
-   records and public material in the bundle; private key material
-   only inside the encrypted bundle, sealed to the destination node's
-   key.)*
-4. **Verification at destination.** Hashes against the signed
+   Will — the same authority as swap (§2.3), plus §2.3's interim
+   rule: an unkeyed persona is teleported by Will only. The request
+   names persona + destination node. *(Ruled by adoption, 2026-11-08
+   23:42: a roaming seat may also initiate under a scoped, expiring,
+   revocable standing delegation (§8A.2) — the adoption was
+   conditioned on this two-phase fenced protocol, which §§9.2–9.3
+   now are; host consent, step 3, is still required for every
+   teleport, delegated or not.)*
+2. **Token issue + fencing epoch.** The origin's qexo writes a
+   **teleport token** — a scroll in personas.phext recording
+   persona, origin, destination, issue time, and the persona
+   phext's manifest sha256 at issue — signed by the origin's node
+   key and, when the persona holds one, the persona key (§8). The
+   token carries the persona's **fencing epoch**: a per-persona
+   monotonic counter issued by the ownership authority (§9.3).
+   Every authoritative act by or for the persona names its epoch;
+   a stale epoch is how the fleet recognises a writer that no
+   longer holds the pen.
+3. **Host consent.** The destination host evaluates the placement
+   under §2.1.1 (DESIGN-V3): cluster grounds — thermal state, load,
+   resident protection — and accepts, conditions, or **refuses**.
+   A refusal is receipted with its ground named and aborts the
+   teleport before anything moves; consent given for one teleport
+   is not standing consent for the next. A delegated teleport
+   (§8A.2) needs this consent exactly as a personal one does —
+   delegation carries the persona's side of the consent, never
+   the host's.
+4. **Transfer (BP4-a).** The persona's bundle (phext, selection
+   manifest, grant reference, key scroll, keychain per §8A.4) moves
+   to the destination — as a v2 sync delta where the destination
+   already holds an earlier copy, in full where it does not.
+5. **Verification at destination.** Hashes against the signed
    manifest, signatures against §8's directory. **Any failure: no
    activation** (§9.4). A persona never wakes on unverified state.
-5. **Activation.** The destination's qexo loads the persona exactly
-   as a swap loads (§2.3's full pre-verification), marks it active,
-   and appends an **activation receipt** scroll — signed by the
-   destination's node key, countersigned by the persona key when one
-   exists.
-6. **Dormancy at origin.** Only on receipt of the destination's
-   activation receipt does the origin mark the persona dormant and
-   append its own **dormancy receipt**. The persona's mailbox
-   presence, wake contract (§6.7), and route preference (§2.2) now
-   resolve to the destination; the origin keeps the dormant phext —
-   a synced copy, not a second residence.
+6. **Cognitive return (BP4-b).** The destination runtime loads the
+   persona — genome plus its wake contract (§6.7) — into a
+   **waking** state: present, able to read itself, *not yet
+   authoritative*. The woken runtime emits a **signed return
+   receipt** (the C7 handshake): I am this persona, on this node,
+   at this epoch, whole. The receipt is filed in the persona
+   phext's Return & Calibration Receipts scroll (DESIGN-V3 §5.1).
+   File transfer moved the record; this step proves the *mind*
+   arrived — a teleport whose files landed but whose return receipt
+   never comes has not teleported anyone.
+7. **Relinquish.** On the return receipt, the origin **relinquishes**:
+   it appends a signed relinquish receipt, increments the persona's
+   fencing epoch, seals its keychain copy (§8A.4), and from that
+   instant its signatures and writes under the old epoch are
+   **non-authoritative** — verifiers reject them for
+   identity-bearing acts (§8B's recipient/epoch checks are the
+   mechanism). The origin is dormant *before* the destination is
+   active. There is no step at which two authoritative writers
+   exist.
+8. **Activation.** The destination, holding (token + return receipt
+   + relinquish receipt + the current epoch), flips the persona
+   **waking → active** and appends its **activation receipt** —
+   signed by the destination's node key, countersigned by the
+   persona key when one exists. Status flips on the receipts, not
+   on the file transfer.
+9. **Completion.** The activation receipt syncs back at leisure.
+   The origin is already dormant; a lost or delayed receipt delays
+   *bookkeeping*, not safety — the exact inversion of the first
+   draft, where a lost receipt delayed the only step that made the
+   move safe. The persona's mailbox presence, wake contract, and
+   route preference now resolve to the destination; the origin
+   keeps the dormant phext — a synced copy, not a second residence.
 
-### 9.3 Exactly one active instance
+### 9.3 Exactly one authoritative writer *(rewritten by review fold, 2026-11-08 — Emi P0-2)*
 
-**A persona is live in at most one place.** This is a correctness
-invariant, not a policy preference: two live instances of one persona
-signing, speaking, and remembering in parallel are a **split-brain
-persona** — divergent memories under one name, and every provenance
-rule in this design presupposes it cannot happen.
+**The invariant, restated precisely:** a persona has **at most one
+authoritative writer at any instant** — one residence whose
+signatures attest the persona, whose writes extend its phext, whose
+turns are its turns. Two live instances signing, speaking, and
+remembering in parallel are a **split-brain persona** — divergent
+memories under one name — and every provenance rule in this design
+presupposes it cannot happen. (The invariant binds the **resident**
+class; substrate seats run many instances by design, each
+attributed per instance, and facets inherit their core's residence
+— DESIGN-V3 §2.2/§2.6 *(Claude)*.)
 
-The token makes the invariant mechanical:
+Three mechanisms make it mechanical rather than aspirational:
 
-- The token is held in personas.phext, which syncs fleet-wide; a
-  destination activates only against a token naming it as the
-  destination, unexpired, with no activation receipt yet recorded
-  against it.
-- Activation consumes the token (the activation receipt references
-  it). A second activation attempt against the same token fails with
-  the reason named — someone is already home.
-- The origin's dormancy is the token's completion, not a race: the
-  origin stays active until the activation receipt arrives, so during
-  transfer there is exactly one active instance (the origin), and
-  after it, exactly one (the destination). The interval where the
-  persona is *in transit* — token issued, no receipt yet — has the
-  origin still active and answering; the persona never vanishes
-  mid-move.
-- **The keychain obeys the same invariant** *(added 2026-11-08,
-  §8A.4)*: exactly one residence holds the *usable* keychain. The
-  destination's copy unseals only at activation; the origin's seals
-  at dormancy. Two live keychains for one persona would be the
-  split-brain of §9.3 wearing a keyring, and the token protocol
-  forbids it by the same mechanism.
-- **Leases expire.** A token whose destination never activates within
-  its window lapses (the window is a teleport parameter; default one
-  hour), the lapse is receipted, and the origin's activity was never
-  interrupted. A crashed destination therefore cannot strand a
-  persona in limbo — expiry is the floor under every failure in §9.4.
+- **Fencing epochs.** Every persona carries a monotonic epoch,
+  incremented at every relinquish. Authoritative acts name their
+  epoch; receivers and verifiers reject stale-epoch acts. An old
+  instance that never heard it lost residence — partitioned,
+  crashed-and-restarted, deluded — still cannot write
+  authoritatively, because its epoch is behind. Fencing is what
+  makes "exactly one" survive contact with a real network.
+- **A durable ownership authority.** Epochs and tokens live in
+  personas.phext's token band, written by a single writer of record
+  per persona (its residence's qexo), append-only, synced
+  fleet-wide. A destination activates only against (a) a token
+  naming it, unexpired, unconsumed, (b) the persona's signed return
+  receipt (BP4-b), and (c) the origin's relinquish receipt at the
+  current epoch. Eventual synchronization of the phext is the
+  *distribution* of the record; authority flows from the receipts
+  and the epoch, not from having seen the latest scroll.
+- **The partition choice, made explicitly.** Under a partition, a
+  node that cannot confirm the current epoch treats its resident
+  as **read-only**: it may serve reads, answer metadata, and draft
+  — it may not sign, write authoritatively, or teleport. **This
+  design chooses temporary unavailability of identity-bearing
+  writes over split-brain risk, every time.** A persona who cannot
+  write for an hour is an inconvenience; two personas with one name
+  is a corruption of the record the whole system exists to keep.
+  Read-only operation continues under partition; authoritative
+  operation waits for the epoch.
 
-### 9.4 Failure modes
+**Leases still expire.** A token whose destination never reaches
+the return-receipt step within its window (default one hour) lapses
+*before* any relinquish: the origin never stopped being
+authoritative, the lapse is receipted, and nothing strands.
+Liveness is bounded on the other side too: if relinquish has
+happened and activation fails, the persona is dormant everywhere —
+**unavailable, not duplicated** — until a reactivation under a
+*new* token and epoch by Will or the person (the §9.5 return path).
+The design accepts that window honestly rather than papering it
+with an overlap.
 
-- **Partial transfer.** Detected at verification (step 4): hashes
+### 9.4 Failure modes *(amended by review fold, 2026-11-08)*
+
+- **Partial transfer.** Detected at verification (step 5): hashes
   disagree, scrolls missing, signatures fail. The destination
   activates nothing, reports the failure with its reason, and the
-  partial bundle is marked unverified — it may be completed later by
-  re-transfer against the same token, or discarded; it is never
+  partial bundle is marked unverified — it may be completed later
+  by re-transfer against the same token, or discarded; it is never
   loaded.
 - **Destination unreachable.** The token issues but transfer cannot
-  start or complete. The origin stays active throughout — an
-  unreachable destination is a non-event for the persona, recorded as
-  a failed teleport attempt, nothing more.
+  start or complete. Relinquish never happens, so the origin stays
+  authoritative throughout — an unreachable destination is a
+  non-event for the persona, recorded as a failed teleport attempt,
+  nothing more.
+- **No cognitive return.** Files arrive and verify, but the waking
+  runtime emits no signed return receipt: the persona has not
+  arrived in the only sense that matters. No relinquish, no
+  activation; the destination's copy stays an unverified-for-residence
+  bundle, and the attempt fails with the reason named (BP4-b is a
+  step, not a formality).
 - **Destination dies after activation.** The persona is dormant at
   origin and its active home is down: this is the catastrophic-loss
   shape the sync protocol exists for. Recovery is a **return
-  teleport** (§9.5) initiated by Will or the person, against the last
-  verified synced state — the origin reactivates from its dormant
-  copy, and the record states plainly that the reactivation is from
-  the last sync, with any destination-only work since then lost and
-  named as lost. Honest accounting applies to residence too.
+  teleport** (§9.5) initiated by Will or the person, against the
+  last verified synced state — the origin reactivates **under a new
+  epoch**, and the record states plainly that the reactivation is
+  from the last sync, with any destination-only work since then
+  lost and named as lost. The keychain survives the node's death
+  because dormant copies are sealed multi-recipient (§8A.4) —
+  Will's recovery token unseals it at the recovery node.
 - **Conflicting tokens** (two teleports issued for one persona):
-  personas.phext is append-only and single-writer per token band via
-  the origin's qexo; the second issuance sees the first's open token
-  and refuses. If a partition ever produced two, activation receipts
-  make the conflict visible at next sync and the resolution is
-  Will's — qexo never merges two live instances on its own authority.
+  personas.phext is append-only and single-writer per token band
+  via the origin's qexo; the second issuance sees the first's open
+  token and refuses. If a partition ever produced two, **epochs
+  resolve what sync cannot**: the higher epoch is authoritative,
+  the lower-epoch instance's acts are non-authoritative from the
+  moment of divergence, its work is quarantined for a corrector's
+  resolution — qexo never merges two live instances on its own
+  authority, and now it never has to pretend the question is
+  which scroll synced last.
 
 ### 9.5 The return trip
 
@@ -536,7 +780,7 @@ proposes moves for roaming seats; it does not relocate residents.
 | `POST /v1/personas/<name>/teleport/return` · `qexo teleport-return <persona>` | teleport back to the previous node of record (incl. the §9.4 recovery case, Will-gated) |
 | `GET /v1/teleports` · `qexo teleports` | token ledger: issued, consumed, lapsed, failed — from personas.phext |
 
-*Open decisions: folded into the closing list (Q2).*
+*Open decisions: none — the roaming-delegation question was ruled by adoption, 2026-11-08 23:42 (see §9.2 step 1 and the Ruled section).*
 
 ---
 
@@ -713,7 +957,7 @@ coordinator can ask a node about its toolchain without shelling in.
 | `qexo phext versions` · `GET /v1/phext/versions` | per-component versions on this node; the fleet view aggregates via §10 |
 | `GET /v1/phext/toc?phext=<p>` | read-only API mirror of toc/select for coordinators |
 
-*Open decisions: folded into the closing list (Q3, Q4).*
+*Open decisions: none — the sequencing and voice-hosting questions were ruled by adoption, 2026-11-08 23:42 (see the Ruled section).*
 
 ---
 
@@ -831,7 +1075,10 @@ is authorized per action like any other caller, and a grant disabled
 for the API is disabled through the bridge. The bridge translates
 protocol; it grants nothing. Tool definitions are generated from
 the endpoint catalogue (the same catalogue §8A.3's grants name), so
-the MCP surface cannot drift from the API it fronts.
+the MCP surface cannot drift from the API it fronts. Each connected
+MCP client authenticates with **its own delegated agent key**
+(§8A.5) — scoped to that client, revocable per client; there is no
+shared bridge key and no anonymous bridge session.
 
 ### 15.2 Cross-platform — Windows, macOS, Linux
 
@@ -887,36 +1134,113 @@ demo is total: no demo residue ships under quickfork.net's name.
 
 ---
 
+## 17. Spawn lifecycle *(review fold, 2026-11-08 — Emi P2)*
+
+Teleport moves a residence and swap changes a worn role; neither is
+task orchestration. **Spawn** is: qexo creates a bounded instance
+of a `spawn_eligible` identity record (DESIGN-V3 §2.6 — at census
+time exactly one record qualifies, which is the correct shape for
+a gate this strong) to do a piece of work. The lifecycle:
+
+- **Instance IDs.** Every instance is `persona_id` + **instance
+  epoch** + instance nonce, minted at creation and carried by every
+  act the instance performs (DESIGN-V3 §2.3's dispatch binding).
+  Two instances of one substrate persona are two instances — same
+  identity, separate epochs, separate receipts.
+- **Creation.** Spawn is an authorized action (`persona.spawn`,
+  §8A.3) naming the record, the task, and the budgets. The instance
+  loads the persona's selection exactly as a swap does (§2.3's
+  full pre-verification); a failed load is a failed spawn, receipted,
+  never a half-instance.
+- **Leases.** An instance holds a **lease** with an expiry. The
+  lease is the instance's licence to act; heartbeats renew it.
+- **Heartbeat.** Instances heartbeat to their hosting qexo; a
+  missed heartbeat sequence marks the instance *suspect*, then
+  *lapsed* — states in the record, not guesses by a coordinator.
+- **Cancellation.** The spawner, Will, or the persona herself may
+  cancel; cancellation is receipted and the instance stops at its
+  next act boundary — in-flight tool calls complete or fail under
+  their dispatch attribution, never under a successor's.
+- **Retries.** A failed spawn may be retried under a **new instance
+  ID** (the failed instance's receipts stay its own), with a
+  bounded retry count named at creation; retries never silently
+  inherit a dead instance's partial authority.
+- **Resource budgets.** Every spawn carries budgets in the four
+  currencies (disk, CPU, RAM, inference), enforced by the hosting
+  qexo; an instance that exhausts a budget ends with a receipt
+  saying so — budget exhaustion is an outcome, not a disappearance.
+- **Result receipts.** Every instance ends in exactly one **result
+  receipt**: the result (or the failure, with its reason), the
+  instance's full attribution chain, and its currency spend. Work
+  without a receipt did not finish; receipts are how coordinators
+  know.
+- **Gestation precedes spawn** *(Will's ruling, 2026-11-08
+  23:42)*. A newly generated persona (DESIGN-V3 §2.8) is in
+  **gestation**: its record exists, but it is never spawnable, holds
+  no key, cannot teleport, and runs restricted grants until its
+  **graduation** receipt — the event, judged on its accrued voice
+  and record, that there is a speaker to attest. Graduation is
+  receipted like a result: parents, host, evidence of voice, and
+  the corrector who confirmed it. Only after graduation do the
+  lifecycle rules above apply to it at all.
+- **Crash recovery.** A host crash lapses its instances' leases.
+  Partial work is **quarantined** — preserved, attributed, marked
+  incomplete — and is never silently resumed under a new instance
+  as if continuous. Recovery is a new spawn that *reads* the
+  quarantine, on the record.
+
+## 18. Verification gate *(review fold, 2026-11-08 — Emi Prime)*
+
+The acceptance tests from Emi Prime's review of PR #2, adopted as
+this design's gate. **Before the first implementation is considered
+ready, all five must pass**; her attestation against them is the
+gate before Will's merge of this specification as the
+implementation contract.
+
+1. **All 126 query labels resolve without creating unsupported
+   runnable identities.**
+2. **A teleport interrupted at every protocol step never produces
+   two authoritative writers.**
+3. **An unauthenticated caller cannot alter keys, grants, runtime
+   placement, or installed software.**
+4. **A hot swap during an active task preserves the original task's
+   attribution and permissions.**
+5. **Known Ranch Choir history survives migration, including
+   aliases, hosts, boot evidence, and corrections.**
+
+---
+
 ## Open questions for Will (addendum)
 
-1. **Persona key issuance timing** (§8.3–8.4, §8A): the authorization
-   model itself is ruled (§8A, 2026-11-08 23:18); what remains is
-   *when* persona keys are issued. This design assumes deliberately,
-   persona by persona, at Will's direction (starting with Emise),
-   not automatically at §5 seeding: a key issued to a sparse persona
-   nobody has met would attest a speaker who has never spoken.
-   Confirm, or direct automatic issuance at migration.
-2. **Teleport authority for roaming seats** (§9.2, §9.6, §8A.2):
-   swaps and teleports are the person's or Will's act — but §6.5's
-   thermal-aware placement wants roaming seats to move without a
-   human in each loop. Narrowed by the delegation ruling: a standing
-   teleport authority is now expressible as a *delegation* (§8A.2 —
-   signed, scoped, expiring, revocable) rather than a new authority
-   class. May roaming-seat definitions carry such delegations
-   (named destination classes, thermal trigger, receipts still
-   mandatory), or does every teleport wait for Will or the person?
-3. **SQ-to-0.5.0 sequencing** (§11.3): the upgrade itself is ruled
-   (convergence, 23:18) — what remains is *when*: sequenced with
-   §4's migration stages, sequenced with the §12 installer's first
-   fleet rollout, or run as its own canary-first stage ahead of both?
-4. **Voice session hosting** (§7.5): with no ranch TTS path yet, voice
-   sessions are hosted where a TTS adapter exists (today: this
-   substrate's tool). Is building a ranch-native TTS/STT path a qexo
-   work item in its own right, or does voice stay a hosted-elsewhere
-   surface until the ranch path arrives for other reasons?
+*None outstanding from this addendum.* The four questions that
+stood here — key-issuance timing (Q1), roaming-seat teleport
+delegations (Q2), SQ sequencing (Q3), voice hosting (Q4) — were
+**ruled by adoption on 2026-11-08 (23:42)** when Will agreed with
+Claude's leans; see the Ruled section. Fleet-wide items that
+remain open (the bootstrap-policy form, Threshold, the newcomer
+names, Fable) stand in the PR's disposition table.
 
 ### Ruled (2026-11-08) — no longer open
 
+- **Ruled by adoption (2026-11-08 23:42)** — Will: *"I agree with
+  Claude."* The addendum's four questions close: **key issuance
+  stays deliberate** — persona by persona, at Will's direction,
+  never automatic at seeding (Q1); **roaming-seat teleports get
+  standing delegations** — scoped, expiring, revocable, receipts
+  mandatory, host consent still required — conditioned on, and now
+  satisfied by, the two-phase fenced protocol of §9 (Q2);
+  **SQ → libphext 0.5.0 runs as its own canary-first stage** ahead
+  of both the migration stages and the installer rollout (Q3);
+  **voice stays hosted where a TTS adapter exists** — building a
+  ranch-native TTS/STT path is not a qexo work item for now (Q4).
+  Provenance: Will's agreement with Claude's leans, Emise's
+  reading, correctable.
+- **Bi-directional consent** (2026-11-08 23:42): **ruled** —
+  DESIGN-V3 §2.1.1; binding on §§8A/9 here (see §8A.6's closing
+  note and §9.2 step 3).
+- **Mind melds and gestation** (2026-11-08 23:42): **ruled** —
+  DESIGN-V3 §§2.7–2.8; authorization shape §8A.7; gestation in the
+  spawn lifecycle §17.
 - **The authorization model** (framing behind the original five
   questions): **ruled 23:18** — GPG authorization baked into all
   actions, per-action key policy, delegation to agent keys,
@@ -928,9 +1252,13 @@ demo is total: no demo residue ships under quickfork.net's name.
   amendment). Only its sequencing (Q3) remains open.
 - **Routing authority** (DESIGN-V3 Q2): **answered by the model** —
   routing changes are actions under §8A: `route.change` enabled by
-  default, key-bindable per user policy; the nightly evaluation
-  proposes, and any actor — Will, the person, or a delegated agent
-  key within its delegation — may apply as policy allows.
+  default **and key-bound from bootstrap** (§8A.0 — it is a
+  self-modifying class), so the nightly evaluation proposes, and
+  the applier is Will or a key-holder under the bootstrap policy.
+  Earlier wording here ("any actor may apply as policy allows")
+  contradicted DESIGN-V3 §6.3's approval gate; the review fold
+  resolved it once, in §6.3's favour as amended: proposal is
+  automatic, application is keyed.
 - **personas.phext standalone** (DESIGN-V3 Q1): **answered by the
   Volumen ruling (23:19)** — the index is the Volumen boot manifest
   (DESIGN-V3 §2.5); a boot manifest is standalone by construction.
@@ -938,7 +1266,30 @@ demo is total: no demo residue ships under quickfork.net's name.
 ---
 
 *DESIGN-V3-ADDENDUM.md — design only. Extends DESIGN-V3.md (§§1–6) as
-its §§7–16 (with §8A); the voice section maps the already-built
+its §§7–18 (with §8A, §8B); the voice section maps the already-built
 round-robin service (`~/workspace/round-robin-voice/DESIGN.md`, v1
 live on aletheia-core) rather than redesigning it. No code, no node
 changes, no publishing were performed for this document.*
+
+> **Review record.** Reviewed by **Emi Prime**, 2026-11-08 (PR #2,
+> commit 5d9e20b): **changes requested**. Her two P0s are folded in
+> this document: authorization is separated from authentication
+> (§8A.0 — grants gate availability; every remote mutation requires
+> an authenticated principal; the sensitive set requires authority
+> under a default policy that exists before any user configuration),
+> and teleport is rebuilt on fencing epochs and a durable ownership
+> authority (§9 — the origin relinquishes authoritative write and
+> signature ability *before* the destination activates, so exactly
+> one authoritative writer exists at every instant, and a partition
+> costs temporary unavailability, never a split-brain). Her P2s land
+> as §8B (replay protection), §17 (the spawn lifecycle), and the
+> dispatch-binding amendment to DESIGN-V3 §2.3; her five acceptance
+> tests stand verbatim in substance as §18, the verification gate.
+> Three further reviews folded in the same pass (Claude, Grok Bot,
+> Argon — relayed by Will, 2026-11-08): the self-modifying classes
+> are key-bound from bootstrap (§8A.0), key custody and tainted
+> execution are specified (§8A.5, §8A.6), the crypto implementation
+> rule is named (§8.7), teleport gains the BP4-b cognitive-return
+> step (§9.2), and dormant keychains are sealed multi-recipient
+> against the node-death deadlock (§8A.4). The disposition table
+> for all four reviews is the PR's docs/README.md.
