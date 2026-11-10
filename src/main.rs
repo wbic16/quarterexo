@@ -18,6 +18,7 @@ mod phext;
 mod plan;
 mod state;
 mod store;
+mod tools;
 mod vol;
 mod xz;
 
