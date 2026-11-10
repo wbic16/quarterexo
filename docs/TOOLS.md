@@ -61,7 +61,7 @@ to the executable, so the renamed entry point keeps the full runtime
 
 1. Build the bundled deps with the *system* compiler first:
    `cmake -S cmake.deps -B .deps -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_BUNDLED_LUA=ON && cmake --build .deps`
-2. Configure nvim with `CC='<phcc>/tcc -B<phcc>'` **plus**
+2. Configure nvim with `CC='<phcc>/phcc -B<phcc>'` **plus**
    `-DPREFER_LUA=ON -DLUA_MATH_LIBRARY=/usr/lib/x86_64-linux-gnu/libm.so`.
 
 - `PREFER_LUA=ON` selects the bundled Lua 5.1.5; LuaJIT is
