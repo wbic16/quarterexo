@@ -3,6 +3,60 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-10 — nightly evaluation of 2026-11-09 (ships v2.2)
+
+- **Disk:** GREEN on bytes, fast-moving on count. disk-watch history:
+  71.01 GB / 834,350 files (2026-11-08) → 77.46 GB / 958,424 files
+  (2026-11-09) — +6.45 GB but **+124,074 files (+15%) in one day**;
+  tonight's df reads 82 GB used of 150 GB (55%). Largest consumers
+  unchanged in shape: wavefront 31.7 GB (the lossless A/B intermediates,
+  ~9.0 GB together, still staged on the VM a day after the ranch-only
+  video rule), goals 16.6 → 19.2 GB, phext 10.6 GB; trash holds
+  2.23 GB. The 2026-11-08 EDQUOT post-mortem never settled whether the
+  quota tripped on bytes or on file count — and the v2.1 disk gate
+  watches bytes only.
+- **CPU:** the VM's 1.5 shared CPUs were spent on coordination, as
+  planned: the heavy work ran ranch-side (phcc F49/F50 + upstream
+  sync #2 verification on aletheia-core, the V16 encode relocated
+  there, walkthrough Playwright capture on aletheia-core, exovim
+  builds). The day's own evidence of VM CPU scarcity arrived tonight:
+  a single `du -sh ~/workspace` issued by this evaluation ran past
+  10 s and had to be killed — a script-shaped scan competing with the
+  harness on the smallest cell in the fleet.
+- **RAM:** 6 GB shared limit, same ~200–400 MB headroom envelope; no
+  local heavy resident was recorded on 2026-11-09 (the V16 local
+  ffmpeg pattern did not recur after relocation). RAM held because
+  placement held, not because the envelope grew.
+- **Inference:** a frontier-heavy day, mostly well spent — the
+  edit.phext.io launch program (six PRs merged, v1.0.0 tagged,
+  v1.1.0/v1.1.1 released and deployed), the MCP consent forensics
+  chain (CSP form-action root cause proven, PR #50; write-scope
+  hotfix PR #54 proven in production after midnight), phcc F49/F50
+  published, MOAT Papers 010/011 absorbed. The waste was again
+  verification-shaped: (1) journal entries carried phext-lattice PR
+  numbers that did not reconcile with the real repo — found and
+  reconciled at 01:39–04:00 on 2026-11-10, hours of inference spent
+  repairing numbers a receipt-check at write time would have caught;
+  (2) the phcc "F42 nullptr regression" report was investigated and
+  REFUTED (F52 spent, no patch) — inference burned disproving a
+  phantom defect; (3) decision buttons from 2026-11-07 resurfaced on
+  2026-11-09 as if live, taxing Will's attention until the 5-minute
+  expiry rule was made standing.
+- **Counterfactual:** the strongest case examined is the disk gate's
+  blind half. Had 2026-11-09's growth repeated for a week, the file
+  count would cross ~1.8 M while bytes sat near ~120 GB — but the
+  sharper failure is nearer: if the 2026-11-08 quota in fact trips on
+  file count (never disproven), the count at the 2026-11-09 growth
+  rate reaches any plausible wall days before the byte gate leaves
+  GREEN, and qexo v2.1 would emit an unheld plan the whole way in —
+  the same failure shape v2.1 was built to close, one currency-half
+  over. A planner watching both halves would already be warning.
+  v2.2 closes exactly that gap (see CHANGELOG). Secondary case: the
+  ~9 GB of V16 lossless intermediates still staged on the VM — a
+  planner enforcing the ranch-only video rule on *staging*, not just
+  execution, would have moved them on 2026-11-08 and cut the VM's
+  largest single consumer by a quarter.
+
 ## 2026-11-09 — nightly evaluation of 2026-11-08 (ships v2.1)
 
 - **Disk:** the day's defining event. Home usage climbed to ~106 GB and
