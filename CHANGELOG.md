@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased — tool catalog + exovim (2026-11-09, branch emise/exovim-tool)
+
+- New `src/tools.rs`: the tool catalog behind the install route —
+  one static entry per installable tool (phext-lattice, rust, phcc,
+  phcpp, phst, exovim) carrying source repo, Ubuntu package set,
+  build recipe, and pitfalls. Before this, install recorded any
+  tool name and qexo held no per-tool knowledge.
+- exovim (wbic16/neovim, Will's phext-support Neovim fork) is the
+  first complete entry: exact apt set (BUILD.md prerequisites +
+  pkg-config/lua5.1/liblua5.1-0-dev), a system-compiler recipe that
+  installs the standard tree intact and wires an `exovim` command,
+  and the phcc variant with the LUA_MATH_LIBRARY pre-seed pitfall
+  recorded in full (docs/TOOLS.md has the long form).
+- `GET /v1/install` now returns the catalog with a live per-tool
+  `apt_missing` preflight; `POST /v1/install` for a catalog tool
+  returns its entry alongside the install record; `qexo doctor`
+  summarises the catalog's apt preflight. Five new unit tests pin
+  the exovim apt set, the phcc pitfall strings, and catalog
+  coverage of the API row-90 tool set.
+
 ## 0.3.0 — 2026-11-09 (v3 tier-1, for Will's review; NOT published)
 
 The v3 build per docs/DESIGN-V3.md + docs/DESIGN-V3-ADDENDUM.md, with

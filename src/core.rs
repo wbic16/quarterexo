@@ -2195,6 +2195,7 @@ fn route_install(ctx: &Ctx, method: &str, path: &[String], body: &Json, caller: 
         return (200, Json::obj(vec![
             ("installed", Json::Arr(vec![Json::obj(vec![("tool", Json::s("qexo")), ("version", Json::s(env!("CARGO_PKG_VERSION")))])])),
             ("acceptance", Json::s("the section 11.3 versions table per node is the acceptance check; a node whose table does not match the intended release is a failed stage, not an install")),
+            ("catalog", crate::tools::catalog_json()),
         ]));
     }
     if method == "POST" && (path.len() == 1 || (path.len() == 2 && path[1] == "upgrade")) {
@@ -2212,12 +2213,19 @@ fn route_install(ctx: &Ctx, method: &str, path: &[String], body: &Json, caller: 
             ]));
         }
         let rcpt = receipt(st, "install", vec![("tool", Json::s(&tool)), ("by", Json::s(&caller.principal))]);
-        return (200, Json::obj(vec![
+        let mut fields = vec![
             ("install_recorded", Json::b(true)),
             ("tool", Json::s(&tool)),
             ("receipt", Json::s(&rcpt)),
             ("channel", Json::s("the exocortex packaging line (.deb -> signed repo -> PPA -> archive); installs are staged canary-first; fix in the package, never hand-patch a node")),
-        ]));
+        ];
+        // A catalog tool's install record carries what qexo knows
+        // about it — source, package preflight, recipe, pitfalls
+        // (src/tools.rs). Unknown tools record exactly as before.
+        if let Some(spec) = crate::tools::find(&tool) {
+            fields.push(("catalog_entry", crate::tools::spec_json(spec)));
+        }
+        return (200, Json::obj(fields));
     }
     let _ = ctx;
     (404, refusal_payload(&Refusal::new(404, "no-such-record", "unknown install operation")))
@@ -2228,6 +2236,7 @@ pub fn doctor_report(st: &State) -> Json {
     // quota-class disk pressure
     let (avail, load) = plan::host_snapshot();
     findings.push(Json::obj(vec![("check", Json::s("host snapshot")), ("ram_available_mb", Json::n(avail)), ("load1", Json::n(load))]));
+    findings.push(Json::obj(vec![("check", Json::s("tool catalog apt preflight")), ("result", Json::s(crate::tools::preflight_summary()))]));
     if std::path::Path::new(".sq").exists() {
         findings.push(Json::obj(vec![("finding", Json::s("stale .sq/ in the working directory")), ("fix", Json::s("remove it before a fresh SQ start; sq-ensure hangs on a stale .sq/ (quirk corpus)"))]));
     }
