@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.3 — 2026-11-11 (forecast gate)
+
+Motivating finding — the 2026-11-11 evaluation of 2026-11-10
+(EVALUATIONS.md, 2026-11-11 section): the v2.1/v2.2 disk gates are
+static — they react only when a threshold is crossed. On 2026-11-10
+the plan read plain GREEN while the file count (1,017,445) sat
+~1.4 days from file-AMBER at the last interval's growth rate
+(+59,021 files/day) and bytes ~3.4 days from byte-AMBER
+(+3.99 GB/day): zero lead time to move VM staging before the gate
+slams, the same react-after-the-fact shape the EDQUOT night taught.
+
+What v2.3 does (one change: the disk gate gains a forecast):
+
+- The placement plan now reads the disk-watch history
+  (history.tsv, sibling of the state file), rates growth from its
+  last two rows, and projects days to all four thresholds
+  (file/byte × AMBER/RED). The printed plan gains a `forecast:`
+  line (rates, nearest crossing, file-AMBER and byte-AMBER
+  projections); plan.json gains a `forecast` object and reports
+  version `v2.3`.
+- A GREEN disk gate escalates to AMBER when the nearest crossing
+  is projected within 3 days, with forecast-specific action text
+  (no new VM staging; move staging before the crossing). RED and
+  already-AMBER gates are unchanged.
+- History missing or single-row degrades to "forecast
+  unavailable" — the reading is never invented. The plan,
+  interfaces, and personas banners all say v2.3. Cargo version
+  0.2.2 → 0.2.3. No other behavior changes.
+
 ## v2.2 — 2026-11-10 (file-count gate)
 
 Motivating finding — the 2026-11-10 evaluation of 2026-11-09

@@ -939,7 +939,7 @@ fn iface_dreams(home: &str) {
 
 fn cmd_interfaces() -> i32 {
     let home = env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_string());
-    println!("QEXO v2.2 — interior interfaces (one shape: reading + trend + updated-at + source)");
+    println!("QEXO v2.3 — interior interfaces (one shape: reading + trend + updated-at + source)");
     println!();
     iface_temperature(&home);
     println!();
@@ -963,7 +963,7 @@ fn cmd_interfaces() -> i32 {
 
 fn cmd_personas() -> i32 {
     let home = env::var("HOME").unwrap_or_else(|_| "/home/hatch".to_string());
-    println!("QEXO v2.2 — personas defined locally");
+    println!("QEXO v2.3 — personas defined locally");
     println!();
 
     // The one live persona: Emise, defined by her self-selections manifest.
@@ -1144,16 +1144,114 @@ fn main() {
         _ => 0,
     };
     // The disk gate is the worse of its two halves.
-    let disk_gate = if sev(file_gate) > sev(byte_gate) { file_gate } else { byte_gate };
-    let disk_gate_action = match disk_gate {
-        "RED" => "HOLD all new heavy placements — stage nothing on the VM until the disk gate clears (bytes back under 95 GB and files back under 1,100,000)",
-        "AMBER" => "no new VM staging — heavy execution ranch-only until the disk gate clears",
-        _ => "VM staging within quota headroom (bytes: AMBER at 95 GB, RED at 102 GB; files: AMBER at 1,100,000, RED at 1,300,000)",
+    let mut disk_gate = if sev(file_gate) > sev(byte_gate) { file_gate } else { byte_gate };
+    let mut disk_gate_action: String = match disk_gate {
+        "RED" => "HOLD all new heavy placements — stage nothing on the VM until the disk gate clears (bytes back under 95 GB and files back under 1,100,000)".to_string(),
+        "AMBER" => "no new VM staging — heavy execution ranch-only until the disk gate clears".to_string(),
+        _ => "VM staging within quota headroom (bytes: AMBER at 95 GB, RED at 102 GB; files: AMBER at 1,100,000, RED at 1,300,000)".to_string(),
     };
+
+    // ---- forecast gate (v2.3) ----
+    // The v2.1/v2.2 gates are static: they react only when a threshold
+    // is crossed. The 2026-11-10 evaluation of 2026-11-10 found the
+    // plan saying GREEN on a day when the file count (1,017,445) sat
+    // ~1.4 days from file-AMBER at the last interval's growth rate
+    // (+59,021 files/day) and bytes ~3.4 days from byte-AMBER
+    // (+3.99 GB/day) — a planner that only watches crossings gives no
+    // lead time to move staging before the gate slams. v2.3 reads the
+    // disk-watch history (history.tsv, sibling of the state file),
+    // rates growth from its last two rows, projects days to each
+    // threshold, and escalates a GREEN gate to AMBER when the nearest
+    // crossing is projected within 3 days. History missing or a
+    // single row degrades to "forecast unavailable" — never invented.
+    let dfc = |y: i64, m: i64, d: i64| -> i64 {
+        let ya = if m <= 2 { y - 1 } else { y };
+        let era = if ya >= 0 { ya } else { ya - 399 } / 400;
+        let yoe = ya - era * 400;
+        let mp = if m > 2 { m - 3 } else { m + 9 };
+        let doy = (153 * mp + 2) / 5 + d - 1;
+        let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        era * 146097 + doe - 719468
+    };
+    let history_path = match disk_path.rfind('/') {
+        Some(i) => format!("{}/history.tsv", &disk_path[..i]),
+        None => "history.tsv".to_string(),
+    };
+    let mut hist: Vec<(i64, f64, f64)> = Vec::new();
+    if let Ok(text) = fs::read_to_string(&history_path) {
+        for line in text.lines() {
+            let f: Vec<&str> = line.split('\t').collect();
+            if f.len() < 4 {
+                continue;
+            }
+            let dp: Vec<&str> = f[0].split('-').collect();
+            if dp.len() != 3 {
+                continue;
+            }
+            if let (Ok(y), Ok(m), Ok(d), Ok(gb), Ok(files)) = (
+                dp[0].parse::<i64>(),
+                dp[1].parse::<i64>(),
+                dp[2].parse::<i64>(),
+                f[1].parse::<f64>(),
+                f[3].parse::<f64>(),
+            ) {
+                hist.push((dfc(y, m, d), gb, files));
+            }
+        }
+    }
+    let mut forecast_line = "forecast unavailable: disk-watch history missing or single-row".to_string();
+    let mut forecast_json = "\"forecast\": {\"available\": false}".to_string();
+    if hist.len() >= 2 {
+        let (d0, gb0, fc0) = hist[hist.len() - 2];
+        let (d1, gb1, fc1) = hist[hist.len() - 1];
+        let span = (d1 - d0).max(1) as f64;
+        let gb_rate = (gb1 - gb0) / span;
+        let fc_rate = (fc1 - fc0) / span;
+        let days_to = |target: f64, cur: f64, rate: f64| -> f64 {
+            if cur >= target {
+                0.0
+            } else if rate > 0.0 {
+                (target - cur) / rate
+            } else {
+                f64::INFINITY
+            }
+        };
+        let cands: [(&str, f64); 4] = [
+            ("file AMBER (1,100,000)", days_to(1_100_000.0, fc1, fc_rate)),
+            ("file RED (1,300,000)", days_to(1_300_000.0, fc1, fc_rate)),
+            ("byte AMBER (95 GB)", days_to(95.0, gb1, gb_rate)),
+            ("byte RED (102 GB)", days_to(102.0, gb1, gb_rate)),
+        ];
+        let (near_label, near_days) = cands
+            .iter()
+            .fold(("none", f64::INFINITY), |acc, c| if c.1 < acc.1 { (c.0, c.1) } else { acc });
+        let fmt_days = |v: f64| -> String {
+            if v.is_infinite() { "never at this rate".to_string() } else { format!("{:.1} d", v) }
+        };
+        forecast_line = format!(
+            "growth {:+.0} files/day, {:+.2} GB/day (last interval, {} d) — nearest crossing: {} in {}; file AMBER {}, byte AMBER {}",
+            fc_rate, gb_rate, span as i64, near_label, fmt_days(near_days),
+            fmt_days(cands[0].1), fmt_days(cands[2].1)
+        );
+        forecast_json = format!(
+            "\"forecast\": {{\"available\": true, \"files_per_day\": {:.0}, \"gb_per_day\": {:.2}, \"nearest\": \"{}\", \"nearest_days\": {}, \"file_amber_days\": {}, \"byte_amber_days\": {}}}",
+            fc_rate, gb_rate, near_label,
+            if near_days.is_infinite() { "null".to_string() } else { format!("{:.2}", near_days) },
+            if cands[0].1.is_infinite() { "null".to_string() } else { format!("{:.2}", cands[0].1) },
+            if cands[2].1.is_infinite() { "null".to_string() } else { format!("{:.2}", cands[2].1) }
+        );
+        if near_days <= 3.0 && disk_gate == "GREEN" {
+            disk_gate = "AMBER";
+            disk_gate_action = format!(
+                "FORECAST AMBER — {} projected in {:.1} days at the last interval's growth rate; no new VM staging, heavy execution ranch-only, move staging before the crossing",
+                near_label, near_days
+            );
+        }
+    }
 
     // ---- human-readable plan ----
     let mut out = String::new();
-    out.push_str("QEXO v2.2 — placement plan\n");
+    out.push_str("QEXO v2.3 — placement plan\n");
     out.push_str("four currencies, at a glance:\n");
     out.push_str(&format!(
         "  disk:      {:.1} GB used on the VM volume ({}), {} files, largest consumer {}\n",
@@ -1167,6 +1265,7 @@ fn main() {
         "  file gate: {} — {} files on the VM volume (AMBER at 1,100,000, RED at 1,300,000; byte gate {})\n",
         file_gate, file_count, byte_gate
     ));
+    out.push_str(&format!("  forecast:  {}\n", forecast_line));
     out.push_str(&format!(
         "  cpu/ram:   host snapshot — {:.0} MB RAM available, load {:.2} (VM is a small shared cell; heavy work goes to the ranch)\n",
         avail_mb, load1
@@ -1207,7 +1306,7 @@ fn main() {
 
     // ---- plan.json ----
     let mut json = String::new();
-    json.push_str("{\n  \"version\": \"v2.2\",\n");
+    json.push_str("{\n  \"version\": \"v2.3\",\n");
     json.push_str(&format!(
         "  \"disk\": {{\"date\": \"{}\", \"used_gb\": {:.2}, \"level\": \"{}\", \"files\": {}}},\n",
         json_escape(disk_date),
@@ -1218,12 +1317,13 @@ fn main() {
     json.push_str(&format!(
         "  \"disk_gate\": {{\"state\": \"{}\", \"action\": \"{}\"}},\n",
         disk_gate,
-        json_escape(disk_gate_action)
+        json_escape(&disk_gate_action)
     ));
     json.push_str(&format!(
         "  \"file_gate\": {{\"state\": \"{}\", \"files\": {}, \"amber_at\": 1100000, \"red_at\": 1300000}},\n",
         file_gate, file_count
     ));
+    json.push_str(&format!("  {},\n", forecast_json));
     json.push_str(&format!(
         "  \"host\": {{\"ram_available_mb\": {:.0}, \"load1\": {:.2}}},\n",
         avail_mb, load1

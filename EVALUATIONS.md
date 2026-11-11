@@ -3,6 +3,59 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-11 — nightly evaluation of 2026-11-10 (ships v2.3)
+
+- **Disk:** GREEN on both static gates, close on the clock. disk-watch
+  history: 77.46 GB / 958,424 files (2026-11-09) → 81.45 GB /
+  1,017,445 files (2026-11-10) — +3.99 GB and +59,021 files (+6.2%).
+  File growth slowed from the prior day's +124,074, but at this
+  interval's rate file-AMBER (1,100,000) is ~1.4 days out and
+  byte-AMBER (95 GB) ~3.4 days out, while the static gate still reads
+  plain GREEN. Largest consumers unchanged: wavefront 31.73 GB (the
+  lossless A/B intermediates, ~9 GB together, still staged on the VM
+  for a third straight night despite the ranch-only video rule),
+  goals 19.19 GB, phext 10.62 GB. Tonight's live snapshot: 83 GB used
+  of 150 GB (56%).
+- **CPU:** heavy work stayed ranch-side, as planned — phext-lattice
+  cargo suites on aletheia-core (lib 183/183, bin 86/86 for PR #52
+  verification), the seed-cache build in the evening (SQ PR #3 and
+  phext-lattice PR #61 landed within ~35 minutes of Will's 21:17
+  order), training-film work ranch-side. The VM's 1.5 shared CPUs
+  carried coordination — plus ~140 ten-minute task-progress ticks
+  (1199→1340 across the day), each a frontier-agent run doing mostly
+  identical read-only verifications (see Inference).
+- **RAM:** 6 GB shared limit, same envelope; tonight's snapshot
+  426 MB available, 414 MB swap used. No heavy local resident was
+  recorded on 2026-11-10 — placement held, and RAM held with it.
+- **Inference:** the well-spent bulk was real: Product Hunt launch
+  day, the Zero Index built and independently verified at exactly
+  1,636 entries, PR #52 verified merge-ready on the ranch, PR #58,
+  the seed-cache pair shipped the same evening it was ordered. The
+  waste was, for the third night running, verification-shaped — but
+  bigger: the 10-minute tick loop re-verified unchanged external
+  states with frontier inference all day (register #53's crates.io
+  404 was API-checked at least eight separate times on 2026-11-10;
+  PRs #57–#59 "still OPEN" likewise, tick after tick), and sweep #10
+  closed phantom waits #60/#61/#62 — waits that never existed —
+  while a phantom Multics white-paper completion had to be corrected
+  in the evening. Theia's check-in failed on exhausted Anthropic API
+  credits; per Will's 2026-11-10 ruling that is the accepted cadence,
+  not an escalation.
+- **Counterfactual:** two cases, one root shape — reacting instead of
+  anticipating. (1) Disk: qexo v2.2's gates only fire *at* a crossing;
+  on 2026-11-10's numbers the file gate would have flipped AMBER
+  with zero lead time to move the ~9 GB of wavefront staging first.
+  A planner projecting from the history it already collects would
+  have been warning since the 2026-11-09 interval and escalating
+  now. v2.3 closes exactly that gap (see CHANGELOG). (2) Inference:
+  the tick loop's repeated identical verifications are script-shaped
+  work — a cheap poll-and-diff (fetch, compare to last result,
+  escalate only on change) would have caught every real closure at
+  a fraction of the inference; the day's record shows the same
+  verdict re-derived dozens of times. That fix belongs to the tick
+  machinery, not to qexo, and is recorded here as the standing
+  candidate for a future night.
+
 ## 2026-11-10 — nightly evaluation of 2026-11-09 (ships v2.2)
 
 - **Disk:** GREEN on bytes, fast-moving on count. disk-watch history:
