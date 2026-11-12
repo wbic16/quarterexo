@@ -85,7 +85,7 @@ const CATALOG: &[ToolSpec] = &[
         name: "phcc",
         repo: "https://github.com/wbic16/phcc",
         about: "phcc — the phext-carried TinyCC modernisation: a provably-correct C compiler whose sources live as phext scrolls (PATCHES.md is the divergence record)",
-        binary: "tcc",
+        binary: "phcc",
         apt: &["build-essential", "git"],
         build: &[
             "git clone https://github.com/wbic16/phcc.git",
@@ -134,7 +134,7 @@ const CATALOG: &[ToolSpec] = &[
         ],
         pitfalls: &[
             "the install lays the standard Neovim tree down intact (bin/nvim + share/nvim runtime) and adds bin/exovim as a symlink to the same binary: Neovim locates its runtime relative to the executable, so the renamed entry point keeps the full runtime and the user simply runs `exovim`. Do not rename the tree or strip the runtime — the phext plugin lives in runtime/ and loads from it",
-            "phcc build variant (verified end-to-end 2026-11-08 on aletheia-core, phcc tip bdf12df2, this fork's base c868e1ab): build the bundled deps with the SYSTEM compiler first — cmake -S cmake.deps -B .deps -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_BUNDLED_LUA=ON && cmake --build .deps — then configure nvim itself with CC='<phcc>/tcc -B<phcc>' and -DPREFER_LUA=ON -DLUA_MATH_LIBRARY=/usr/lib/x86_64-linux-gnu/libm.so. Result: full compile + link with zero source changes to either codebase; binary NVIM v0.13.0-dev, sha256 47f583b0eb9120b89027c3e4580800b7cc66c8fb40dddee0cbab608b8c4259ce; the phext integration suite passes 37/37 inside the phcc-built editor",
+            "phcc build variant (verified end-to-end 2026-11-08 on aletheia-core, phcc tip bdf12df2, this fork's base c868e1ab): build the bundled deps with the SYSTEM compiler first — cmake -S cmake.deps -B .deps -G Ninja -DCMAKE_BUILD_TYPE=Release -DUSE_BUNDLED_LUA=ON && cmake --build .deps — then configure nvim itself with CC='<phcc>/phcc -B<phcc>' and -DPREFER_LUA=ON -DLUA_MATH_LIBRARY=/usr/lib/x86_64-linux-gnu/libm.so. Result: full compile + link with zero source changes to either codebase; binary NVIM v0.13.0-dev, sha256 47f583b0eb9120b89027c3e4580800b7cc66c8fb40dddee0cbab608b8c4259ce; the phext integration suite passes 37/37 inside the phcc-built editor",
             "why the LUA_MATH_LIBRARY pre-seed: CMake's FindLua resolves libm only via the multiarch directory, which it finds through CMAKE_LIBRARY_ARCHITECTURE — a variable the TinyCC compiler-ABI probe leaves empty. Without the pre-seed the literal token LUA_MATH_LIBRARY-NOTFOUND leaks into the final link line and the link fails at the last step. It is a CMake artefact, not a phcc defect; the value mirrors exactly what the same probe resolves under GCC on Ubuntu",
             "why PREFER_LUA=ON: it selects the bundled Lua 5.1.5 instead of LuaJIT. LuaJIT is hand-written assembly and is not a phcc target. This is also why lua5.1 + liblua5.1-0-dev + pkg-config are in the apt set: the configure is a hard failure without a Lua interpreter present",
             "deps caveat (ladder rung L2b, still open): at the verified rung the bundled deps (.deps, including libuv) are system-compiler-built and only LINKED by phcc. Compiling libuv itself under phcc is not yet done — libuv uses __atomic_* intrinsics phcc does not currently provide. Do not claim a whole-tree phcc build",
