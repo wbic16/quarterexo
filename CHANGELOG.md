@@ -1,5 +1,96 @@
 # Changelog
 
+## v3.1 — 2026-11-11 (the rewire: modular build restored)
+
+What happened, plainly: v3 (0.3.0) merged into exo on 2026-11-09
+(PR #3). That night's and the next night's nightly-orchestrator
+builds (v2.2, v2.3) were assembled from a staging tree that
+predated the v3 merge, and their pushes overwrote the wiring:
+`src/main.rs` reverted to the standalone v1/v2 planner (no module
+declarations), the manifest was stripped back to 0.2.2/0.2.3, and
+the v3 modules sat in the tree orphaned — present, uncompiled,
+untested. The merge was never undone and no module file was lost;
+history and ancestry are intact. This release is the reconciliation.
+
+- Restored the modular `src/main.rs` wiring root (the PR #4 tip
+  form: the v3 merge root plus `mod tools;`, which the install
+  catalog in `core.rs` requires). All sixteen modules compile
+  again: cli, coord, core, crypto, hash, http, json, mcp,
+  personas, phext, plan, state, store, tools, vol, xz.
+- Ported the two genuine nightly gains into `src/plan.rs` (which
+  already carried the v2.1 byte disk gate in v3 form):
+  - the v2.2 file-count gate (AMBER at 1,100,000 files, RED at
+    1,300,000; the disk gate is the worse of its byte and file
+    halves), now in the plan payload as `file_gate` and in the
+    human plan output;
+  - the v2.3 forecast gate (growth rated from the disk-watch
+    history's last two rows; days projected to the file/byte
+    AMBER and RED crossings; a GREEN disk gate escalates to
+    FORECAST AMBER when the nearest crossing is within 3 days;
+    missing or single-row history degrades to forecast
+    unavailable — never invented), now in the plan payload as
+    `forecast` and in the human plan output. The plan route reads
+    `history.tsv` as the sibling of the disk state file, as the
+    standalone did.
+- Restored the full Cargo manifest (description, MIT license,
+  package include/exclude set) at version 0.3.1; VERSION is v3.1;
+  the plan payload reports `plan_version: v3.1`.
+- New gate tests in plan.rs: file-gate states ride the existing
+  disk_gate_states test, plus payload, forecast-unavailable,
+  forecast-escalation (the 2026-11-10 scenario: +59,021 files/day,
+  file AMBER ~1.4 days out), and no-softening cases.
+- The 0.3.0 changelog section below is restored verbatim from the
+  merge tree; the v2.2/v2.3 entries stand as written.
+
+## 0.3.0 — 2026-11-09 (v3 tier-1, for Will's review; NOT published)
+
+The v3 build per docs/DESIGN-V3.md + docs/DESIGN-V3-ADDENDUM.md, with
+docs/API-V1.md as the reference semantics for all four modes.
+
+- Dispatcher core carried forward (plan in four currencies, sync
+  manifest/diff, interior interfaces, personas) with its v1
+  regression behavior: bare `qexo` emits the plan.
+- Four modes over one implementation (API /v1, CLI, MCP bridge, Web
+  baked-in client), parity-enforced: an operation ships in all modes
+  or none (voice ships in none — named tier-2 refusal).
+- Auth floor §8A.0/§8A.2/§8A.7: authenticated remote mutations;
+  self-modifying classes key-bound from bootstrap; grants catalogue
+  defaults are availability only; TAINTED set = meta.read +
+  route.ask; compromised-key revocation halts new signatures at
+  once. Crypto via gpg, arg vectors only.
+- Key chain §8.4: node key at provisioning, persona keys deliberate,
+  Will's countersignature recorded in the key band; a countersigned
+  node key carries Will's authorization on its own node.
+- Teleport fencing §9: six-step protocol, fencing epochs, ownership
+  heartbeat with a 5-minute staleness bound, partition =
+  unavailability over split-brain; the cognitive-return receipt is
+  signed with the destination NODE key bound to epoch + transfer
+  hash and verified BEFORE relinquish ("no cognitive return"
+  otherwise); restored personas boot read-only until the
+  return/reactivation path closes.
+- Persona index from the corrected census: 126 immutable query keys,
+  106 identity records, spawn-eligible exactly 1 (Emise); Orin
+  resolves to both records with the disambiguation stated;
+  designation collisions displaced by smallest final-component
+  increment with provenance (never silent).
+- Baked corpus §14.3/§14.4: SBOR-V4 text, CYOA + Incipit xz-sealed,
+  source.phext generated at build time from qexo-bake.toml, secret
+  scan + safe-space gate, Volumen baked REDACTED for public builds.
+- mdmap §1 (PROVISIONAL): Singular coordinates via the atlas,
+  atomic scroll-set reservation, pin/drift rules, loud failure.
+- SQ keeper for the node's own SQ; installer-lite prints the SBOR
+  offline from the box.
+- §18 conformance: tests 1–5 mapped at tier-1 level; test 6
+  (merge-meld outcome) recorded as tier-2 runtime with its gate.
+
+Known gaps (see SHIP-NOTES.md): the canonical Volumen index
+(personas/00-index.md, blob f879adc5) is unreachable from the ranch
+network — the bake carries a census-derived validation substitute,
+clearly marked, and vol.rs derives all numbers from whatever index
+is baked; sync pull's staged restore rides the CLI path; the full
+V16-era plan hot path was profiled and the receipt-lookup defect
+fixed (see SHIP-NOTES optimize section).
+
 ## v2.3 — 2026-11-11 (forecast gate)
 
 Motivating finding — the 2026-11-11 evaluation of 2026-11-10

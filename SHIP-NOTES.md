@@ -1,8 +1,20 @@
 # qexo v3 — SHIP NOTES (for Will's morning review)
 
-*Status: IN PROGRESS — filled in as the pipeline runs (build →
-optimize → test → security check → package). Nothing in this file is
-a claim until the section reporting it says it was run.*
+*Status: v3 tier-1 SHIPPED to exo 2026-11-09 (PR #3 merged;
+crates.io publish still open). v3.1 REWIRE in review — see the
+next section.*
+
+## v3.1 rewire (2026-11-11)
+
+The nightly v2.2/v2.3 builds were assembled from a pre-v3 staging
+tree and overwrote the modular `src/main.rs` wiring and the 0.3.0
+manifest on exo; the v3 modules survived in the tree, orphaned and
+uncompiled. The rewire PR (`emise/rewire-v3.1` against exo)
+restores the modular root, ports the v2.2 file-count gate and the
+v2.3 forecast gate into `src/plan.rs`, restores the full manifest
+at 0.3.1 / VERSION v3.1, and restores the 0.3.0 changelog section.
+Gate results are reported in the PR body; nothing here claims a
+gate that was not run.
 
 ## Known substrate capability gaps
 

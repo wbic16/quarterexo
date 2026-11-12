@@ -391,7 +391,15 @@ pub fn route(ctx: &Ctx, method: &str, path: &[String], query: &[(String, String)
             Err(e) => return (422, refusal_payload(&Refusal::new(422, "unverified-state", format!("cannot read tasks source {}: {}", tasks_path, e)))),
         };
         let disk_text = fs::read_to_string(&disk_path).unwrap_or_else(|_| "{\"used_gb\":0,\"level\":\"unknown\",\"date\":\"?\",\"files\":0}".into());
-        return match plan::build_plan(&tasks_text, &disk_text) {
+        // The forecast gate reads the disk-watch history (history.tsv,
+        // sibling of the state file); missing history degrades the
+        // forecast to unavailable inside the plan, never an error.
+        let history_path = match disk_path.rfind('/') {
+            Some(i) => format!("{}/history.tsv", &disk_path[..i]),
+            None => "history.tsv".to_string(),
+        };
+        let history_text = fs::read_to_string(&history_path).ok();
+        return match plan::build_plan_with_history(&tasks_text, &disk_text, history_text.as_deref()) {
             Ok(p) => {
                 let _ = st.write_json("plan-current.json", &p);
                 (200, p)
