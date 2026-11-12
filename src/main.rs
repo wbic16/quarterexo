@@ -20,6 +20,7 @@ mod state;
 mod store;
 mod tools;
 mod vol;
+mod wiring;
 mod xz;
 
 use std::sync::Arc;
@@ -54,6 +55,32 @@ fn main() {
         }
         "phext" if args.get(1).map(|s| s.as_str()) == Some("parse") || args.get(1).map(|s| s.as_str()) == Some("explode") || args.get(1).map(|s| s.as_str()) == Some("implode") || args.get(1).map(|s| s.as_str()) == Some("seal") || args.get(1).map(|s| s.as_str()) == Some("unseal") || args.get(1).map(|s| s.as_str()) == Some("select") || args.get(1).map(|s| s.as_str()) == Some("get") => {
             std::process::exit(phext_file_ops(&args[1..]));
+        }
+        "wiring-check" => {
+            // `qexo wiring-check [src-dir]`: the v3.2 gate — every
+            // src/*.rs module file must be declared in src/main.rs
+            // and every declaration must have its file. Exit 1 names
+            // the orphans. File-level local check, like `bake`.
+            let dir = args.get(1).cloned().unwrap_or_else(|| "src".into());
+            match wiring::check_dir(std::path::Path::new(&dir)) {
+                Ok((orphaned, missing, n)) => {
+                    for o in &orphaned {
+                        println!("ORPHANED: src/{}.rs is present but not declared in main.rs — it does not compile", o);
+                    }
+                    for m in &missing {
+                        println!("MISSING: mod {}; is declared in main.rs but src/{}.rs is absent", m, m);
+                    }
+                    if orphaned.is_empty() && missing.is_empty() {
+                        println!("wiring ok: {} module files, all declared in main.rs, no missing files", n.saturating_sub(1));
+                        std::process::exit(0);
+                    }
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("qexo wiring-check: {}", e);
+                    std::process::exit(2);
+                }
+            }
         }
         "bake" => {
             // `qexo bake --check`: verify the baked corpus hashes

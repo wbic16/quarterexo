@@ -3,6 +3,78 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-12 — nightly evaluation of 2026-11-11 (ships v3.2)
+
+- **Disk:** growth collapsed to the slowest interval on record.
+  disk-watch history: 81.45 GB / 1,017,445 files (2026-11-10) →
+  82.47 GB / 1,022,817 files (2026-11-11) — +1.02 GB and +5,372
+  files (+0.5%), against +3.99 GB / +59,021 the day before and
+  +6.45 GB / +124,074 the day before that. Static gates GREEN on
+  both halves; at this interval's rate the single-interval
+  forecast puts byte-AMBER ~12.3 days out and file-AMBER ~14.4
+  days out (against ~1.4 days yesterday — see Counterfactual on
+  the whipsaw). Largest consumers unchanged: wavefront 31.73 GB
+  (the lossless A/B intermediates, ~9 GB together, still staged on
+  the VM for a fourth straight night), goals 19.20 GB, phext
+  10.62 GB. Tonight's live snapshot runs ahead of the state file,
+  as usual: df reads 85 GB used of 150 GB (57%).
+- **CPU:** heavy work stayed off the VM, as planned — the qexo
+  rewire build and batteries on aletheia-core, training-film
+  rounds ranch-side, Singularity Watch and phextura.com deploys
+  on awsbox. The VM's 1.5 shared CPUs carried coordination plus
+  the standing background load: ~140 ten-minute task-progress
+  ticks across the day (numbered 1341–1484), hourly journals, and
+  the watchdog/backstop jobs.
+- **RAM:** 6 GB shared limit, same envelope; tonight's snapshot
+  620 MB available, 436 MB swap used, load 1.00. No heavy local
+  resident was recorded on 2026-11-11 — placement held, and RAM
+  held with it, for the third night running.
+- **Inference:** the well-spent bulk was real: phextura as the
+  daily goal (design loop, re-encode pass, phextura.com live),
+  MOAT Papers 013/014 absorbed (015 dispatched), the Gemma 4
+  Paper Track draft completed (2,620 words, awaiting only Will's
+  read-through and Submit before the 2026-11-12 17:59 CST close),
+  exo-search built and published (SQLite FTS5 over 37,782
+  documents, validated against brute force), and the qexo audit +
+  rewire PR #6, merged by Will the same day. The waste was
+  repair-shaped: (1) the rewire itself — an audit and a full PR
+  spent reconciling version history that a ship-time check would
+  have kept from breaking at all (see Counterfactual); (2) the
+  stale Dunbar figure (~30, Twitter-only) was parroted back to
+  Will on 2026-11-11 even though exo-search — the indexed tool
+  built to replace that stale search — already existed; (3) the
+  Multics paper's phantom completion had to be corrected and the
+  paper actually written (4,481 words, delivered 2026-11-11).
+  Theia's check-in failed again on exhausted Anthropic API
+  credits; per Will's 2026-11-10 ruling that is the accepted
+  cadence, not an escalation. crates.io publish of qexo 0.3.0
+  remains open (register #53) — a Will-side act, not a code gap.
+- **Counterfactual:** the strongest case examined is the qexo
+  rewire, and it is not close. On the 2026-11-09 and 2026-11-10
+  nights, the nightly ships were assembled from a staging tree
+  that predated the v3 merge; their standalone `src/main.rs`
+  overwrote the modular root on exo, orphaning all sixteen v3
+  modules (present, uncompiled, untested) and stripping the
+  manifest back to 0.2.x. A better planner — specifically, a
+  ship-time gate comparing the tree's module files against the
+  root's `mod` declarations, and the local tree against the fresh
+  remote HEAD — would have failed both pushes in seconds. Instead
+  the defect surfaced in a 2026-11-11 audit and cost a full
+  reconciliation PR plus Will's merge. v3.2 ships the first half
+  of that gate in the binary itself (`qexo wiring-check`, with a
+  test reproducing the exact orphan scenario; see CHANGELOG).
+  The second half was performed by hand tonight and verified
+  before any edit: every file this release touches was
+  blob-identical between the local tree and exo HEAD b962fad1
+  (the PR #6 merge) — that freshness check stays a publish-route
+  discipline, recorded here. Secondary case, recorded as a
+  future candidate and deliberately not shipped tonight (one
+  change per night): the v2.3 forecast rates growth from a single
+  interval, so its nearest-crossing estimate swung from ~1.4 days
+  (2026-11-10 interval) to ~12–14 days (2026-11-11 interval) in
+  one night — a multi-interval rate would trade a little
+  responsiveness for a planner whose warnings do not whipsaw.
+
 ## 2026-11-11 — nightly evaluation of 2026-11-10 (ships v2.3)
 
 - **Disk:** GREEN on both static gates, close on the clock. disk-watch

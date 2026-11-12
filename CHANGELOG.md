@@ -1,5 +1,36 @@
 # Changelog
 
+## v3.2 — 2026-11-12 (the wiring gate)
+
+Motivating finding — the 2026-11-12 evaluation of 2026-11-11
+(EVALUATIONS.md, 2026-11-12 section): the day's largest qexo cost
+was repair, not progress — the audit and PR #6 rewire that restored
+the modular build after the 2026-11-09/10 nightly ships (v2.2/v2.3)
+overwrote the modular `src/main.rs` from a stale staging tree,
+leaving all sixteen v3 modules present but uncompiled. Nothing in
+the ship process compared the tree's module files against the
+root's declarations, so the loss stayed silent for two days.
+
+What v3.2 does (one change: the wiring becomes a checked gate):
+
+- New module `src/wiring.rs`: a pure check over the crate root's
+  text and the module file set — `declared_modules` parses
+  `mod <name>;` / `pub mod <name>;` lines; `check` returns the
+  orphaned files (present, undeclared — they do not compile) and
+  the missing files (declared, absent). `check_dir` applies it to
+  a source directory on disk.
+- New CLI form `qexo wiring-check [src-dir]` (default `src`),
+  following the `bake --check` precedent for file-level local
+  checks: prints `wiring ok` with the module count and exits 0
+  when the wiring is exact; names every orphan/missing file and
+  exits 1 otherwise; exit 2 when the directory cannot be read.
+- Tests reproduce the exact failure shape: a standalone root
+  declaring only `json` + `plan` against the full seventeen-file
+  v3 file set reports 14 orphaned modules; plus exact-wiring,
+  missing-file, and declaration-parsing cases.
+- Version: Cargo 0.3.1 → 0.3.2; VERSION v3.2; the plan payload
+  reports `plan_version: v3.2`. No other behavior changes.
+
 ## v3.1 — 2026-11-11 (the rewire: modular build restored)
 
 What happened, plainly: v3 (0.3.0) merged into exo on 2026-11-09

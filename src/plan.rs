@@ -237,7 +237,7 @@ pub fn build_plan_with_history(tasks_text: &str, disk_text: &str, history_text: 
 
     let total = rows.len();
     Ok(Json::obj(vec![
-        ("plan_version", Json::s("v3.1")),
+        ("plan_version", Json::s("v3.2")),
         ("disk", Json::obj(vec![
             ("date", Json::s(disk_date)),
             ("used_gb", Json::n(used_gb)),
@@ -529,7 +529,7 @@ mod tests {
         let fg = plan.get("file_gate").unwrap();
         assert_eq!(fg.get("state").unwrap().as_str(), Some("AMBER"));
         assert_eq!(fg.get("files").unwrap().as_num(), Some(1_150_000.0));
-        assert_eq!(plan.get("plan_version").unwrap().as_str(), Some("v3.1"));
+        assert_eq!(plan.get("plan_version").unwrap().as_str(), Some("v3.2"));
     }
 
     #[test]
