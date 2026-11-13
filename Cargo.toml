@@ -1,21 +1,19 @@
 [package]
 name = "qexo"
-version = "0.3.3"
-description = "qexo — the Exocortex coordinator: dispatcher, persona index, teleport fencing, baked corpus (DESIGN-V3)"
+version = "1.0.0"
+description = "qexo — the Exocortex coordinator, phext-native: all node state lives in /var/lib/qexo/state.phext (Layer 2 addressing over phext)"
 license = "MIT"
 edition = "2021"
 
 # The bake/ directory holds build-time generated artifacts
 # (tools/build_bake_remote.py from qexo-bake.toml). It is included in
 # the package so the published crate builds anywhere; bake/ itself is
-# never a hand-edited source. Regenerate with tools/build_bake.py.
+# never a hand-edited source.
 include = [
-    "src/**", "web/**", "tools/**", "bake/**", "census.tsv",
+    "src/**", "bake/**", "census.tsv",
     "Cargo.toml", "CHANGELOG.md", "SHIP-NOTES.md", "VERSION",
     "qexo-bake.toml", "docs/**", "README.md",
 ]
-# include globs win over .gitignore; keep bytecode caches out of the crate.
-exclude = ["tools/__pycache__/**"]
 
 [profile.release]
 opt-level = 2

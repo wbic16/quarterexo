@@ -1,32 +1,23 @@
 # qexo
 
-Will's Rust dispatcher/qexo. Reads the open-task register and
-the resource picture; emits a placement plan in the four currencies
-(disk, CPU, RAM, inference): inference to Emise, heavy execution to
-ranch nodes, the VM coordinating only. A new version ships every night
-as part of Emise's dreaming process (skill: nightly-qexo).
+qexo is the Exocortex coordinator: a single Rust binary that keeps
+a node's working state — identity, keys, peers, personas, plan,
+ledgers — and offers it to the operator and to peer nodes.
 
-Build (on a ranch node — heavy builds never run on the Muse VM):
+This line (1.0) is phext-native from scratch. All node state lives
+in **one file, `/var/lib/qexo/state.phext`**, addressed in the
+Layer 2 scheme over phext's nine dimensions. qexo has no JSON
+state, no JSONL ledgers, and no JSON API: its HTTP surface serves
+scroll text, and machine readers use phext tooling (SQ/libphext).
+The single foreign protocol qexo speaks is Ollama's, confined to
+one translation module (`src/infer.rs`).
 
-    cargo build --release
+`QEXO_STATE` overrides the state path for development and tests.
 
-Run:
+Build: `cargo build --release`. Gate: `cargo test` and
+`qexo wiring-check` (every module declared, every declaration
+filed — the check that would have caught the v2.2/v2.3 orphaning).
 
-    ./target/release/qexo [tasks-source.json] [disk-state.json] [out-dir]
-
-Defaults read the live files under ~/workspace. Prints the plan and
-writes plan.json to the out-dir.
-
-v2 subcommands (design: DESIGN.md):
-
-    ./target/release/qexo sync-manifest <dir>
-    ./target/release/qexo sync-diff <old-manifest> <new-manifest>
-    ./target/release/qexo interfaces
-    ./target/release/qexo personas
-
-`sync-manifest` writes a MANIFEST.sha256 for a state bundle directory;
-`sync-diff` prints the delta between two manifests (the sync protocol
-moves only the delta); `interfaces` prints the five interior interface
-readings — temperature, emotion, goals, desires, dreams — projected
-from their source surfaces, degrading honestly where a surface is
-unreachable.
+The 0.x line's history remains in this repository's git history;
+it is not the ancestor of this source tree, which was written
+fresh against the design in the project's scratch record.

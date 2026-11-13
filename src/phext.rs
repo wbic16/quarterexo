@@ -110,44 +110,61 @@ impl Phext {
         self.scrolls.iter().map(|(c, t)| (*c, t.len())).collect()
     }
 
-    /// Serialize canonically: ascending coordinates, delimiter of the
-    /// highest changed component between consecutive scrolls.
+    /// Serialize canonically: ascending coordinates, walking the
+    /// dead-reckoning path from each scroll to the next. A single
+    /// delimiter advances ONE component by ONE — so reaching a
+    /// distant address takes a STACK of delimiters (component by
+    /// component, most significant first, each emission resetting
+    /// the less-significant components to 1), with no text between
+    /// them. That is how CYOA's sparse landscape is actually laid
+    /// down (a scroll at 13.13.13 is reached by climbing, not by
+    /// one jump), and it is the only serialization parse can read
+    /// back faithfully: an earlier form of this function emitted
+    /// just the highest changed component's delimiter, which made
+    /// every jump of more than 1 in any component land at the
+    /// wrong address on re-read — patterned homeland addresses
+    /// (2.2.2/2.2.2/2.2.2 and kin) were unrepresentable. Found by
+    /// the v1.0 battery, 2026-11-12: records a command had just
+    /// written could not be found by the next process.
     pub fn serialize(&self) -> String {
         let mut out = String::new();
-        let mut prev: Option<Coord> = None;
+        let mut cur: Coord = [1; 9];
         for (coord, text) in &self.scrolls {
-            if let Some(p) = prev {
-                let mut changed = 8usize;
-                for k in 0..9 {
-                    if p[k] != coord[k] {
-                        changed = k;
-                        break;
+            // Climb from wherever the walk stands to this scroll's
+            // address (for a scroll at the origin — a document's
+            // home — the climb emits nothing).
+            for k in 0..9 {
+                while cur[k] < coord[k] {
+                    out.push(delim_for(k) as char);
+                    cur[k] = cur[k].saturating_add(1);
+                    for j in (k + 1)..9 {
+                        cur[j] = 1;
                     }
                 }
-                out.push(delim_for(changed) as char);
             }
             out.push_str(text);
-            prev = Some(*coord);
+            cur = *coord;
         }
         out
     }
 
     /// Parse the canonical serialized form. Position starts at
-    /// 1.1.1/1.1.1/1.1.1; each delimiter increments its component and
-    /// resets all less-significant components to 1.
+    /// 1.1.1/1.1.1/1.1.1; each delimiter increments its component
+    /// and resets all less-significant components to 1. A scroll
+    /// EXISTS only when it holds at least a byte: delimiter stacks
+    /// (the climb to a distant address) pass through intermediate
+    /// positions without minting empty scrolls there.
     pub fn parse(text: &str) -> Phext {
         let mut px = Phext::new();
         let mut pos: Coord = [1; 9];
         let mut cur = String::new();
-        let mut started = false;
         for ch in text.chars() {
             let b = ch as u32;
             if b < 0x20 && b != 0x0A && b != 0x09 && b != 0x0D {
                 if let Some(idx) = delim_rank(b as u8) {
-                    if started || !cur.is_empty() {
+                    if !cur.is_empty() {
                         px.insert(pos, std::mem::take(&mut cur));
                     }
-                    started = true;
                     pos[idx] = pos[idx].saturating_add(1);
                     for k in (idx + 1)..9 {
                         pos[k] = 1;
@@ -155,10 +172,9 @@ impl Phext {
                     continue;
                 }
             }
-            started = true;
             cur.push(ch);
         }
-        if started || !cur.is_empty() {
+        if !cur.is_empty() {
             px.insert(pos, cur);
         }
         px
@@ -175,6 +191,28 @@ mod tests {
         assert_eq!(fmt_coord(&c), "2.3.5/7.11.13/17.19.23");
         assert!(parse_coord("1.1.1/1.1.1/0.1.1").is_none()); // below floor
         assert!(parse_coord("1.1.1/1.1.1").is_none());
+    }
+
+    #[test]
+    fn sparse_patterned_addresses_roundtrip() {
+        // The homeland pattern: distant, patterned addresses
+        // reached by delimiter stacks. Regression test for the
+        // single-delimiter serializer, which landed every jump
+        // of >1 at the wrong address on re-read.
+        let mut px = Phext::new();
+        px.insert([1, 1, 1, 1, 1, 1, 1, 1, 1], "home".into());
+        px.insert([1, 1, 1, 1, 1, 1, 1, 1, 2], "identity".into());
+        px.insert([2, 2, 2, 2, 1, 1, 1, 1, 1], "node key".into());
+        px.insert([2, 2, 2, 2, 2, 2, 2, 2, 2], "keys anchor".into());
+        px.insert([3, 3, 3, 2, 1, 1, 1, 1, 1], "peer record".into());
+        px.insert([3, 3, 3, 3, 3, 3, 3, 3, 3], "peers anchor".into());
+        px.insert([9, 9, 9, 9, 9, 9, 9, 9, 9], "far corner".into());
+        px.insert([13, 13, 13, 13, 13, 13, 13, 13, 15], "the test sits at .15".into());
+        let back = Phext::parse(&px.serialize());
+        assert_eq!(back.scrolls, px.scrolls);
+        // the climb mints no empty scrolls at intermediate stops
+        assert!(back.scrolls.values().all(|t| !t.is_empty()));
+        assert_eq!(back.scrolls.len(), 8);
     }
 
     #[test]
