@@ -239,7 +239,7 @@ pub fn config() -> i32 {
             ("name", &name),
             ("node", &node),
             ("born", &stamp),
-            ("qexo", "v1.0.2"),
+            ("qexo", "v1.0.3"),
             ("state", &path.display().to_string()),
         ]),
     );
@@ -806,7 +806,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.0.2 — node status");
+    println!("qexo v1.0.3 — node status");
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,

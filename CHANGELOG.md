@@ -1,5 +1,43 @@
 # qexo changelog — the scratch line
 
+## 1.0.3 (v1.0.3) — built and gated, 2026-11-12
+
+The forecast kept the old VM ceilings after the gate moved.
+v1.0.2 re-based the disk gate on the volume a node stands on —
+a volume lens, a quota lens only where configured — but the
+forecast gate was left untouched, still projecting crossings of
+the legacy absolute levels: byte AMBER at 95 GB, byte RED at
+102 GB. Every ranch volume already sits past 95 GB used, so on
+the 2026-11-12 fleet rollout the second plan read on any node
+flipped its headline to "AMBER — FORECAST AMBER — byte AMBER
+(95 GB) projected in 0.0 days" over a gate that was GREEN with
+66–92% of the volume free. A forecast that contradicts the gate
+it forecasts is a bug, and this corrects it.
+
+The forecast now projects the crossings of the same lenses the
+gate reads, from the same config record: the volume lens's
+levels are the used amounts at which this volume's free
+fraction crosses the configured AMBER/RED percentages; the
+quota lens contributes crossings only on nodes that have it on,
+and they are named as quota crossings in the node's own
+numbers; the file lens reads its thresholds from the config
+record as before. The hardcoded 95/102 levels are deleted from
+the forecast path — the only place those numbers remain is as
+the quota lens's config defaults, off by default.
+
+Two projection rules changed with the levels, both forced by
+the same evidence. A crossing the current reading has already
+reached is the gate's verdict, not a forecast, and is no longer
+projected at 0.0 days. And projections are reported only
+within a one-year horizon: a linear rate is a short-horizon
+instrument, and a crossing tens of thousands of days out (the
+ranch case: ~2,900 GB away at +0.06 GB/day) is reported as no
+crossing rather than lent a day count it has not earned. The
+old forecast tests that asserted the legacy levels were
+rewritten to the lens semantics; the ported file-growth
+scenario (+59,021 files/day, file AMBER ~1.4 days out, forecast
+escalation) passes unchanged, because the file lens never moved.
+
 ## 1.0.2 (v1.0.2) — built and gated, 2026-11-12
 
 The disk gate judged every node by the Muse VM's quota. Its
