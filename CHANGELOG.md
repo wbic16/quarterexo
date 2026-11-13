@@ -1,5 +1,33 @@
 # qexo changelog — the scratch line
 
+## 1.0.1 (v1.0.1) — built and gated, 2026-11-12
+
+A Windows correctness fix for doctor, in two parts. The doctor
+test encoded unix permission semantics as if they were
+universal: it seeded the keyring at mode 0755 and asserted a
+repair to 0700 — on Windows there are no permission modes to
+read or set, so the test could never pass there. And behind the
+test sat a real bug: lock liveness was judged by /proc/{pid},
+which never exists on Windows, so a lock held by a *live* qexo
+process would have been judged stale and doctor --fix would
+have deleted it.
+
+Now: liveness is probed per platform (unix /proc; Windows
+OpenProcess + GetExitCodeProcess via kernel32, std-only), and
+a pid whose liveness cannot be judged reads as alive — doctor
+never deletes a lock it cannot judge. The keyring check on
+non-unix platforms reports itself present and ok, with the
+detail that permission modes are a unix concept and do not
+apply there; the repair path claims nothing it cannot do.
+The test asserts the platform-neutral repairs (missing
+directory, stale lock) everywhere and the mode repair on unix
+only, and asserts the not-applicable keyring finding exists
+off-unix. No behavior change on unix. Gates: cargo test on
+the ranch (unix), release build, wiring check, and a clean
+`cargo check --tests` for the x86_64-pc-windows-gnu target;
+Windows runtime execution is verified on Will's machine, not
+the ranch.
+
 ## 1.0.0 (v1.0) — built and gated, 2026-11-12
 
 A from-scratch line. The old line (0.x, in git history) kept its

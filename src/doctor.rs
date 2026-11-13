@@ -2,8 +2,9 @@
 //!
 //! Two layers. The FILESYSTEM facts: the state directory exists
 //! and is writable, the state file exists and parses as phext,
-//! the GPG keyring directory is private (0700), no stale state
-//! lock is held by a dead process. The LATTICE facts (Layer 2):
+//! the GPG keyring directory is private (0700, on unix — modes
+//! do not exist elsewhere and the finding says so), no stale
+//! state lock is held by a dead process. The LATTICE facts (Layer 2):
 //! the home index and every homeland index exist, and every
 //! record (peer, persona, session) is named by its homeland's
 //! index — records are truth, indexes are derived prose, so a
@@ -90,15 +91,73 @@ fn set_mode(p: &Path, mode: u32) -> Result<(), String> {
 
 /// The state lock file, if qexo keeps one: <state>.lock holding a
 /// pid as text. A lock whose pid has no live process is stale.
+///
+/// Liveness is probed per platform, and the conservative
+/// direction rules: a pid whose liveness cannot be judged is
+/// treated as ALIVE (never stale) — doctor must never delete a
+/// lock it cannot judge, because the lock it deletes might be
+/// the one a running qexo is holding.
 fn stale_lock(state_file: &Path) -> Option<PathBuf> {
     let lock = state_file.with_extension("lock");
     let pid_text = std::fs::read_to_string(&lock).ok()?;
     let pid: u32 = pid_text.trim().parse().ok()?;
-    let alive = Path::new(&format!("/proc/{}", pid)).exists();
-    if alive {
+    if pid_alive(pid) {
         None
     } else {
         Some(lock)
+    }
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    Path::new(&format!("/proc/{}", pid)).exists()
+}
+
+#[cfg(windows)]
+fn pid_alive(pid: u32) -> bool {
+    windows_pid_alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn pid_alive(pid: u32) -> bool {
+    let _ = pid;
+    true // no probe on this platform: unjudgeable means alive
+}
+
+/// Windows liveness probe, std-only via kernel32: open the
+/// process with query-limited rights and ask its exit code.
+/// STILL_ACTIVE (259) means alive; a real exit code means the
+/// process is gone. A null handle means "not alive" ONLY when
+/// the error is ERROR_INVALID_PARAMETER (no such process); any
+/// other failure (e.g. access denied on a protected process) is
+/// ambiguity, and ambiguity reads as alive.
+#[cfg(windows)]
+fn windows_pid_alive(pid: u32) -> bool {
+    use std::ffi::c_void;
+
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+    const ERROR_INVALID_PARAMETER: u32 = 87;
+
+    extern "system" {
+        fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> *mut c_void;
+        fn GetExitCodeProcess(h_process: *mut c_void, lp_exit_code: *mut u32) -> i32;
+        fn CloseHandle(h_object: *mut c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return GetLastError() != ERROR_INVALID_PARAMETER;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(handle, &mut code);
+        CloseHandle(handle);
+        if ok == 0 {
+            return true; // could not ask: ambiguity reads as alive
+        }
+        code == STILL_ACTIVE
     }
 }
 
@@ -156,12 +215,25 @@ pub fn check(state_dir: &Path, state_file: &Path) -> Report {
     // keyring privacy
     let gnupg = state_dir.join("gnupg");
     if gnupg.is_dir() {
-        let mode = mode_of(&gnupg).unwrap_or(0);
+        #[cfg(unix)]
+        {
+            let mode = mode_of(&gnupg).unwrap_or(0);
+            findings.push(Finding {
+                item: "gnupg keyring".into(),
+                ok: mode == 0o700,
+                detail: format!("{} mode {:o}", gnupg.display(), mode),
+                fixable: mode != 0o700,
+            });
+        }
+        #[cfg(not(unix))]
         findings.push(Finding {
             item: "gnupg keyring".into(),
-            ok: mode == 0o700,
-            detail: format!("{} mode {:o}", gnupg.display(), mode),
-            fixable: mode != 0o700,
+            ok: true,
+            detail: format!(
+                "{} present — permission modes are a unix concept, not applicable on this platform",
+                gnupg.display()
+            ),
+            fixable: false,
         });
     } else {
         findings.push(Finding {
@@ -202,9 +274,14 @@ pub fn fix(state_dir: &Path, state_file: &Path) -> Vec<String> {
         }
     }
     let gnupg = state_dir.join("gnupg");
-    if gnupg.is_dir() && mode_of(&gnupg) != Some(0o700) {
-        if set_mode(&gnupg, 0o700).is_ok() {
-            done.push(format!("set {} to mode 700", gnupg.display()));
+    if gnupg.is_dir() {
+        // Only where modes exist (unix) can there be anything to
+        // repair; elsewhere mode_of is None — nothing to do, and
+        // nothing to claim was done.
+        if let Some(mode) = mode_of(&gnupg) {
+            if mode != 0o700 && set_mode(&gnupg, 0o700).is_ok() {
+                done.push(format!("set {} to mode 700", gnupg.display()));
+            }
         }
     }
     if let Some(lock) = stale_lock(state_file) {
@@ -358,23 +435,38 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let state_file = dir.join("state.phext");
         // damage: no state dir at all -> fix creates it
+        // (platform-neutral: runs everywhere)
         let before = check(&dir, &state_file);
         assert!(!before.ok());
         let done = fix(&dir, &state_file);
         assert!(done.iter().any(|d| d.contains("created state directory")), "{:?}", done);
-        // keyring with wrong perms
+        // keyring present. On unix it is seeded with wrong perms
+        // (0o755) and must be repaired to 0o700; elsewhere
+        // permission modes do not exist, and the finding must be
+        // present saying exactly that — never silently absent.
         let gnupg = dir.join("gnupg");
         std::fs::create_dir_all(&gnupg).unwrap();
+        #[cfg(unix)]
         set_mode(&gnupg, 0o755).unwrap();
-        // stale lock: pid 999999 cannot exist
+        // stale lock: pid 999999 cannot exist on any platform
         let lock = dir.join("state.lock");
         std::fs::write(&lock, "999999").unwrap();
         let mid = check(&dir, &state_file);
+        #[cfg(unix)]
         assert!(mid.findings.iter().any(|f| f.item == "gnupg keyring" && !f.ok && f.fixable));
+        #[cfg(not(unix))]
+        assert!(
+            mid.findings.iter().any(|f| f.item == "gnupg keyring" && f.ok && f.detail.contains("not applicable")),
+            "non-unix keyring finding must be present as ok/not-applicable: {:?}",
+            mid.findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
+        );
         assert!(mid.findings.iter().any(|f| f.item == "state lock" && !f.ok && f.fixable));
         let done = fix(&dir, &state_file);
+        #[cfg(unix)]
         assert_eq!(mode_of(&gnupg), Some(0o700));
         assert!(!lock.exists());
+        assert!(done.iter().any(|d| d.contains("removed stale lock")), "{:?}", done);
+        #[cfg(unix)]
         assert!(done.len() >= 2, "{:?}", done);
         let _ = std::fs::remove_dir_all(&dir);
     }
