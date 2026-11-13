@@ -103,11 +103,15 @@ mod tests {
     #[test]
     fn standalone_root_orphans_the_v3_modules() {
         // The v2.2/v2.3 failure shape: a standalone root declaring
-        // almost nothing, pushed over a tree carrying all sixteen
-        // v3 module files. Every undeclared file must be named.
-        let main = "mod json;\nmod plan;\nfn main() {}\n";
+        // almost nothing, pushed over a tree carrying all the v3
+        // module files. Every undeclared file must be named.
+        // (Fixture adapted for the scratch line: the old fixture's
+        // declared set named a module this crate no longer has;
+        // the shape — one declaration against the full set — and
+        // the orphan count are unchanged.)
+        let main = "mod plan;\nfn main() {}\n";
         let files = stems(&[
-            "main", "cli", "coord", "core", "crypto", "hash", "http", "json", "mcp", "personas",
+            "main", "cli", "coord", "core", "crypto", "hash", "http", "mcp", "personas",
             "phext", "plan", "state", "store", "tools", "vol", "xz",
         ]);
         let (o, m) = check(main, &files);

@@ -1,150 +1,115 @@
-//! qexo — the Exocortex coordinator (DESIGN-V3).
+//! qexo — the Exocortex coordinator, phext-native from scratch.
 //!
-//! Bare `qexo` (no subcommand) emits the placement plan, exactly as
-//! qexo v1/v2 did — the v1 invariant, the regression guard.
-//! Modes (section 14.1): CLI (this file + cli.rs), API (`serve`),
-//! MCP (`mcp`), Web (served by `serve` at /). One implementation.
+//! One binary; modules by concern: the format (phext), the seal
+//! (xz), the hash, GPG mechanics (crypto), the inference edge
+//! (infer), the plan's pure core (plan), doctor's two layers
+//! (doctor), the state lattice and its Layer 2 addressing
+//! (lattice), the state commands (core), the wiring gate
+//! (wiring), and this CLI.
 
 mod cli;
-mod coord;
 mod core;
 mod crypto;
+mod doctor;
+#[allow(dead_code)]
 mod hash;
-mod http;
-mod json;
-mod mcp;
-mod personas;
+mod infer;
+mod lattice;
 mod phext;
 mod plan;
-mod state;
-mod store;
-mod tools;
-mod vol;
 mod wiring;
 mod xz;
 
-use std::sync::Arc;
+use cli::Command;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let first = args.first().map(|s| s.as_str()).unwrap_or("");
-    match first {
-        "serve" => {
-            let addr = args.get(1).cloned().unwrap_or_else(|| "127.0.0.1:8471".into());
-            let ctx = match core::Ctx::open() {
-                Ok(c) => Arc::new(c),
-                Err(e) => {
-                    eprintln!("qexo serve: {}", e);
-                    std::process::exit(2);
-                }
-            };
-            if let Err(e) = http::serve(ctx, &addr) {
-                eprintln!("qexo serve: {}", e);
-                std::process::exit(2);
-            }
+    let code = run(cli::parse(&args), &args);
+    std::process::exit(code);
+}
+
+fn run(cmd: Command, args: &[String]) -> i32 {
+    match cmd {
+        Command::Help => {
+            print!("{}", cli::help_text());
+            0
         }
-        "mcp" => {
-            let ctx = match core::Ctx::open() {
-                Ok(c) => c,
-                Err(e) => {
-                    eprintln!("qexo mcp: {}", e);
-                    std::process::exit(2);
-                }
-            };
-            mcp::serve_stdio(&ctx);
+        Command::Version => {
+            println!("qexo v1.0 (Cargo 1.0.0)");
+            0
         }
-        "phext" if args.get(1).map(|s| s.as_str()) == Some("parse") || args.get(1).map(|s| s.as_str()) == Some("explode") || args.get(1).map(|s| s.as_str()) == Some("implode") || args.get(1).map(|s| s.as_str()) == Some("seal") || args.get(1).map(|s| s.as_str()) == Some("unseal") || args.get(1).map(|s| s.as_str()) == Some("select") || args.get(1).map(|s| s.as_str()) == Some("get") => {
-            std::process::exit(phext_file_ops(&args[1..]));
-        }
-        "wiring-check" => {
-            // `qexo wiring-check [src-dir]`: the v3.2 gate — every
-            // src/*.rs module file must be declared in src/main.rs
-            // and every declaration must have its file. Exit 1 names
-            // the orphans. File-level local check, like `bake`.
-            let dir = args.get(1).cloned().unwrap_or_else(|| "src".into());
+        Command::WiringCheck(dir) => {
+            let dir = dir.unwrap_or_else(|| "src".to_string());
             match wiring::check_dir(std::path::Path::new(&dir)) {
                 Ok((orphaned, missing, n)) => {
-                    for o in &orphaned {
-                        println!("ORPHANED: src/{}.rs is present but not declared in main.rs — it does not compile", o);
-                    }
-                    for m in &missing {
-                        println!("MISSING: mod {}; is declared in main.rs but src/{}.rs is absent", m, m);
-                    }
                     if orphaned.is_empty() && missing.is_empty() {
-                        println!("wiring ok: {} module files, all declared in main.rs, no missing files", n.saturating_sub(1));
-                        std::process::exit(0);
+                        println!("wiring ok: {} module files, every one declared, every declaration filed", n);
+                        0
+                    } else {
+                        for o in &orphaned {
+                            eprintln!("orphaned (file without declaration): src/{}.rs", o);
+                        }
+                        for m in &missing {
+                            eprintln!("missing (declaration without file): {}", m);
+                        }
+                        1
                     }
-                    std::process::exit(1);
                 }
                 Err(e) => {
-                    eprintln!("qexo wiring-check: {}", e);
-                    std::process::exit(2);
+                    eprintln!("wiring-check: {}", e);
+                    2
                 }
             }
         }
-        "bake" => {
-            // `qexo bake --check`: verify the baked corpus hashes
-            // against the manifest and the source.phext integrity.
-            let v = store::corpus_verify();
-            println!("{}", serde_pretty(&v));
-            let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(false);
-            std::process::exit(if ok { 0 } else { 1 });
-        }
-        "sync-diff" if args.len() >= 3 => {
-            let old = std::fs::read_to_string(&args[1]).unwrap_or_default();
-            let new = std::fs::read_to_string(&args[2]).unwrap_or_default();
-            let (added, changed, removed) = core::sync_diff(&old, &new);
-            for p in &added {
-                println!("+ {}", p);
-            }
-            for p in &changed {
-                println!("~ {}", p);
-            }
-            for p in &removed {
-                println!("- {}", p);
-            }
-            println!("({} added, {} changed, {} removed)", added.len(), changed.len(), removed.len());
-        }
-        _ => {
-            let ctx = match core::Ctx::open() {
-                Ok(c) => Arc::new(c),
-                Err(e) => {
-                    eprintln!("qexo: {}", e);
-                    std::process::exit(2);
+        Command::FileOp(_) => phext_file_ops(args),
+        Command::Doctor { fix } => {
+            // Both layers: filesystem facts, then — when the
+            // state is born — the lattice neighborhoods.
+            let dir = lattice::state_dir();
+            let file = lattice::state_path();
+            if fix {
+                let mut done = doctor::fix(&dir, &file);
+                if let Ok(Some(mut lat)) = lattice::Lattice::load() {
+                    done.extend(doctor::fix_lattice(&mut lat));
+                    if let Err(e) = lat.save() {
+                        eprintln!("doctor: cannot save repaired state: {}", e);
+                        return 1;
+                    }
                 }
-            };
-            let out = cli::run(&ctx, &args);
-            let want_json = args.iter().any(|a| a == "--json");
-            if want_json || !args.is_empty() {
-                println!("{}", serde_pretty(&out.payload));
-            } else {
-                // bare qexo: the plan in its human (v1) rendering.
-                // The plan route returns the plan object itself —
-                // there is no "payload" envelope key — and
-                // plan_human reads the whole plan (disk, gates,
-                // tasks), so hand it out.payload directly. (v3.3:
-                // this branch was dead through v3.2, which looked
-                // for the envelope and would have passed the tasks
-                // array to the renderer.)
-                if out.status < 400 && out.payload.get("tasks").is_some() {
-                    print!("{}", plan::plan_human(&out.payload));
-                    std::process::exit(0);
+                for d in &done {
+                    println!("fixed: {}", d);
                 }
-                println!("{}", serde_pretty(&out.payload));
+                if done.is_empty() {
+                    println!("nothing to fix");
+                }
             }
-            std::process::exit(if out.status < 400 { 0 } else { 1 });
+            let mut report = doctor::check(&dir, &file);
+            if let Ok(Some(lat)) = lattice::Lattice::load() {
+                report.findings.extend(doctor::check_lattice(&lat).findings);
+            }
+            print!("{}", report.render());
+            if report.ok() { 0 } else { 1 }
         }
+        Command::Unknown(word) => {
+            eprintln!("qexo: unknown command '{}' — qexo --help lists the surface", word);
+            2
+        }
+        Command::Bare | Command::Plan => core::plan_cmd(),
+        Command::Config => core::config(),
+        Command::List => core::list(),
+        Command::Register(args) => core::register(&args),
+        Command::Host { persona, boot } => core::host(persona, boot),
+        Command::Unhost(name) => core::unhost(&name),
+        Command::Message { persona, text } => core::message(&persona, &text),
+        Command::Status => core::status(),
+        Command::Serve(port) => core::serve(port.unwrap_or(8484)),
     }
 }
 
-fn serde_pretty(j: &json::Json) -> String {
-    crate::json::pretty(j, 0)
-}
-
-/// File-level phext operations (the libphext surface in the CLI,
-/// DESIGN-V3 section 14.1 API-note): parse/explode/implode/seal/
-/// unseal/select/get operate on files, not node state, and so do not
-/// take a caller block.
+/// File-level phext operations (the libphext surface in the CLI):
+/// parse/explode/implode/seal/unseal/select/get operate on files,
+/// not node state. Carried from the old line's implementation
+/// (the from-scratch brief's named reuse), verbatim in behavior.
 fn phext_file_ops(args: &[String]) -> i32 {
     let op = args[0].as_str();
     let path = args.get(1).cloned().unwrap_or_default();

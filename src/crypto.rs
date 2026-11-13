@@ -1,10 +1,19 @@
 //! GPG interop. qexo NEVER hand-rolls OpenPGP (section 8.7): it shells
 //! out to `gpg` with argument vectors — no shell string is ever built
-//! from caller input — using a qexo-dedicated keyring under the state
-//! dir so fleet keys never mix with a user's personal keyring.
+//! from caller input — using a qexo-dedicated keyring beside the
+//! state file so fleet keys never mix with a user's personal keyring.
+//! The keyring directory is gpg's own machinery; every qexo-owned
+//! *record* about keys lives in state.phext, not here.
+//!
+//! Adapted from the old line's crypto.rs mechanics (the from-scratch
+//! brief's named reuse): key generation, fingerprint listing,
+//! armored export/import, detached sign/verify, encrypt/decrypt.
+//! The one change is the constructor: the old code took the old
+//! State type; here the caller passes the state directory (see
+//! crate::lattice::state_dir).
 
-use crate::state::State;
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 pub struct Gpg {
@@ -22,8 +31,10 @@ pub fn gpg_available() -> bool {
 }
 
 impl Gpg {
-    pub fn open(state: &State) -> Gpg {
-        let dir = state.dir.join("gnupg");
+    /// Open (creating if needed, mode 0700) the qexo keyring under
+    /// `<state_dir>/gnupg`.
+    pub fn open_in(state_dir: &Path) -> Gpg {
+        let dir = state_dir.join("gnupg");
         let _ = std::fs::create_dir_all(&dir);
         #[cfg(unix)]
         {
@@ -103,6 +114,27 @@ impl Gpg {
             return Err(format!("gpg export failed: {}", err.trim()));
         }
         Ok(String::from_utf8_lossy(&out).to_string())
+    }
+
+    /// The fingerprint of an armored public key, read WITHOUT
+    /// importing it (`--show-keys`): identification is separate from
+    /// the act of taking a key into the keyring, so a caller can
+    /// learn who a key claims to be before deciding anything.
+    pub fn fingerprint_of(&self, armored: &str) -> Result<String, String> {
+        let (ok, out, err) = self.run(&["--show-keys", "--with-colons"], Some(armored.as_bytes()))?;
+        if !ok {
+            return Err(format!("gpg show-keys failed: {}", err.trim()));
+        }
+        let text = String::from_utf8_lossy(&out);
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split(':').collect();
+            if fields.first().copied() == Some("fpr") {
+                if let Some(fp) = fields.get(9) {
+                    return Ok(fp.to_string());
+                }
+            }
+        }
+        Err("no fingerprint in key material".to_string())
     }
 
     pub fn import_public(&self, armored: &str) -> Result<String, String> {
