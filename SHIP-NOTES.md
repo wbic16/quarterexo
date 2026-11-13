@@ -1,6 +1,15 @@
-# qexo v1.0.1 (scratch line) — ship notes
+# qexo v1.0.2 (scratch line) — ship notes
 
-Status: v1.0.1 BUILT AND GATED, 2026-11-12 — a Windows
+Status: v1.0.2 BUILT AND GATED, 2026-11-12 — the disk gate
+measures the volume it stands on: a volume lens (free fraction)
+plus a quota lens that exists only where a node configures it,
+every threshold seeded visibly into the config record in
+state.phext. On aletheia-core's 3.6 TB volume the incident
+reading (809 GB used, 2.7 TB free) is GREEN, as it should have
+been. Stacked on PR #9 (v1.0.1); base retargets to exo when #9
+merges. See CHANGELOG 1.0.2.
+
+Status (v1.0.1, historical): BUILT AND GATED, 2026-11-12 — a Windows
 correctness fix for doctor on top of v1.0: per-platform lock
 liveness (a /proc-only probe could have deleted a live
 process's lock on Windows) and per-platform keyring-permission

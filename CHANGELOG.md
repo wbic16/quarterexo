@@ -1,5 +1,46 @@
 # qexo changelog — the scratch line
 
+## 1.0.2 (v1.0.2) — built and gated, 2026-11-12
+
+The disk gate judged every node by the Muse VM's quota. Its
+absolute thresholds (AMBER at 95 GB used, RED at 102 GB) were
+calibrated to that one machine's staging quota — the 2026-11-08
+EDQUOT failure — and ported value-for-value through every line
+since, while the probe measured used bytes on whatever volume
+it happened to stand on. Run on aletheia-core, the gate read
+RED at 809 GB used on a 3.6 TB volume with 2.7 TB free and held
+every placement on a healthy machine.
+
+Now the gate measures the volume it stands on. The probe returns
+the volume's total/used/free bytes (statvfs, as before, but the
+probe no longer carries verdicts); the gate reads through two
+lenses — a volume lens (AMBER under 25% free, RED under 10%
+free) and a quota lens (the old absolute ceiling, on only where
+a node configures it, because the VM's quota is a real ceiling
+on that machine and nowhere else) — plus the file lens, which
+now counts files under a named staging root and says so. Every
+threshold lives in the node's config record in state.phext,
+seeded visibly by `qexo config`: volume_lens,
+disk_gate_free_amber_pct, disk_gate_free_red_pct, quota_lens,
+quota_amber_gb, quota_red_gb, staging_root, file_amber,
+file_red. Absent keys mean the defaults (volume lens only).
+
+The plan renders the volume in GiB — the units df speaks,
+labeled — names the measured root and the counted root, and
+states which lens fired and the numbers it fired on. The HOLD
+copy names the measured root instead of "the VM" wherever the
+binary runs. The level recorded with each telemetry observation
+is the gate's own evaluation under the node's configuration;
+the old mechanism of an external watcher's level word forcing
+the gate is retired (the series is qexo's own now). Forecast
+gate behavior is unchanged. Gates: the decisive trio as unit
+tests (ranch volume GREEN at the incident's own numbers; VM
+ceiling AMBER/RED by configuration alone; a 5%-free volume RED
+regardless of absolute size), the ported battery, cargo test,
+release build, wiring check — all on aletheia-core. Stacked on
+the v1.0.1 doctor slice (PR #9); the base retargets to exo when
+that merges.
+
 ## 1.0.1 (v1.0.1) — built and gated, 2026-11-12
 
 A Windows correctness fix for doctor, in two parts. The doctor
