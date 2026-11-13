@@ -1,6 +1,16 @@
-# qexo v1.0.2 (scratch line) — ship notes
+# qexo v1.0.3 (scratch line) — ship notes
 
-Status: v1.0.2 BUILT AND GATED, 2026-11-12 — the disk gate
+Status: v1.0.3 BUILT AND GATED, 2026-11-12 — the forecast gate
+now projects the same lenses the gate reads. v1.0.2 moved the
+gate to a volume lens + optional quota lens but left the
+forecast projecting the legacy 95/102 GB ceilings, so the
+second plan on every ranch node read FORECAST AMBER over a
+GREEN gate; those levels are deleted from the forecast path.
+Stacked on the v1.0.2 branch (PR #11 carries v1.0.2 to exo);
+this PR's base is exo, and its diff narrows to the forecast
+change alone once #11 merges. See CHANGELOG 1.0.3.
+
+Status (v1.0.2, historical): BUILT AND GATED, 2026-11-12 — the disk gate
 measures the volume it stands on: a volume lens (free fraction)
 plus a quota lens that exists only where a node configures it,
 every threshold seeded visibly into the config record in

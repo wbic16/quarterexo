@@ -8,7 +8,12 @@
 //! the measured volume) and a quota lens (absolute used-bytes
 //! ceiling, on only where a node configures it) — plus the file
 //! lens, with every threshold read from the node's own config
-//! record in state.phext.
+//! record in state.phext. From v1.0.3 the forecast gate projects
+//! the same lenses the gate itself reads: v1.0.2 moved the gate
+//! but left the forecast projecting the old absolute ceilings,
+//! so on any node whose volume already sat past 95 GB used —
+//! every ranch node — the second plan read "FORECAST AMBER,
+//! byte AMBER projected in 0.0 days" over a GREEN gate.
 //!
 //! From-scratch shape: this module is the pure core. It computes
 //! from VALUES — a current disk observation, a history of
@@ -31,7 +36,7 @@ const BUILD_TOKENS: &[&str] = &[
     "benchmark", "bulk", "suite", "phcc",
 ];
 
-pub const PLAN_VERSION: &str = "v1.0.2";
+pub const PLAN_VERSION: &str = "v1.0.3";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Class {
@@ -265,12 +270,7 @@ fn gate_word(s: i32) -> &'static str {
     }
 }
 
-/// Format bytes as GiB (2^30) with thousands separators — the
-/// units `df -h` speaks, labeled so no one has to guess.
-pub fn fmt_gib(bytes: u64) -> String {
-    let gib = bytes as f64 / 1_073_741_824.0;
-    let whole = gib.round() as u64;
-    let digits = whole.to_string();
+fn separated(digits: &str) -> String {
     let mut out = String::new();
     for (i, ch) in digits.chars().enumerate() {
         if i > 0 && (digits.len() - i) % 3 == 0 {
@@ -278,7 +278,20 @@ pub fn fmt_gib(bytes: u64) -> String {
         }
         out.push(ch);
     }
-    format!("{} GiB", out)
+    out
+}
+
+/// Format bytes as GiB (2^30) with thousands separators — the
+/// units `df -h` speaks, labeled so no one has to guess.
+pub fn fmt_gib(bytes: u64) -> String {
+    let gib = bytes as f64 / 1_073_741_824.0;
+    let whole = gib.round() as u64;
+    format!("{} GiB", separated(&whole.to_string()))
+}
+
+/// Format a count with thousands separators (1,100,000).
+pub fn fmt_count(n: u64) -> String {
+    separated(&n.to_string())
 }
 
 /// Evaluate the disk gate from values: the current observation,
@@ -401,11 +414,36 @@ impl Forecast {
     }
 }
 
-/// The forecast computation (v2.3 semantics): rate growth from the
-/// history's last two observations, project days to each of the
-/// four thresholds, name the nearest crossing. Fewer than two
-/// usable observations degrades to unavailable — never invented.
-pub fn forecast_gate(history: &[DiskObs]) -> Forecast {
+/// How far ahead a crossing projection is reported, in days. A
+/// linear rate read off the last interval is a short-horizon
+/// instrument: a crossing farther out than this will be
+/// re-projected hundreds of times before it can matter, and
+/// naming a day count for it lends it a precision it does not
+/// have. Crossings beyond the horizon are reported as no
+/// crossing.
+pub const FORECAST_HORIZON_DAYS: f64 = 365.0;
+
+/// The forecast computation (v2.3 semantics, re-based on the
+/// gate's lenses in v1.0.3): rate growth from the history's last
+/// two observations, then project days to the crossings of the
+/// SAME thresholds evaluate_gate reads — the volume lens's free
+/// fractions of this volume's total, the quota lens's ceilings
+/// (only when the node has that lens on), and the file lens's
+/// configured counts. Until v1.0.3 the byte half projected the
+/// legacy absolute levels (95/102 GB) whatever the node's
+/// configuration, so the forecast contradicted the gate it
+/// forecasts on every ranch volume.
+///
+/// A crossing the current reading has already reached is the
+/// gate's verdict, not a forecast: projecting it would report
+/// 0.0 days for a level the lenses already own — exactly the
+/// v1.0.2 fleet failure, where the second plan on a healthy
+/// ranch node flipped to FORECAST AMBER because its volume had
+/// long since passed a ceiling that no longer applies to it.
+/// Flat or falling growth projects nothing, and nothing is
+/// projected beyond FORECAST_HORIZON_DAYS. Fewer than two usable
+/// observations degrades to unavailable — never invented.
+pub fn forecast_gate(history: &[DiskObs], cfg: &GateConfig, total_bytes: Option<u64>) -> Forecast {
     if history.len() < 2 {
         return Forecast::unavailable();
     }
@@ -415,36 +453,76 @@ pub fn forecast_gate(history: &[DiskObs]) -> Forecast {
     let gb_rate = (b.used_gb - a.used_gb) / span;
     let fc_rate = (b.files as f64 - a.files as f64) / span;
     let days_to = |target: f64, cur: f64, rate: f64| -> Option<f64> {
-        if cur >= target {
-            Some(0.0)
-        } else if rate > 0.0 {
-            Some((target - cur) / rate)
-        } else {
+        if cur >= target || rate <= 0.0 {
             None
+        } else {
+            let d = (target - cur) / rate;
+            if d <= FORECAST_HORIZON_DAYS { Some(d) } else { None }
         }
     };
-    let cands: [(&str, Option<f64>); 4] = [
-        ("file AMBER (1,100,000)", days_to(1_100_000.0, b.files as f64, fc_rate)),
-        ("file RED (1,300,000)", days_to(1_300_000.0, b.files as f64, fc_rate)),
-        ("byte AMBER (95 GB)", days_to(95.0, b.used_gb, gb_rate)),
-        ("byte RED (102 GB)", days_to(102.0, b.used_gb, gb_rate)),
+    let mut cands: Vec<(String, Option<f64>)> = vec![
+        (
+            format!("file AMBER ({})", fmt_count(cfg.file_amber)),
+            days_to(cfg.file_amber as f64, b.files as f64, fc_rate),
+        ),
+        (
+            format!("file RED ({})", fmt_count(cfg.file_red)),
+            days_to(cfg.file_red as f64, b.files as f64, fc_rate),
+        ),
     ];
+    // The nearest byte-lens AMBER crossing across the lenses that
+    // are on, for the rendered summary line.
+    let mut byte_amber: Option<f64> = None;
+    let mut note_amber = |d: Option<f64>| {
+        if let Some(d) = d {
+            byte_amber = Some(byte_amber.map_or(d, |x: f64| x.min(d)));
+        }
+    };
+    if cfg.volume_on {
+        if let Some(total) = total_bytes {
+            // used_gb is decimal GB (bytes / 1e9, as the probe
+            // records it); the lens targets are used levels at
+            // which the free fraction of THIS volume crosses the
+            // configured percentages.
+            let total_gb = total as f64 / 1.0e9;
+            let amber_used = total_gb * (1.0 - cfg.free_amber_pct / 100.0);
+            let red_used = total_gb * (1.0 - cfg.free_red_pct / 100.0);
+            let da = days_to(amber_used, b.used_gb, gb_rate);
+            note_amber(da);
+            cands.push((format!("volume AMBER ({:.0}% free)", cfg.free_amber_pct), da));
+            cands.push((
+                format!("volume RED ({:.0}% free)", cfg.free_red_pct),
+                days_to(red_used, b.used_gb, gb_rate),
+            ));
+        }
+    }
+    if cfg.quota_on {
+        let da = days_to(cfg.quota_amber_gb, b.used_gb, gb_rate);
+        note_amber(da);
+        cands.push((format!("quota AMBER ({:.0} GB)", cfg.quota_amber_gb), da));
+        cands.push((
+            format!("quota RED ({:.0} GB)", cfg.quota_red_gb),
+            days_to(cfg.quota_red_gb, b.used_gb, gb_rate),
+        ));
+    }
+    let file_amber_days = cands[0].1;
     let (near_label, near_days) = cands
-        .iter()
-        .fold(("none", None), |acc, c| match (acc.1, c.1) {
+        .into_iter()
+        .fold(("none".to_string(), None), |acc, c| match (acc.1, c.1) {
             (None, Some(_)) => (c.0, c.1),
             (Some(a), Some(d)) if d < a => (c.0, c.1),
             _ => acc,
         });
+    let round2 = |d: f64| (d * 100.0).round() / 100.0;
     Forecast {
         available: true,
         files_per_day: fc_rate.round(),
-        gb_per_day: (gb_rate * 100.0).round() / 100.0,
+        gb_per_day: round2(gb_rate),
         span_days: span,
-        nearest_label: near_label.to_string(),
-        nearest_days: near_days.map(|d| (d * 100.0).round() / 100.0),
-        file_amber_days: cands[0].1.map(|d| (d * 100.0).round() / 100.0),
-        byte_amber_days: cands[2].1.map(|d| (d * 100.0).round() / 100.0),
+        nearest_label: near_label,
+        nearest_days: near_days.map(round2),
+        file_amber_days: file_amber_days.map(round2),
+        byte_amber_days: byte_amber.map(round2),
     }
 }
 
@@ -504,16 +582,19 @@ impl PlanData {
 ///   of the disk currency, and a byte-only gate can sit GREEN
 ///   while the count runs at the wall.
 /// - disk gate = the worse of the two halves.
-/// - forecast gate (v2.3): a GREEN disk gate escalates to AMBER when
-///   the nearest projected crossing is within 3 days. A planner
-///   that only watches crossings gives no lead time.
+/// - forecast gate (v2.3, re-based on the lenses in v1.0.3): a
+///   GREEN disk gate escalates to AMBER when the nearest crossing
+///   projected under the node's configured lenses is within 3
+///   days. A planner that only watches crossings gives no lead
+///   time — and a forecast that projects levels the gate no
+///   longer reads gives false alarms instead.
 pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host: (f64, f64), gate: &GateInputs) -> PlanData {
     let eval = evaluate_gate(current, gate.volume.as_ref(), &gate.files_root, &gate.config);
     let byte_gate = eval.byte_gate.as_str();
     let file_gate = eval.file_gate.as_str();
     let mut disk_gate = eval.disk_gate.as_str();
     let mut disk_gate_action: String = eval.action.clone();
-    let forecast = forecast_gate(history);
+    let forecast = forecast_gate(history, &gate.config, gate.volume.as_ref().map(|v| v.total_bytes));
     if let Some(near_days) = forecast.nearest_days {
         if near_days <= 3.0 && disk_gate == "GREEN" {
             disk_gate = "AMBER";
@@ -846,6 +927,82 @@ mod tests {
         let p = compute(&[], &obs(2, 79.0, "GREEN", 890_000), &hist, (0.0, 0.0), &gin_quota());
         assert!(p.forecast.available);
         assert_eq!(p.forecast.nearest_days, None);
+    }
+
+    #[test]
+    fn forecast_ranch_volume_projects_no_crossing() {
+        // The fleet regression (2026-11-12 rollout): a ranch
+        // volume at ~809 GB used (754 GiB of 3,586 GiB, ~74%
+        // free) growing +0.06 GB/day. Under the legacy levels the
+        // second plan flipped to "FORECAST AMBER — byte AMBER
+        // (95 GB) projected in 0.0 days" because the volume had
+        // long since passed 95 GB — a ceiling its gate no longer
+        // reads. Under the node's own lenses there is no crossing
+        // to project: the volume AMBER level sits ~2,900 GB away,
+        // tens of thousands of days out at this rate — beyond the
+        // horizon, so no crossing at all.
+        let gib = 1_073_741_824u64;
+        let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default() };
+        let hist = vec![obs(1, 809.07, "GREEN", 6), obs(2, 809.13, "GREEN", 6)];
+        let cur = obs(2, 809.13, "GREEN", 6);
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &g);
+        assert!(p.forecast.available);
+        assert_eq!(p.forecast.nearest_days, None, "nearest: {} in {:?}", p.forecast.nearest_label, p.forecast.nearest_days);
+        assert_eq!(p.forecast.byte_amber_days, None);
+        assert_eq!(p.disk_gate, "GREEN");
+        assert!(!p.disk_gate_action.contains("FORECAST"), "action: {}", p.disk_gate_action);
+        let out = render(&p);
+        assert!(!out.contains("FORECAST AMBER"), "render:\n{}", out);
+    }
+
+    #[test]
+    fn forecast_filling_volume_projects_volume_red() {
+        // A 100 GiB volume at 12% free (gate AMBER by the volume
+        // lens), used growing +5 GB/day: the RED level (10% free)
+        // is a real, near crossing and the forecast names it as
+        // the volume lens's. The AMBER level is already behind
+        // the current reading, so it is the gate's verdict, not
+        // a projection — it must not appear as a 0.0-day crossing.
+        let gib = 1_073_741_824u64;
+        let total = 100 * gib;
+        let v = vol("/data", total, 88 * gib, 12 * gib);
+        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default() };
+        let hist = vec![obs(1, 85.0, "AMBER", 10), obs(2, 90.0, "AMBER", 10)];
+        let f = forecast_gate(&hist, &g.config, Some(total));
+        assert!(f.available);
+        assert_eq!(f.nearest_label, "volume RED (10% free)");
+        let nd = f.nearest_days.unwrap();
+        assert!(nd > 1.2 && nd < 1.5, "red crossing {} should be ~1.3 d", nd);
+        // Via compute: the gate is already AMBER (the lens owns
+        // the present); the forecast neither escalates it to RED
+        // nor reports the stale AMBER crossing.
+        let p = compute(&[], &obs(2, 90.0, "AMBER", 10), &hist, (0.0, 0.0), &g);
+        assert_eq!(p.disk_gate, "AMBER");
+        assert_eq!(p.forecast.nearest_label, "volume RED (10% free)");
+    }
+
+    #[test]
+    fn forecast_quota_crossing_named_quota() {
+        // Quota lens on (the VM's configuration), used growing
+        // +10 GB/day toward the configured ceilings: the crossing
+        // is named as the quota lens's, in the config's numbers —
+        // the words "byte AMBER" and any hardcoded level are gone
+        // from the forecast path.
+        let cfg = gin_quota().config;
+        let hist = vec![obs(1, 80.0, "GREEN", 10), obs(2, 90.0, "GREEN", 10)];
+        let f = forecast_gate(&hist, &cfg, None);
+        assert!(f.available);
+        assert_eq!(f.nearest_label, "quota AMBER (95 GB)");
+        let nd = f.nearest_days.unwrap();
+        assert!(nd > 0.4 && nd < 0.6, "quota amber {} should be ~0.5 d", nd);
+        assert_eq!(f.byte_amber_days.map(|d| (d - 0.5).abs() < 0.01), Some(true));
+        // And with the quota lens off, the same series projects
+        // no byte crossing at all — the ceiling does not exist
+        // for a node that has not configured it.
+        let f = forecast_gate(&hist, &GateConfig::default(), None);
+        assert_eq!(f.byte_amber_days, None);
+        assert_eq!(f.nearest_days, None);
     }
 
     #[test]
