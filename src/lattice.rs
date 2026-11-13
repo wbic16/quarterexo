@@ -80,6 +80,12 @@ pub const LEDGER_INSTANCES: u32 = 4;
 pub const LEDGER_EMOTION: u32 = 5;
 pub const LEDGER_GOAL_ACTIVITY: u32 = 6;
 pub const LEDGER_SYNC: u32 = 7;
+/// Release announcements (v1.1.0): one Book per announced release
+/// — the manifest record at Scroll 1, its detached signature at
+/// Scroll 2. The manifest is the phextnet's trust object: it is
+/// what travels and what gets verified; the binary bytes ride
+/// the wire beside the state file, never inside it.
+pub const LEDGER_RELEASES: u32 = 8;
 
 pub fn ledger_kind_name(cluster: u32) -> Option<&'static str> {
     match cluster {
@@ -89,6 +95,7 @@ pub fn ledger_kind_name(cluster: u32) -> Option<&'static str> {
         LEDGER_EMOTION => Some("emotion"),
         LEDGER_GOAL_ACTIVITY => Some("goal-activity"),
         LEDGER_SYNC => Some("sync-receipts"),
+        LEDGER_RELEASES => Some("releases"),
         _ => None,
     }
 }
@@ -421,7 +428,7 @@ pub fn regen_indexes(px: &mut Phext) {
     // ---- ledgers index ----
     let mut led = String::new();
     led.push_str("ledgers & receipts — homeland anchor 6.6.6/6.6.6/6.6.6\n\nThe beast keeps the books: each kind its own run of entry\nscrolls, appended beside its kin.\n\n");
-    for c in [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC] {
+    for c in [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC, LEDGER_RELEASES] {
         led.push_str(&format!(
             "- {}: {} entr(ies) from {}\n",
             ledger_kind_name(c).unwrap_or("?"),
@@ -529,7 +536,7 @@ pub fn regen_indexes(px: &mut Phext) {
         crate::phext::fmt_coord(&index_addr(HL_PLAN)),
         if px.get(&PLAN_CURRENT).is_some() { "current plan present" } else { "no plan yet" }
     ));
-    let ledger_total: usize = [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC]
+    let ledger_total: usize = [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC, LEDGER_RELEASES]
         .iter()
         .map(|c| count_cluster_books(px, [6, 6, 6, *c, 1]))
         .sum();

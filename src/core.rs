@@ -8,13 +8,14 @@
 
 use crate::crypto::Gpg;
 use crate::doctor;
+use crate::hash;
 use crate::infer::{Infer, InferError};
 use crate::lattice::{self, Lattice};
 use crate::phext::{fmt_coord, Phext};
 use crate::plan;
 use std::io::Read as IoRead;
 use std::io::Write as IoWrite;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
 // ----------------------------------------------------------------
@@ -161,7 +162,42 @@ fn ensure_gate_config(lat: &mut Lattice) -> Vec<String> {
     added
 }
 
-pub fn config() -> i32 {
+/// The update machinery's config lines (v1.1.0), seeded visibly
+/// like the gate keys: where serve binds (loopback until the
+/// operator names the node's tailnet address — the phextnet is
+/// reached over the tailnet, never the public wire), whether
+/// automatic updates are on, how often the timer polls, and the
+/// release signer this node trusts. `release_signer` is seeded
+/// EMPTY on purpose: trust is an operator's act, never a default
+/// — until a fingerprint stands there, `qexo update` refuses
+/// plainly and changes nothing.
+fn update_config_defaults() -> Vec<(&'static str, String)> {
+    vec![
+        ("serve_bind", "127.0.0.1".to_string()),
+        ("auto_update", "off".to_string()),
+        ("update_interval_hours", "24".to_string()),
+        ("release_signer", "".to_string()),
+    ]
+}
+
+/// Ensure the config record carries every update key, adding
+/// only the absent ones. Returns the keys that were added.
+fn ensure_update_config(lat: &mut Lattice) -> Vec<String> {
+    let mut added = Vec::new();
+    let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
+    for (k, v) in update_config_defaults() {
+        if lattice::field(&text, k).is_none() {
+            text = lattice::set_field(&text, k, &v);
+            added.push(k.to_string());
+        }
+    }
+    if !added.is_empty() {
+        lat.px.insert(lattice::CONFIG_RECORD, text);
+    }
+    added
+}
+
+pub fn config(auto_update: bool) -> i32 {
     let dir = lattice::state_dir();
     let path = lattice::state_path();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -186,19 +222,23 @@ pub fn config() -> i32 {
     // (defaults are seeded visibly; existing values never touched).
     if let Some(t) = lat.px.get(&lattice::NODE_KEY_RECORD) {
         let fp = lattice::field(t, "fingerprint").unwrap_or_default();
-        let added = ensure_gate_config(&mut lat);
+        let mut added = ensure_gate_config(&mut lat);
+        added.extend(ensure_update_config(&mut lat));
         if !added.is_empty() {
             lattice::regen_indexes(&mut lat.px);
             if let Err(e) = lat.save() {
                 eprintln!("qexo config: cannot save state: {}", e);
                 return 1;
             }
-            println!("gate config defaults added: {}", added.join(", "));
+            println!("config defaults added: {}", added.join(", "));
         }
         println!("already configured — this node was born {}", lattice::field(lat.px.get(&lattice::IDENTITY).map(|s| s.as_str()).unwrap_or(""), "born").unwrap_or_default());
         println!("state: {}", path.display());
         println!("node key fingerprint: {}", fp);
         println!("home: {}", fmt_coord(&lattice::HOME));
+        if auto_update {
+            return finish_auto_update();
+        }
         return 0;
     }
 
@@ -239,7 +279,7 @@ pub fn config() -> i32 {
             ("name", &name),
             ("node", &node),
             ("born", &stamp),
-            ("qexo", "v1.0.4"),
+            ("qexo", "v1.1.0"),
             ("state", &path.display().to_string()),
         ]),
     );
@@ -279,6 +319,10 @@ pub fn config() -> i32 {
         for (k, v) in &defaults {
             fields.push((*k, v.as_str()));
         }
+        let upd = update_config_defaults();
+        for (k, v) in &upd {
+            fields.push((*k, v.as_str()));
+        }
         let rec = lattice::record(&fields);
         lat.px.insert(lattice::CONFIG_RECORD, rec);
     }
@@ -308,7 +352,118 @@ pub fn config() -> i32 {
     println!("node key fingerprint: {}", fp);
     println!("home index: {}", fmt_coord(&lattice::HOME));
     println!("birth receipt: {}", fmt_coord(&receipt));
+    if auto_update {
+        return finish_auto_update();
+    }
     0
+}
+
+/// `qexo config --auto-update`'s second act: set `auto_update:
+/// on` in the config record (the node's own word, in its own
+/// state), then try to install the systemd timer that pokes
+/// `qexo update` on the configured interval. The timer is a thin
+/// trigger — every decision stays inside `qexo update` and its
+/// trust rule. Where systemd, root, or systemctl is missing, the
+/// report says exactly that and prints the units for manual
+/// installation; the config flag stands either way.
+fn finish_auto_update() -> i32 {
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    ensure_update_config(&mut lat);
+    let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
+    text = lattice::set_field(&text, "auto_update", "on");
+    lat.px.insert(lattice::CONFIG_RECORD, text.clone());
+    if let Err(e) = lat.save() {
+        eprintln!("qexo config: cannot save state: {}", e);
+        return 1;
+    }
+    let hours: u64 = lattice::field(&text, "update_interval_hours").and_then(|v| v.parse().ok()).unwrap_or(24);
+    println!("auto_update: on (poll every {}h; the trust rule in the config record still governs every poll)", hours);
+    print!("{}", install_update_timer(hours));
+    0
+}
+
+/// The systemd units for the update timer: a oneshot service
+/// running `qexo update` by this binary's own path, and the
+/// timer that fires it. Pure text — tested, and printed verbatim
+/// when installation isn't possible here.
+fn update_unit_texts(exe: &Path, hours: u64) -> (String, String) {
+    let service = format!(
+        "[Unit]\nDescription=qexo automatic update (phextnet, signed-manifest trust rule)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart={} update\n",
+        exe.display()
+    );
+    let timer = format!(
+        "[Unit]\nDescription=Run qexo update every {}h\n\n[Timer]\nOnBootSec=15min\nOnUnitActiveSec={}h\nUnit=qexo-update.service\n\n[Install]\nWantedBy=timers.target\n",
+        hours, hours
+    );
+    (service, timer)
+}
+
+/// Attempt the timer installation; return the report either
+/// way. Installed only where all three hold: running as root,
+/// systemd is the running init, systemctl answers. Anything
+/// less and nothing is written outside the config record.
+fn install_update_timer(hours: u64) -> String {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("qexo"));
+    let (service, timer) = update_unit_texts(&exe, hours);
+    let mut why_not: Vec<String> = Vec::new();
+    let uid0 = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1).map(|v| v.to_string()))
+        })
+        .map(|u| u == "0")
+        .unwrap_or(false);
+    if !uid0 {
+        why_not.push("not running as root (the timer lives in /etc/systemd/system)".to_string());
+    }
+    if !Path::new("/run/systemd/system").is_dir() {
+        why_not.push("systemd is not the running init here (no /run/systemd/system)".to_string());
+    }
+    let systemctl_ok = std::process::Command::new("systemctl")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !systemctl_ok {
+        why_not.push("systemctl does not answer on this node".to_string());
+    }
+    if !why_not.is_empty() {
+        return format!(
+            "timer NOT installed: {}.\nauto_update is on in the config record; a node's operator can install the trigger by hand —\n/etc/systemd/system/qexo-update.service:\n{}\n/etc/systemd/system/qexo-update.timer:\n{}\nthen: systemctl daemon-reload && systemctl enable --now qexo-update.timer\n",
+            why_not.join("; "),
+            service,
+            timer
+        );
+    }
+    let dir = Path::new("/etc/systemd/system");
+    let mut steps: Vec<String> = Vec::new();
+    for (name, text) in [("qexo-update.service", &service), ("qexo-update.timer", &timer)] {
+        match std::fs::write(dir.join(name), text) {
+            Ok(()) => steps.push(format!("wrote {}", dir.join(name).display())),
+            Err(e) => return format!("timer NOT installed: cannot write {}: {}\n", dir.join(name).display(), e),
+        }
+    }
+    for args in [&["daemon-reload"][..], &["enable", "--now", "qexo-update.timer"][..]] {
+        match std::process::Command::new("systemctl").args(args).output() {
+            Ok(o) if o.status.success() => steps.push(format!("systemctl {} ok", args.join(" "))),
+            Ok(o) => {
+                return format!(
+                    "timer NOT fully installed: systemctl {} failed: {}\n",
+                    args.join(" "),
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )
+            }
+            Err(e) => return format!("timer NOT installed: systemctl {}: {}\n", args.join(" "), e),
+        }
+    }
+    format!("timer installed: {}\n", steps.join("; "))
 }
 
 // ----------------------------------------------------------------
@@ -331,9 +486,37 @@ fn peer_records(px: &Phext) -> Vec<(u32, crate::phext::Coord, String)> {
 
 pub fn register(args: &[String]) -> i32 {
     if args.is_empty() {
-        eprintln!("usage: qexo register <pubkey> — armored text, a file path, or - for stdin");
+        eprintln!("usage: qexo register <pubkey> [--endpoint <url>] — armored text, a file path, or - for stdin");
         return 2;
     }
+    // The peer's endpoint (its `qexo serve` base URL) rides
+    // along as --endpoint <url>, or as a trailing bare URL. It is
+    // recorded on the peer record: without it the peer is
+    // registered but not pollable, and `qexo update` says so.
+    let mut endpoint: Option<String> = None;
+    let mut rest: Vec<String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--endpoint" {
+            match it.next() {
+                Some(v) => endpoint = Some(v.trim_end_matches('/').to_string()),
+                None => {
+                    eprintln!("qexo register: --endpoint needs a URL");
+                    return 2;
+                }
+            }
+        } else {
+            rest.push(a.clone());
+        }
+    }
+    if endpoint.is_none() && rest.len() > 1 {
+        if let Some(last) = rest.last() {
+            if last.starts_with("http://") || last.starts_with("https://") {
+                endpoint = Some(rest.pop().unwrap().trim_end_matches('/').to_string());
+            }
+        }
+    }
+    let args = &rest;
     let armored = if args[0] == "-" {
         let mut s = String::new();
         match std::io::stdin().read_to_string(&mut s) {
@@ -374,6 +557,20 @@ pub fn register(args: &[String]) -> i32 {
     };
     for (_, addr, text) in peer_records(&lat.px) {
         if lattice::field(&text, "fingerprint").as_deref() == Some(fp.as_str()) {
+            // Already known — but an endpoint named now backfills
+            // the record (the peer becomes pollable).
+            if let Some(ep) = &endpoint {
+                if lattice::field(&text, "endpoint").as_deref() != Some(ep.as_str()) {
+                    let updated = lattice::set_field(&text, "endpoint", ep);
+                    lat.px.insert(addr, updated);
+                    lattice::regen_indexes(&mut lat.px);
+                    if let Err(e) = lat.save() {
+                        eprintln!("qexo register: cannot save state: {}", e);
+                        return 1;
+                    }
+                    println!("endpoint recorded for {}: {}", lattice::field(&text, "name").unwrap_or_default(), ep);
+                }
+            }
             println!("already registered at {}", fmt_coord(&addr));
             println!("fingerprint: {}", fp);
             return 0;
@@ -388,17 +585,19 @@ pub fn register(args: &[String]) -> i32 {
     let addr = lattice::at(lattice::HL_PEERS, [cluster, 1, 1, 1, 1, 1]);
     let key_addr = lattice::at(lattice::HL_PEERS, [cluster, 1, 1, 1, 1, 2]);
     let name = format!("peer-{}", &fp[fp.len().saturating_sub(8)..].to_lowercase());
-    lat.px.insert(
-        addr,
-        lattice::record(&[
-            ("kind", "peer"),
-            ("name", &name),
-            ("fingerprint", &fp),
-            ("status", "registered"),
-            ("registered", &stamp),
-            ("public key", &fmt_coord(&key_addr)),
-        ]),
-    );
+    let key_coord = fmt_coord(&key_addr);
+    let mut peer_fields: Vec<(&str, &str)> = vec![
+        ("kind", "peer"),
+        ("name", &name),
+        ("fingerprint", &fp),
+        ("status", "registered"),
+        ("registered", &stamp),
+        ("public key", &key_coord),
+    ];
+    if let Some(ep) = &endpoint {
+        peer_fields.push(("endpoint", ep.as_str()));
+    }
+    lat.px.insert(addr, lattice::record(&peer_fields));
     lat.px.insert(key_addr, armored.trim_end().to_string() + "\n");
     // The keys homeland keeps its own record of the same key,
     // citing the peer scroll — cross-references are text.
@@ -434,11 +633,12 @@ fn peers_text(lat: &Lattice) -> String {
     let mut out = String::new();
     for (_, addr, text) in &recs {
         out.push_str(&format!(
-            "{}  {}  {}  {}\n",
+            "{}  {}  {}  {}{}\n",
             lattice::field(text, "name").unwrap_or_default(),
             lattice::fp_short(&lattice::field(text, "fingerprint").unwrap_or_default()),
             fmt_coord(addr),
-            lattice::field(text, "status").unwrap_or_default()
+            lattice::field(text, "status").unwrap_or_default(),
+            lattice::field(text, "endpoint").map(|e| format!("  {}", e)).unwrap_or_default()
         ));
     }
     out
@@ -806,7 +1006,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.0.4 — node status");
+    println!("qexo v1.1.0 — node status");
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,
@@ -1177,15 +1377,37 @@ pub fn plan_cmd() -> i32 {
 // ----------------------------------------------------------------
 
 pub fn serve(port: u16) -> i32 {
-    let listener = match TcpListener::bind(("127.0.0.1", port)) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("qexo serve: cannot bind 127.0.0.1:{}: {}", port, e);
+    // The bind address is the config record's `serve_bind`
+    // (default 127.0.0.1). Loopback serves the node itself; a
+    // node that wants to be reached over the phextnet sets it
+    // to its tailnet address — the operator's act, in the
+    // operator's state. Integrity never depends on the
+    // transport: release trust is the manifest's signature.
+    let bind_s = match Lattice::load() {
+        Ok(Some(lat)) => lat
+            .px
+            .get(&lattice::CONFIG_RECORD)
+            .and_then(|t| lattice::field(t, "serve_bind"))
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "127.0.0.1".to_string()),
+        _ => "127.0.0.1".to_string(),
+    };
+    let bind_ip: std::net::IpAddr = match bind_s.parse() {
+        Ok(ip) => ip,
+        Err(_) => {
+            eprintln!("qexo serve: serve_bind {:?} in the config record is not an IP address", bind_s);
             return 1;
         }
     };
-    println!("qexo serve — http://127.0.0.1:{} — payloads are scroll text", port);
-    println!("routes: / (home index), /v1/doctor, /v1/plan, /v1/peers");
+    let listener = match TcpListener::bind((bind_ip, port)) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("qexo serve: cannot bind {}:{}: {}", bind_ip, port, e);
+            return 1;
+        }
+    };
+    println!("qexo serve — http://{}:{} — payloads are scroll text", bind_ip, port);
+    println!("routes: / (home index), /v1/doctor, /v1/plan, /v1/peers, /v1/release, /v1/release/signature, /release/qexo-<version>");
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(s) => s,
@@ -1203,47 +1425,642 @@ pub fn serve(port: u16) -> i32 {
             .and_then(|l| l.split_whitespace().nth(1))
             .unwrap_or("/")
             .to_string();
-        let (status, body) = route(&path);
-        let resp = format!(
-            "HTTP/1.1 {}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        let (status, ctype, body) = route(&path);
+        let mut resp = format!(
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             status,
-            body.len(),
-            body
-        );
-        let _ = stream.write_all(resp.as_bytes());
+            ctype,
+            body.len()
+        )
+        .into_bytes();
+        resp.extend_from_slice(&body);
+        let _ = stream.write_all(&resp);
     }
     0
 }
 
-fn route(path: &str) -> (String, String) {
+/// The newest release announcement's (manifest, signature)
+/// scroll texts, if this node has announced one. The manifest
+/// is the phextnet's trust object; serve only carries it.
+fn latest_release(px: &Phext) -> Option<(String, String)> {
+    let books = lattice::component_values(px, &[6, 6, 6, lattice::LEDGER_RELEASES, 1], 5);
+    let book = books.last()?;
+    let manifest = px.get(&lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RELEASES, 1, *book, 1, 1, 1]))?.clone();
+    let signature = px.get(&lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RELEASES, 1, *book, 1, 1, 2]))?.clone();
+    Some((manifest, signature))
+}
+
+fn text_route(status: &str, body: String) -> (String, &'static str, Vec<u8>) {
+    (status.to_string(), "text/plain; charset=utf-8", body.into_bytes())
+}
+
+fn route(path: &str) -> (String, &'static str, Vec<u8>) {
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,
-        Ok(None) => return ("200 OK".to_string(), "qexo: state not born — run qexo config on the node\n".to_string()),
-        Err(e) => return ("500 Internal Server Error".to_string(), format!("qexo: state unreadable: {}\n", e)),
+        Ok(None) => return text_route("200 OK", "qexo: state not born — run qexo config on the node\n".to_string()),
+        Err(e) => return text_route("500 Internal Server Error", format!("qexo: state unreadable: {}\n", e)),
     };
     match path {
-        "/" => (
-            "200 OK".to_string(),
+        "/" => text_route(
+            "200 OK",
             lat.px.get(&lattice::HOME).cloned().unwrap_or_else(|| "(no home index)\n".to_string()),
         ),
         "/v1/doctor" => {
             let mut report = doctor::check(&lattice::state_dir(), &lattice::state_path());
             report.findings.extend(doctor::check_lattice(&lat).findings);
-            ("200 OK".to_string(), report.render())
+            text_route("200 OK", report.render())
         }
-        "/v1/plan" => (
-            "200 OK".to_string(),
+        "/v1/plan" => text_route(
+            "200 OK",
             lat.px
                 .get(&lattice::PLAN_CURRENT_RENDER)
                 .cloned()
                 .unwrap_or_else(|| "no plan emitted yet — bare qexo on the node computes the first\n".to_string()),
         ),
-        "/v1/peers" => ("200 OK".to_string(), peers_text(&lat)),
-        _ => (
-            "404 Not Found".to_string(),
-            "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers (payloads are scroll text)\n".to_string(),
+        "/v1/peers" => text_route("200 OK", peers_text(&lat)),
+        "/v1/release" => match latest_release(&lat.px) {
+            Some((manifest, _)) => text_route("200 OK", manifest),
+            None => text_route("404 Not Found", "no release announced on this node — `qexo release` on the signer announces one\n".to_string()),
+        },
+        "/v1/release/signature" => match latest_release(&lat.px) {
+            Some((_, signature)) => text_route("200 OK", signature),
+            None => text_route("404 Not Found", "no release announced on this node\n".to_string()),
+        },
+        _ if path.starts_with("/release/") => {
+            // The binary itself: bulk bytes ride the wire from the
+            // releases dir beside the state file — never out of
+            // state.phext. The name is a single path component,
+            // minted by `qexo release` as qexo-<version>.
+            let name = &path["/release/".len()..];
+            if name.is_empty() || name.contains('/') || name.contains("..") || !name.starts_with("qexo-") {
+                return text_route("404 Not Found", "no such release file\n".to_string());
+            }
+            match std::fs::read(lattice::state_dir().join("releases").join(name)) {
+                Ok(bytes) => ("200 OK".to_string(), "application/octet-stream", bytes),
+                Err(_) => text_route("404 Not Found", format!("no release file {} in the releases dir\n", name)),
+            }
+        }
+        _ => text_route(
+            "404 Not Found",
+            "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers, /v1/release, /v1/release/signature, /release/qexo-<version> (payloads are scroll text; the release binary is the one byte route)\n".to_string(),
         ),
     }
+}
+
+// ----------------------------------------------------------------
+// updates over the phextnet — release / update (v1.1.0)
+//
+// A release is announced as a SIGNED SCROLL: the manifest record
+// in the ledgers homeland (cluster: releases) of the signer's
+// state.phext. The manifest is the trust object — what travels
+// the phextnet and what gets verified. The binary itself is
+// bulk bytes beside the state file (releases/qexo-<version>),
+// served over the wire; a multi-MB base64 scroll inside every
+// node's state would be the wrong shape, and integrity never
+// depends on the transport anyway: a spoofed endpoint cannot
+// forge the signer's signature, and the manifest's sha256
+// judges the bytes.
+//
+// THE TRUST RULE (config record, 9.9.9 homeland): `qexo update`
+// applies a release only when (1) the manifest's detached
+// signature verifies, and the fingerprint it verifies under IS
+// the config record's `release_signer` AND that fingerprint's
+// key stands in this node's peer registry; (2) the offered
+// version is strictly newer than the running binary; (3) the
+// downloaded bytes hash to the manifest's sha256. Anything else
+// is a refusal with the reason printed. An offer that CLAIMS
+// the trusted signer but fails verification is a hard stop with
+// a ledger receipt — someone is impersonating the signer, and
+// the node does not shop around. Offers signed by anyone else
+// (a peer announcing its own release) are noted and ignored:
+// every node's trust is its own config record's word.
+// ----------------------------------------------------------------
+
+/// A parsed release manifest (the record's field lines).
+#[derive(Debug, Clone, PartialEq)]
+struct Manifest {
+    version: String,
+    sha256: String,
+    size_bytes: u64,
+    signer: String,
+    binary: String,
+}
+
+fn parse_manifest(text: &str) -> Result<Manifest, String> {
+    let version = lattice::field(text, "version").filter(|s| !s.is_empty()).ok_or("manifest has no version field")?;
+    let sha256 = lattice::field(text, "sha256").filter(|s| !s.is_empty()).ok_or("manifest has no sha256 field")?;
+    let size_bytes: u64 = lattice::field(text, "size_bytes")
+        .and_then(|s| s.parse().ok())
+        .ok_or("manifest has no usable size_bytes field")?;
+    let signer = lattice::field(text, "signer").filter(|s| !s.is_empty()).ok_or("manifest has no signer field")?;
+    let binary = lattice::field(text, "binary").unwrap_or_else(|| format!("qexo-{}", version));
+    Ok(Manifest { version, sha256, size_bytes, signer, binary })
+}
+
+/// Compose the manifest record text for a release. This exact
+/// text — every byte, trailing newline included — is what the
+/// signer signs and what verifiers check the signature against:
+/// the scroll IS the canonical form.
+fn compose_manifest(version: &str, sha256: &str, size_bytes: u64, built_from: &str, signer: &str, stamp: &str, binary: &str, sig_coord: &str) -> String {
+    lattice::record(&[
+        ("kind", "release announcement"),
+        ("version", version),
+        ("sha256", sha256),
+        ("size_bytes", &size_bytes.to_string()),
+        ("built_from", built_from),
+        ("signer", signer),
+        ("announced", stamp),
+        ("binary", binary),
+        ("signature", sig_coord),
+    ])
+}
+
+/// Dotted-numeric version triple ("1.1.0" or "v1.1.0").
+fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
+    let v = v.trim().trim_start_matches('v');
+    let mut parts = v.split('.');
+    let a: u64 = parts.next()?.parse().ok()?;
+    let b: u64 = parts.next()?.parse().ok()?;
+    let c: u64 = parts.next().map(|p| p.parse().unwrap_or(0)).unwrap_or(0);
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((a, b, c))
+}
+
+/// What an evaluated offer amounts to. Pure decision logic —
+/// the caller does the fetching and the signature mechanics,
+/// this judges the facts.
+#[derive(Debug, PartialEq)]
+enum Assess {
+    /// Trusted signer, strictly newer: applicable.
+    Accept,
+    /// Trusted signer, but not newer than what runs.
+    AlreadyCurrent,
+    /// The offer names some other signer: not this node's
+    /// trust, noted and ignored (no receipt, no failure).
+    NotOurSigner,
+    /// The offer CLAIMS the trusted signer but the facts do
+    /// not hold up. Reason attached. Hard stop + receipt.
+    Refuse(String),
+}
+
+fn assess_offer(claimed_signer: &str, verified: Result<&str, &str>, trusted: &str, offered: &str, current: &str) -> Assess {
+    if claimed_signer != trusted {
+        return Assess::NotOurSigner;
+    }
+    let fp = match verified {
+        Ok(fp) => fp,
+        Err(e) => return Assess::Refuse(format!("signature does not verify ({})", e)),
+    };
+    if fp != trusted {
+        return Assess::Refuse(format!(
+            "manifest claims signer {} but its signature verifies under {}",
+            lattice::fp_short(claimed_signer),
+            lattice::fp_short(fp)
+        ));
+    }
+    match (parse_version(offered), parse_version(current)) {
+        (Some(o), Some(c)) => {
+            if o > c {
+                Assess::Accept
+            } else {
+                Assess::AlreadyCurrent
+            }
+        }
+        _ => Assess::Refuse(format!("unusable version numbers (offered {:?}, running {:?})", offered, current)),
+    }
+}
+
+/// Minimal HTTP/1.1 GET over TcpStream — the phextnet's wire.
+/// http:// only: the net it rides is the tailnet, and integrity
+/// is the signature's business, never the transport's.
+fn http_get(url: &str) -> Result<(u16, Vec<u8>), String> {
+    let rest = url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("{}: only http:// endpoints are pollable (integrity is the signature's, not the transport's)", url))?;
+    let (hostport, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let mut stream = TcpStream::connect(hostport).map_err(|e| format!("connect {}: {}", hostport, e))?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(30)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(30)));
+    let req = format!("GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n", path, hostport);
+    stream.write_all(req.as_bytes()).map_err(|e| format!("write {}: {}", hostport, e))?;
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).map_err(|e| format!("read {}: {}", hostport, e))?;
+    let split = raw
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or_else(|| "malformed HTTP response (no header terminator)".to_string())?;
+    let head = String::from_utf8_lossy(&raw[..split]).to_string();
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| "malformed HTTP status line".to_string())?;
+    Ok((status, raw[split + 4..].to_vec()))
+}
+
+/// A receipt for an update attempt, in the receipts run —
+/// update outcomes are ledger facts, applied or refused alike.
+/// (Deliberately NOT written for: no signer configured, signer
+/// unregistered, no offer, already current, or --check. A
+/// timer polling an up-to-date node must not spam the ledger.)
+fn update_receipt(lat: &mut Lattice, verdict: &str, extra: &[(&str, &str)]) {
+    let mut fields: Vec<(&str, &str)> = vec![("verdict", verdict)];
+    fields.extend_from_slice(extra);
+    append_receipt(&mut lat.px, "update", &fields);
+    lattice::regen_indexes(&mut lat.px);
+    let _ = lat.save();
+}
+
+/// `qexo release` — on the signer: package the running binary
+/// into the releases dir, write + sign the manifest scroll,
+/// print what was announced.
+pub fn release() -> i32 {
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let fp = match lat.px.get(&lattice::NODE_KEY_RECORD).and_then(|t| lattice::field(t, "fingerprint")) {
+        Some(f) if !f.is_empty() => f,
+        _ => {
+            eprintln!("qexo release: this node has no node key — run `qexo config` first");
+            return 1;
+        }
+    };
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("qexo release: cannot locate the running binary: {}", e);
+            return 1;
+        }
+    };
+    let bytes = match std::fs::read(&exe) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("qexo release: cannot read {}: {}", exe.display(), e);
+            return 1;
+        }
+    };
+    let version = env!("CARGO_PKG_VERSION");
+    let sha = hash::sha256_hex(&bytes);
+    let size = bytes.len() as u64;
+    let built_from = option_env!("QEXO_COMMIT").unwrap_or("unstamped");
+    let binary_name = format!("qexo-{}", version);
+
+    let dir = lattice::state_dir().join("releases");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("qexo release: cannot create {}: {}", dir.display(), e);
+        return 1;
+    }
+    if let Err(e) = std::fs::write(dir.join(&binary_name), &bytes) {
+        eprintln!("qexo release: cannot stage {}: {}", dir.join(&binary_name).display(), e);
+        return 1;
+    }
+
+    let book = lattice::next_free_book(&lat.px, [6, 6, 6, lattice::LEDGER_RELEASES, 1], 1);
+    let maddr = lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RELEASES, 1, book, 1, 1, 1]);
+    let saddr = lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RELEASES, 1, book, 1, 1, 2]);
+    let (_, stamp) = now_stamp();
+    let manifest = compose_manifest(version, &sha, size, built_from, &fp, &stamp, &binary_name, &fmt_coord(&saddr));
+    let gpg = Gpg::open_in(&lattice::state_dir());
+    let signature = match gpg.sign_detached(&fp, manifest.as_bytes()) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("qexo release: signing the manifest failed: {}", e);
+            return 1;
+        }
+    };
+    lat.px.insert(maddr, manifest);
+    lat.px.insert(saddr, signature.trim_end().to_string() + "\n");
+    let receipt = append_receipt(
+        &mut lat.px,
+        "release",
+        &[
+            ("version", version),
+            ("sha256", &sha),
+            ("signer", &fp),
+            ("manifest", &fmt_coord(&maddr)),
+        ],
+    );
+    lattice::regen_indexes(&mut lat.px);
+    if let Err(e) = lat.save() {
+        eprintln!("qexo release: cannot save state: {}", e);
+        return 1;
+    }
+    println!("release announced: qexo {}", version);
+    println!("manifest: {} (signature beside it, {})", fmt_coord(&maddr), fmt_coord(&saddr));
+    println!("signer: {}", fp);
+    println!("sha256: {}", sha);
+    println!("binary: {} ({} bytes, served at /release/{})", dir.join(&binary_name).display(), size, binary_name);
+    println!("receipt: {}", fmt_coord(&receipt));
+    0
+}
+
+/// `qexo update [--check]` — poll the registered peers, judge
+/// every offer by the trust rule, and apply the trusted one.
+pub fn update(check_only: bool) -> i32 {
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let cfg_text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_default();
+    let trusted = match lattice::field(&cfg_text, "release_signer").filter(|s| !s.is_empty()) {
+        Some(fp) => fp,
+        None => {
+            eprintln!(
+                "qexo update: no trusted release signer configured — set `release_signer: <fingerprint>` in the config record ({}) to the node whose signed releases this node trusts. Nothing was polled and nothing changed.",
+                fmt_coord(&lattice::CONFIG_RECORD)
+            );
+            return 1;
+        }
+    };
+    let peers = peer_records(&lat.px);
+    if !peers.iter().any(|(_, _, t)| lattice::field(t, "fingerprint").as_deref() == Some(trusted.as_str())) {
+        eprintln!(
+            "qexo update: release signer {} is not in this node's peer registry — register their public key first (`qexo register <pubkey> --endpoint <url>`). No key, no trust: nothing was polled and nothing changed.",
+            trusted
+        );
+        return 1;
+    }
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let gpg = Gpg::open_in(&lattice::state_dir());
+    let mut saw_offer = false;
+    let mut current_offer: Option<String> = None;
+
+    for (_, _, text) in &peers {
+        let name = lattice::field(text, "name").unwrap_or_default();
+        let endpoint = match lattice::field(text, "endpoint").filter(|s| !s.is_empty()) {
+            Some(e) => e.trim_end_matches('/').to_string(),
+            None => {
+                println!(
+                    "peer {}: no endpoint recorded — not pollable (re-register with --endpoint <url> to add one)",
+                    name
+                );
+                continue;
+            }
+        };
+        let manifest_bytes = match http_get(&format!("{}/v1/release", endpoint)) {
+            Ok((200, b)) => b,
+            Ok((404, _)) => {
+                println!("peer {} ({}): no release announced", name, endpoint);
+                continue;
+            }
+            Ok((s, _)) => {
+                println!("peer {} ({}): /v1/release answered HTTP {} — skipped", name, endpoint, s);
+                continue;
+            }
+            Err(e) => {
+                println!("peer {} ({}): unreachable — {}", name, endpoint, e);
+                continue;
+            }
+        };
+        saw_offer = true;
+        let manifest_text = String::from_utf8_lossy(&manifest_bytes).to_string();
+        let manifest = match parse_manifest(&manifest_text) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("peer {} ({}): unusable manifest — {} — skipped", name, endpoint, e);
+                continue;
+            }
+        };
+        // Whose release is this, by its own word? Another node's
+        // own announcement is not this node's trust — note and
+        // move on WITHOUT fetching its signature or binary.
+        if manifest.signer != trusted {
+            println!(
+                "peer {} offers qexo {} signed by {} — not this node's release signer ({}); ignored",
+                name,
+                manifest.version,
+                lattice::fp_short(&manifest.signer),
+                lattice::fp_short(&trusted)
+            );
+            continue;
+        }
+        // The offer CLAIMS the trusted signer. Verify before
+        // anything is downloaded: a failure here is a hard stop.
+        let sig_text = match http_get(&format!("{}/v1/release/signature", endpoint)) {
+            Ok((200, b)) => String::from_utf8_lossy(&b).to_string(),
+            Ok((s, _)) => {
+                let why = format!("the manifest's signature could not be fetched (HTTP {})", s);
+                update_receipt(
+                    &mut lat,
+                    "refused",
+                    &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
+                );
+                eprintln!("qexo update: release from {} claims the trusted signer but {}", endpoint, why);
+                return 1;
+            }
+            Err(e) => {
+                let why = format!("the manifest's signature could not be fetched ({})", e);
+                update_receipt(
+                    &mut lat,
+                    "refused",
+                    &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
+                );
+                eprintln!("qexo update: release from {} claims the trusted signer but {}", endpoint, why);
+                return 1;
+            }
+        };
+        let verified = gpg.verify_detached(&sig_text, manifest_text.as_bytes());
+        let verdict = assess_offer(
+            &manifest.signer,
+            verified.as_ref().map(|s| s.as_str()).map_err(|e| e.as_str()),
+            &trusted,
+            &manifest.version,
+            &current,
+        );
+        match verdict {
+            Assess::NotOurSigner => unreachable!("signer equality checked above"),
+            Assess::Refuse(why) => {
+                update_receipt(
+                    &mut lat,
+                    "refused",
+                    &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
+                );
+                eprintln!(
+                    "qexo update: REFUSED — the release offered by {} claims signer {} but {} — nothing was downloaded and the running binary is untouched",
+                    endpoint, lattice::fp_short(&trusted), why
+                );
+                return 1;
+            }
+            Assess::AlreadyCurrent => {
+                current_offer = Some(manifest.version.clone());
+            }
+            Assess::Accept => {
+                if check_only {
+                    println!(
+                        "update available: {} → {} (signer {}, via {}) — run `qexo update` to apply",
+                        current, manifest.version, lattice::fp_short(&trusted), endpoint
+                    );
+                    return 0;
+                }
+                return apply_update(&mut lat, &endpoint, &manifest, &trusted, &current);
+            }
+        }
+    }
+
+    if let Some(offered) = current_offer {
+        println!("already current — this node runs qexo {}; the trusted signer offers {}", current, offered);
+        0
+    } else if saw_offer {
+        println!("qexo update: offers were seen, none from this node's release signer — nothing applied");
+        1
+    } else {
+        println!("qexo update: no peer offered a release manifest — nothing applied");
+        1
+    }
+}
+
+/// Download, verify, swap, post-check, roll back on failure.
+/// The caller has already established trust (signature verified
+/// against the registry key named by `release_signer`) and
+/// novelty (strictly newer). What remains is the bytes' own
+/// verdict: size + sha256 against the manifest, then the swap.
+fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted: &str, current: &str) -> i32 {
+    let exe = match std::env::current_exe() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("qexo update: cannot locate the running binary: {}", e);
+            return 1;
+        }
+    };
+    let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
+    let bytes = match http_get(&format!("{}/release/{}", endpoint, manifest.binary)) {
+        Ok((200, b)) => b,
+        Ok((s, _)) => {
+            let why = format!("binary download answered HTTP {}", s);
+            update_receipt(
+                lat,
+                "refused",
+                &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
+            );
+            eprintln!("qexo update: REFUSED — {}", why);
+            return 1;
+        }
+        Err(e) => {
+            let why = format!("binary download failed: {}", e);
+            update_receipt(
+                lat,
+                "refused",
+                &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
+            );
+            eprintln!("qexo update: REFUSED — {}", why);
+            return 1;
+        }
+    };
+    let tmp = dir.join("qexo.update-tmp");
+    if let Err(e) = std::fs::write(&tmp, &bytes) {
+        eprintln!(
+            "qexo update: cannot stage the download beside the running binary ({}): {} — the binary's directory must be writable for a self-update",
+            tmp.display(),
+            e
+        );
+        return 1;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+    }
+    // The bytes give their own verdict against the signed words.
+    let got_sha = hash::sha256_hex(&bytes);
+    if bytes.len() as u64 != manifest.size_bytes || got_sha != manifest.sha256 {
+        let why = format!(
+            "the served bytes fail the manifest: size {} (manifest {}), sha256 {} (manifest {})",
+            bytes.len(),
+            manifest.size_bytes,
+            got_sha,
+            manifest.sha256
+        );
+        let _ = std::fs::remove_file(&tmp);
+        update_receipt(
+            lat,
+            "refused",
+            &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
+        );
+        eprintln!("qexo update: REFUSED — {} — the running binary is untouched", why);
+        return 1;
+    }
+    // The swap: current aside as qexo.prev, the verified bytes
+    // into place — renames within one directory, atomic each.
+    let prev = dir.join("qexo.prev");
+    if prev.exists() {
+        let _ = std::fs::remove_file(&prev);
+    }
+    if let Err(e) = std::fs::rename(&exe, &prev) {
+        let _ = std::fs::remove_file(&tmp);
+        eprintln!("qexo update: cannot set the running binary aside ({}): {}", prev.display(), e);
+        return 1;
+    }
+    if let Err(e) = std::fs::rename(&tmp, &exe) {
+        let _ = std::fs::rename(&prev, &exe);
+        let why = format!("swap failed ({}); previous binary restored", e);
+        update_receipt(
+            lat,
+            "rolled back",
+            &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
+        );
+        eprintln!("qexo update: {}", why);
+        return 1;
+    }
+    // Post-check: the new binary must speak its own version and
+    // pass doctor against this node's state. Anything less and
+    // qexo.prev comes back — a bad update never stands.
+    let post = post_update_check(&exe, &manifest.version);
+    match post {
+        Ok(()) => {
+            update_receipt(
+                lat,
+                "applied",
+                &[("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
+            );
+            println!("updated: qexo {} → {} (signer {})", current, manifest.version, lattice::fp_short(trusted));
+            println!("sha256 verified: {}", manifest.sha256);
+            println!("previous binary kept at {}", prev.display());
+            0
+        }
+        Err(why) => {
+            let _ = std::fs::remove_file(&exe);
+            let restored = std::fs::rename(&prev, &exe).is_ok();
+            update_receipt(
+                lat,
+                "rolled back",
+                &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
+            );
+            eprintln!(
+                "qexo update: the new binary failed its post-check ({}) — {}",
+                why,
+                if restored { "qexo.prev restored; the node still runs the previous binary" } else { "RESTORE FAILED — qexo.prev is still beside the binary; move it back by hand" }
+            );
+            1
+        }
+    }
+}
+
+/// Post-swap check: `--version` must name the new version and
+/// `doctor` must pass against this node's (inherited) state.
+fn post_update_check(exe: &Path, version: &str) -> Result<(), String> {
+    let out = std::process::Command::new(exe)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("cannot run the new binary: {}", e))?;
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() || !text.contains(&format!("v{}", version)) {
+        return Err(format!("version stamp reads {:?}, expected qexo v{}", text.trim(), version));
+    }
+    let doc = std::process::Command::new(exe)
+        .arg("doctor")
+        .output()
+        .map_err(|e| format!("cannot run the new binary's doctor: {}", e))?;
+    if !doc.status.success() {
+        return Err("the new binary's doctor reports problems against this node's state".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1267,6 +2084,76 @@ mod tests {
         let v = win32_volume("C:\\".to_string(), 100, 140, 0);
         assert_eq!(v.used_bytes, 0);
         assert_eq!(v.free_bytes, 0);
+    }
+
+    #[test]
+    fn version_triples_compare() {
+        assert!(parse_version("1.1.0") > parse_version("1.0.3"));
+        assert!(parse_version("v1.0.3") == parse_version("1.0.3"));
+        assert!(parse_version("1.0.3") < parse_version("1.0.10"));
+        assert_eq!(parse_version("1.2"), Some((1, 2, 0)));
+        assert_eq!(parse_version("soon"), None);
+        assert_eq!(parse_version("1.2.3.4"), None);
+    }
+
+    #[test]
+    fn assess_offer_enforces_the_trust_rule() {
+        let trusted = "AAAA1111BBBB2222CCCC3333DDDD4444EEEE5555";
+        let other = "FFFF6666EEEE7777DDDD8888CCCC9999BBBB0000";
+        // another signer's offer: not our trust, whatever its signature
+        assert_eq!(assess_offer(other, Ok(other), trusted, "9.9.9", "1.0.3"), Assess::NotOurSigner);
+        assert_eq!(assess_offer(other, Err("no key"), trusted, "9.9.9", "1.0.3"), Assess::NotOurSigner);
+        // claimed signer, signature fails outright
+        match assess_offer(trusted, Err("bad signature"), trusted, "1.1.0", "1.0.3") {
+            Assess::Refuse(w) => assert!(w.contains("does not verify"), "{}", w),
+            v => panic!("expected Refuse, got {:?}", v),
+        }
+        // claimed signer, but the signature is someone else's
+        match assess_offer(trusted, Ok(other), trusted, "1.1.0", "1.0.3") {
+            Assess::Refuse(w) => assert!(w.contains("verifies under"), "{}", w),
+            v => panic!("expected Refuse, got {:?}", v),
+        }
+        // the real thing: trusted, verified, strictly newer
+        assert_eq!(assess_offer(trusted, Ok(trusted), trusted, "1.1.0", "1.0.3"), Assess::Accept);
+        // trusted and verified, but equal or older: never a downgrade
+        assert_eq!(assess_offer(trusted, Ok(trusted), trusted, "1.0.3", "1.0.3"), Assess::AlreadyCurrent);
+        assert_eq!(assess_offer(trusted, Ok(trusted), trusted, "1.0.2", "1.0.3"), Assess::AlreadyCurrent);
+    }
+
+    #[test]
+    fn manifest_composes_parses_and_detects_tampering() {
+        let dir = std::env::temp_dir().join(format!("qexo-update-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gpg = Gpg::open_in(&dir);
+        let fp = gpg.generate("qexo test signer", "qexo test").expect("test key generation");
+        let text = compose_manifest("1.1.0", &hash::sha256_hex(b"fake-binary"), 11, "deadbeef", &fp, "2026-11-12 00:00 UTC", "qexo-1.1.0", "6.6.6/8.1.1/1.1.2");
+        let m = parse_manifest(&text).expect("manifest parses");
+        assert_eq!(m.version, "1.1.0");
+        assert_eq!(m.signer, fp);
+        assert_eq!(m.size_bytes, 11);
+        assert_eq!(m.binary, "qexo-1.1.0");
+        assert_eq!(m.sha256, hash::sha256_hex(b"fake-binary"));
+        // the scroll text is the signed text: sign it, verify it,
+        // then change one byte and watch verification fail
+        let sig = gpg.sign_detached(&fp, text.as_bytes()).expect("sign");
+        let verified = gpg.verify_detached(&sig, text.as_bytes()).expect("verify");
+        assert_eq!(verified, fp);
+        let tampered = text.replace("1.1.0", "1.1.1");
+        assert!(gpg.verify_detached(&sig, tampered.as_bytes()).is_err());
+        // a stranger's key verifies nothing here
+        let gpg2_dir = dir.join("other");
+        let gpg2 = Gpg::open_in(&gpg2_dir);
+        assert!(gpg2.verify_detached(&sig, text.as_bytes()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn timer_units_carry_the_trigger_not_the_logic() {
+        let (service, timer) = update_unit_texts(Path::new("/usr/local/bin/qexo"), 12);
+        assert!(service.contains("ExecStart=/usr/local/bin/qexo update"), "{}", service);
+        assert!(service.contains("Type=oneshot"), "{}", service);
+        assert!(timer.contains("OnUnitActiveSec=12h"), "{}", timer);
+        assert!(timer.contains("WantedBy=timers.target"), "{}", timer);
     }
 }
 
