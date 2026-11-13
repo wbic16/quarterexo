@@ -84,7 +84,7 @@ pub fn parse(args: &[String]) -> Command {
 
 pub fn help_text() -> String {
     let mut s = String::new();
-    s.push_str("qexo v1.2.0 — the Exocortex coordinator (phext-native)\n");
+    s.push_str("qexo v1.2.1 — the Exocortex coordinator (phext-native)\n");
     s.push_str("All node state lives in one file: /var/lib/qexo/state.phext\n");
     s.push_str("(QEXO_STATE overrides the path for development and tests.)\n\n");
 

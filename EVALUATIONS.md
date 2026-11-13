@@ -3,6 +3,104 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-13 — nightly evaluation of 2026-11-12 (ships v1.2.1)
+
+- **Disk:** GREEN, slow growth, same shape. disk-watch history:
+  82.47 GB / 1,022,817 files (2026-11-11) → 84.16 GB /
+  1,029,881 files (2026-11-12) — +1.69 GB, +7,064 files.
+  Tonight's live check: 86 GB used of 150 GB (58%). Largest
+  consumers unchanged for a fifth night: wavefront 31.73 GB
+  (the lossless A/B intermediates, ~9 GB together, still
+  staged on the VM), goals 19.22 GB, phext 10.62 GB. The
+  day's real disk event was not on this VM at all: qexo's
+  disk gate, run by Will on aletheia-core, read RED at
+  808.96 GB used and held every placement — on a 3.6 TB
+  volume with 2.7 TB free. The gate's absolute thresholds
+  (AMBER 95 / RED 102 GB) were the VM's staging-quota numbers,
+  carried from the v2 planner onto a machine they never
+  described (see Counterfactual).
+- **CPU:** the day's defining placement failure was a
+  coordinator on the mortal VM. T8's coordinator died in the
+  01:32 VM swap mid-render (the VM was replaced at 01:32,
+  03:27, 05:27, 07:27 CST that day; 124 boot changes in the
+  deploy-study ledger); eight frames were truncated, the task
+  record read "paused," and the breakage surfaced only at
+  Will's 20:47 status ask. The restart rule fired, the finish
+  ran on aletheia-core, and T8 was served at 23:13. Correct
+  placements elsewhere: the continual-arc campaign driver ran
+  on aletheia-core (6h18m elapsed at the 17:21 watchdog pass,
+  node load 8.62), every qexo build of the day (v1.0.1,
+  v1.0.2, the fleet binary) built on aletheia-core, and the
+  14-node fleet rollout was driven from this VM by SSH. The
+  VM's 1.5 shared CPUs carried coordination plus ~131
+  ten-minute task-progress ticks (1497 → 1628).
+- **RAM:** 6 GB shared limit, same envelope — tonight's
+  snapshot 504 MB available, 436 MB swap used, load 1.03. No
+  heavy local resident was recorded on 2026-11-12; placement
+  held and RAM held with it, for a fourth night running. No
+  per-node RAM record for the ranch side of the day exists in
+  the day's log — stated as a gap, not filled in.
+- **Inference:** the well-spent bulk was real: the morning
+  call's KSO design rounds (KSO = qexo: per-node state,
+  teleporting tasks, divergence kept as attempt artifacts);
+  SQ PR #3 and phext-lattice PR #61 merged on the evening
+  call with release-build tasks queued under the new
+  merge → release rule; the qexo v1.0.1 Windows-doctor
+  diagnosis (two defects separated from the code: a test
+  encoding Unix semantics as universal, and a real
+  stale-lock bug behind it); the v1.0.2 lens redesign; the
+  fleet rollout, whose version-stamp check caught a stale
+  v1.0.1 binary before any node received it; and the T8
+  finish. The waste was repair-shaped, for the fourth night
+  running: (1) the disk-gate incident — Will's live testing
+  found the planner judging a ranch volume by VM numbers;
+  (2) PR #10 merged into its stacked base branch instead of
+  exo, costing repair PR #11 and register item #85; (3) a
+  stale pre-fix debug binary in Will's own checkout kept
+  rendering the false RED, taxing the status exchange until
+  it was identified as the old binary, not the merged code;
+  (4) the tick loop's ~131 mostly-identical register
+  reconciliations, the same verification-shaped spend named
+  on 2026-11-10 and 2026-11-11.
+- **Counterfactual:** the strongest case examined is T8, and
+  it is a planner failure before it is a substrate failure.
+  The VM's ~2-hour replacement cadence was measured and on
+  record; a planner that treated a coordinator's death as a
+  restart trigger — or kept the coordinator node-resident
+  from the start, as the standing rule already directs —
+  would have resumed T8 at the 01:32 swap and finished it
+  roughly 19 hours earlier (the ranch-side finish, once
+  actually started at ~20:47, took about 2.5 hours). Instead
+  a stale record state ("paused") hid the breakage until
+  Will asked. The restart-on-status-ask rule Will made that
+  evening is the human-side fix; the planner-side fix —
+  surfacing a task whose coordinator has died as broken, not
+  paused — is recorded here as a future candidate, larger
+  than one night's change. Secondary case, same shape
+  (numbers carried across a boundary they do not describe):
+  the disk gate's VM thresholds on a ranch volume — a
+  first-run sanity check comparing a gate's absolute
+  thresholds against the measured volume's size would have
+  flagged the 95 GB ceiling on a 3.6 TB volume before Will's
+  live test did. v1.0.2's lenses closed the gate half the
+  same day; v1.0.3 closed the forecast half.
+- **Tonight's change** is the candidate recorded in the
+  2026-11-12 evaluation and still open in v1.2.0's code:
+  the forecast rated growth from a single interval, so its
+  nearest-crossing estimate swung ~1.4 days (2026-11-10
+  interval) → ~12–14 days (2026-11-11) → ~9.9 days
+  (2026-11-12, from tonight's history: last interval alone
+  rates +7,064 files/day against a four-interval median of
+  +33,043). v1.2.1 rates the forecast from the median of the
+  per-interval rates over the most recent 7 intervals (see
+  CHANGELOG). One process note: this cycle worked from a
+  fresh clone of exo (833e2f34, v1.2.0) on aletheia-core —
+  the local `~/workspace/orchestrator/` mirror still sits at
+  v3.2 and was not used, so the 2026-11-09/10 stale-tree
+  overwrite cannot recur from it tonight. PR #16 (v1.3.0,
+  the libphext parser) is open against the same base and is
+  untouched by this change beyond the version stamps.
+
 ## 2026-11-12 — nightly evaluation of 2026-11-11 (ships v3.2)
 
 - **Disk:** growth collapsed to the slowest interval on record.

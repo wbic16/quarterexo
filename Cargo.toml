@@ -1,6 +1,6 @@
 [package]
 name = "qexo"
-version = "1.2.0"
+version = "1.2.1"
 description = "qexo — the Exocortex coordinator, phext-native: all node state lives in /var/lib/qexo/state.phext (Layer 2 addressing over phext)"
 license = "MIT"
 edition = "2021"
