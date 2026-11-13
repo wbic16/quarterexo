@@ -36,7 +36,7 @@ const BUILD_TOKENS: &[&str] = &[
     "benchmark", "bulk", "suite", "phcc",
 ];
 
-pub const PLAN_VERSION: &str = "v1.0.3";
+pub const PLAN_VERSION: &str = "v1.0.4";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Class {
@@ -136,7 +136,8 @@ pub struct Volume {
     pub root: String,
     pub total_bytes: u64,
     pub used_bytes: u64,
-    /// Bytes available to an unprivileged writer (statvfs f_bavail).
+    /// Bytes available to an unprivileged writer (statvfs f_bavail;
+    /// on Windows, GetDiskFreeSpaceExW's caller-available figure).
     pub free_bytes: u64,
 }
 

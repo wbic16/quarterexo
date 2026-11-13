@@ -1,6 +1,15 @@
-# qexo v1.0.3 (scratch line) — ship notes
+# qexo v1.0.4 (scratch line) — ship notes
 
-Status: v1.0.3 BUILT AND GATED, 2026-11-12 — the forecast gate
+Status: v1.0.4 BUILT AND GATED, 2026-11-12 — the Windows
+build links again: the disk probe's volume read is split per
+platform (statvfs on unix, GetDiskFreeSpaceExW on Windows,
+none elsewhere) after v1.0.3 failed to link on Windows with
+`unresolved external symbol statvfs`. The gate set gains a
+full Windows link (cargo build for x86_64-pc-windows-gnu);
+check-only gates cannot see a link error. No behavior change
+on unix. Base is exo (v1.0.3). See CHANGELOG 1.0.4.
+
+Status (v1.0.3, historical): BUILT AND GATED, 2026-11-12 — the forecast gate
 now projects the same lenses the gate reads. v1.0.2 moved the
 gate to a volume lens + optional quota lens but left the
 forecast projecting the legacy 95/102 GB ceilings, so the
