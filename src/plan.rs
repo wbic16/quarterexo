@@ -237,7 +237,7 @@ pub fn build_plan_with_history(tasks_text: &str, disk_text: &str, history_text: 
 
     let total = rows.len();
     Ok(Json::obj(vec![
-        ("plan_version", Json::s("v3.2")),
+        ("plan_version", Json::s("v3.3")),
         ("disk", Json::obj(vec![
             ("date", Json::s(disk_date)),
             ("used_gb", Json::n(used_gb)),
@@ -529,7 +529,7 @@ mod tests {
         let fg = plan.get("file_gate").unwrap();
         assert_eq!(fg.get("state").unwrap().as_str(), Some("AMBER"));
         assert_eq!(fg.get("files").unwrap().as_num(), Some(1_150_000.0));
-        assert_eq!(plan.get("plan_version").unwrap().as_str(), Some("v3.2"));
+        assert_eq!(plan.get("plan_version").unwrap().as_str(), Some("v3.3"));
     }
 
     #[test]
@@ -565,6 +565,29 @@ mod tests {
         let g = plan.get("disk_gate").unwrap();
         assert_eq!(g.get("state").unwrap().as_str(), Some("AMBER"));
         assert!(g.get("action").unwrap().as_str().unwrap().starts_with("FORECAST AMBER"));
+    }
+
+    #[test]
+    fn plan_human_renders_header_and_task_line() {
+        // v3.3 regression: plan_human takes the whole plan object
+        // (the bare-CLI path handed it the wrong value through
+        // v3.2, leaving this renderer unreachable).
+        let plan = Json::obj(vec![
+            ("disk".into(), Json::obj(vec![
+                ("used_gb".into(), Json::n(71.0)),
+                ("level".into(), Json::s("GREEN")),
+                ("files".into(), Json::n(900000.0)),
+            ])),
+            ("tasks".into(), Json::Arr(vec![Json::obj(vec![
+                ("coordinate".into(), Json::s("1.1.1/1.1.1/1.1.1")),
+                ("title".into(), Json::s("film encode")),
+                ("execution".into(), Json::s("ranch:aletheia-core (video — never on VM)")),
+                ("class".into(), Json::s("video")),
+            ])])),
+        ]);
+        let out = plan_human(&plan);
+        assert!(out.starts_with("qexo — placement plan\n"), "header missing: {}", &out[..60.min(out.len())]);
+        assert!(out.contains("[1.1.1/1.1.1/1.1.1] film encode"), "task line missing:\n{}", out);
     }
 
     #[test]

@@ -1,8 +1,21 @@
 # qexo v3 — SHIP NOTES (for Will's morning review)
 
 *Status: v3 tier-1 SHIPPED to exo 2026-11-09 (PR #3 merged;
-crates.io publish still open). v3.1 REWIRE in review — see the
-next section.*
+crates.io publish still open). v3.1 rewire MERGED 2026-11-11
+(PR #6); v3.2 wiring gate SHIPPED 2026-11-12. v3.3 human-plan
+fix in review — see the next section.*
+
+## v3.3 human-plan fix (2026-11-12)
+
+Bare `qexo` printed the JSON plan payload because the fallback
+arm in `src/main.rs` looked for a `"payload"` envelope the plan
+route never sends — and would have passed the tasks array, not
+the plan, to `plan_human`. v3.3 hands the renderer the plan
+object itself on a successful bare dispatch; `--json`, `qexo
+plan`, and all other invocations are byte-for-byte unchanged
+(verified against the v3.2 binary). One regression test added.
+Gate results are reported in the PR body; nothing here claims a
+gate that was not run.
 
 ## v3.1 rewire (2026-11-11)
 

@@ -118,12 +118,17 @@ fn main() {
             if want_json || !args.is_empty() {
                 println!("{}", serde_pretty(&out.payload));
             } else {
-                // bare qexo: the plan in its human (v1) rendering
-                if let Some(p) = out.payload.get("payload") {
-                    if let Some(tasks) = p.get("tasks") {
-                        print!("{}", plan::plan_human(tasks));
-                        return;
-                    }
+                // bare qexo: the plan in its human (v1) rendering.
+                // The plan route returns the plan object itself —
+                // there is no "payload" envelope key — and
+                // plan_human reads the whole plan (disk, gates,
+                // tasks), so hand it out.payload directly. (v3.3:
+                // this branch was dead through v3.2, which looked
+                // for the envelope and would have passed the tasks
+                // array to the renderer.)
+                if out.status < 400 && out.payload.get("tasks").is_some() {
+                    print!("{}", plan::plan_human(&out.payload));
+                    std::process::exit(0);
                 }
                 println!("{}", serde_pretty(&out.payload));
             }

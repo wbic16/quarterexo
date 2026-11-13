@@ -1,6 +1,6 @@
 [package]
 name = "qexo"
-version = "0.3.2"
+version = "0.3.3"
 description = "qexo — the Exocortex coordinator: dispatcher, persona index, teleport fencing, baked corpus (DESIGN-V3)"
 license = "MIT"
 edition = "2021"
