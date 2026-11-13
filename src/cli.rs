@@ -16,12 +16,13 @@ pub enum Command {
     /// parse / explode / implode / seal / unseal / select / get,
     /// with their raw argument tails.
     FileOp(Vec<String>),
-    Config { auto_update: bool },
+    Config { auto_update: bool, evolve: bool },
     Doctor { fix: bool },
     List,
     Register(Vec<String>),
     Release,
     Update { check: bool },
+    Evolve { check: bool },
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
     Message { persona: String, text: String },
@@ -42,12 +43,16 @@ pub fn parse(args: &[String]) -> Command {
         "parse" | "explode" | "implode" | "seal" | "unseal" | "select" | "get" => {
             Command::FileOp(args.to_vec())
         }
-        "config" => Command::Config { auto_update: args.iter().any(|a| a == "--auto-update") },
+        "config" => Command::Config {
+            auto_update: args.iter().any(|a| a == "--auto-update"),
+            evolve: args.iter().any(|a| a == "--evolve"),
+        },
         "doctor" => Command::Doctor { fix: args.iter().any(|a| a == "--fix") },
         "list" => Command::List,
         "register" => Command::Register(args[1..].to_vec()),
         "release" => Command::Release,
         "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
+        "evolve" => Command::Evolve { check: args.iter().any(|a| a == "--check") },
         "host" => {
             let mut persona: Option<String> = None;
             let mut boot: Option<String> = None;
@@ -79,7 +84,7 @@ pub fn parse(args: &[String]) -> Command {
 
 pub fn help_text() -> String {
     let mut s = String::new();
-    s.push_str("qexo v1.1.0 — the Exocortex coordinator (phext-native)\n");
+    s.push_str("qexo v1.2.0 — the Exocortex coordinator (phext-native)\n");
     s.push_str("All node state lives in one file: /var/lib/qexo/state.phext\n");
     s.push_str("(QEXO_STATE overrides the path for development and tests.)\n\n");
 
@@ -93,6 +98,8 @@ pub fn help_text() -> String {
     s.push_str("Identity & peers:\n");
     s.push_str("  qexo config               birth the node: create state.phext, set up the node GPG key\n");
     s.push_str("  qexo config --auto-update turn automatic updates on (config record) and install the systemd timer where possible\n");
+    s.push_str("  qexo config --evolve      set evolve: on — the automatic timer's trigger becomes a full evolve pass\n");
+    s.push_str("                            instead of update alone (update is one stage of evolve; see below)\n");
     s.push_str("  qexo list                 the registered peers\n");
     s.push_str("  qexo register <pubkey> [--endpoint <url>]   register a peer's public key (armored text, a file path, or - for stdin);\n");
     s.push_str("                            the endpoint (its qexo serve base URL) is recorded on the peer so update can poll it\n\n");
@@ -105,8 +112,26 @@ pub fn help_text() -> String {
     s.push_str("                            trust rule: only a release whose manifest signature verifies against the peer\n");
     s.push_str("                            whose fingerprint is the config record's release_signer is ever applied\n\n");
 
+    s.push_str("Convergence — one pass over the phextnet:\n");
+    s.push_str("  qexo evolve               everything this node can learn from its peers, applied in one receipted\n");
+    s.push_str("                            cycle: (1) peer gossip — peers-of-peers are recorded as discovered, which\n");
+    s.push_str("                            is knowledge, never trust (a discovered peer is never polled, never a\n");
+    s.push_str("                            signer; only `qexo register` makes a peer trusted); (2) persona sync —\n");
+    s.push_str("                            newer persona revisions are adopted from trusted peers, and where both\n");
+    s.push_str("                            lines advanced from a common ancestor the divergence is kept whole,\n");
+    s.push_str("                            both copies standing as attempt artifacts — never last-writer-wins;\n");
+    s.push_str("                            (3) the binary self-update, exactly `qexo update`. One evolution receipt\n");
+    s.push_str("                            in the ledgers names every stage's outcome. A stage's failure never\n");
+    s.push_str("                            blocks the next; exit is 1 only when the binary stage refuses or rolls\n");
+    s.push_str("                            back an offer that claimed the trusted signer\n");
+    s.push_str("  qexo evolve --check       the same pass as reads only — print what would change, write nothing\n");
+    s.push_str("                            (update is one stage of evolve: with evolve: on in the config record,\n");
+    s.push_str("                            the automatic timer fires `qexo evolve` instead of `qexo update`)\n\n");
+
     s.push_str("Personas & inference:\n");
-    s.push_str("  qexo host <persona>       load a persona into local inference (--boot <path> for a boot text file)\n");
+    s.push_str("  qexo host <persona>       load a persona into local inference (--boot <path> for a boot text file;\n");
+    s.push_str("                            --boot against an existing, unhosted home with different text is a local\n");
+    s.push_str("                            edit — the boot is replaced and the persona's revision bumps)\n");
     s.push_str("  qexo host                 list hosted personas\n");
     s.push_str("  qexo unhost <persona>     unload a hosted persona\n");
     s.push_str("  qexo message <persona> <text...>   one request/response exchange with a hosted persona\n\n");
@@ -141,11 +166,14 @@ mod tests {
         assert_eq!(parse(&v(&["--help"])), Command::Help);
         assert_eq!(parse(&v(&["-h"])), Command::Help);
         assert_eq!(parse(&v(&["help"])), Command::Help);
-        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false });
-        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true });
+        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false, evolve: false });
+        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true, evolve: false });
+        assert_eq!(parse(&v(&["config", "--evolve"])), Command::Config { auto_update: false, evolve: true });
         assert_eq!(parse(&v(&["release"])), Command::Release);
         assert_eq!(parse(&v(&["update"])), Command::Update { check: false });
         assert_eq!(parse(&v(&["update", "--check"])), Command::Update { check: true });
+        assert_eq!(parse(&v(&["evolve"])), Command::Evolve { check: false });
+        assert_eq!(parse(&v(&["evolve", "--check"])), Command::Evolve { check: true });
         assert_eq!(parse(&v(&["doctor"])), Command::Doctor { fix: false });
         assert_eq!(parse(&v(&["doctor", "--fix"])), Command::Doctor { fix: true });
         assert_eq!(parse(&v(&["list"])), Command::List);
@@ -173,7 +201,7 @@ mod tests {
     fn help_lists_every_command() {
         let h = help_text();
         for word in [
-            "config", "doctor", "list", "register", "release", "update", "host", "unhost", "message", "status",
+            "config", "doctor", "list", "register", "release", "update", "evolve", "host", "unhost", "message", "status",
             "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal",
             "select", "get", "--help", "/var/lib/qexo/state.phext",
         ] {

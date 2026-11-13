@@ -1,3 +1,26 @@
+# qexo v1.2.0 (scratch line) — ship notes
+
+Status: v1.2.0 BUILT AND GATED, 2026-11-13 — `qexo evolve`,
+one receipted convergence pass over the phextnet: peer gossip
+(peers-of-peers recorded as `status: discovered` with a `via`
+— knowledge, never trust; discovered peers are excluded from
+every polling path until the operator registers their key),
+persona sync by lineage (revision / follows / history /
+stamp; descendants adopted, forks kept beside the resident
+copy as attempt artifacts under the KSO ruling), the v1.1.0
+self-update invoked in-process, and one evolution receipt
+per pass naming every stage's outcome. `evolve --check` is
+byte-inert, proven against a hashed fixture. Proven in a
+three-node sandbox on the hub (discovery of a fourth node
+via gossip with the discovered node never contacted, a clean
+revision 2→3 adoption, a divergent copy kept whole, the
+binary stage applying in the same pass, and a lying-gossip
+negative answered with a warning, not an overwrite). The
+auto timer's trigger becomes `qexo evolve` under the new
+`evolve: on` config key (default off); serve gains
+`/v1/scroll/<coord>`. Base is exo (v1.1.0, PR #14). See
+CHANGELOG 1.2.0.
+
 # qexo v1.1.0 (scratch line) — ship notes
 
 Status: v1.1.0 BUILT AND GATED, 2026-11-12 — automatic updates

@@ -1,5 +1,83 @@
 # qexo changelog — the scratch line
 
+## 1.2.0 (v1.2.0) — built and gated, 2026-11-13
+
+`qexo evolve` — one receipted convergence pass over the
+phextnet. The reading, in one paragraph (Will's order was two
+words, "qexo evolve"; this reading is Emise's, stated so it
+can be struck): `update` moves the binary; `evolve` is the
+node's full convergence pass — everything a node can learn
+from its peers, applied in one receipted cycle. What a node
+knows, what its personas have become elsewhere, and what its
+binary should be are three faces of one question — how far
+has this node drifted from the network it belongs to — and
+evolve answers it in a single pass that leaves a single
+receipt.
+
+The four stages, in order, each independently failable — a
+stage's failure never blocks the next, and every outcome
+lands in the receipt:
+
+1. **Peer gossip.** For each trusted peer with an endpoint,
+   the pass reads its peers index (serve gains a general
+   scroll-by-coordinate route, `/v1/scroll/<coord>`, to carry
+   it) and fetches each record the index names.
+   Peers-of-peers this node does not know are recorded in the
+   peers homeland as `status: discovered`, with a `via` field
+   naming the reporting peer and the reported fingerprint
+   (plus endpoint when the report carries one).
+2. **Persona sync.** Persona records now carry a lineage —
+   `revision` (1 at birth, +1 per local edit), `follows` (the
+   revision and stamp the copy directly succeeds — the scroll
+   names the revision it follows), `history` (the stamp
+   chain), and `stamp` (a content address: sha256 over name +
+   revision + follows + boot). For each persona this node
+   holds, trusted peers are polled for their copy (found
+   through the peer's own personas index). A copy whose
+   history extends ours is a descendant and is adopted whole;
+   a copy behind ours is noted; anything else is a fork.
+3. **Self-update.** The v1.1.0 mechanism, invoked in-process
+   — same trust rule, same swap, rollback, and receipts;
+   evolve's receipt references its outcome.
+4. **The evolution receipt.** One scroll per pass in the
+   ledgers homeland's receipts family: peers polled / learned
+   / confirmed, personas considered / adopted, divergences
+   kept, the binary outcome, and every warning, each named.
+
+The two trust rules. **Discovery is knowledge, not trust:** a
+discovered peer is never polled for releases, never synced
+from, and never eligible as `release_signer` — every polling
+path iterates only records whose status is `registered`, and
+a discovered record becomes trusted only when the operator
+registers its key (`qexo register` then promotes the record
+in place, keeping its `via` provenance). A gossip report that
+matches a trusted peer's fingerprint is a consistency check;
+a fingerprint conflict for a known name is a warning line in
+the receipt, never a silent overwrite. **Divergence keeps
+both:** when two nodes advance the same persona from a common
+ancestor differently, the incoming copy lands at a sibling
+address in the same persona cluster as an attempt artifact
+named by its origin node (the KSO ruling) — never
+last-writer-wins, never a silent drop, and the receipt names
+every divergence kept.
+
+`qexo evolve --check` performs every read and prints the
+plan, and writes nothing at all: the knowledge stages run
+against a throwaway copy of the lattice and the binary stage
+runs in a judge-only mode that suppresses even the refusal
+receipts `qexo update --check` has always written — verified
+byte-for-byte against a hashed fixture. `update ⊂ evolve`:
+the v1.1.0 auto timer's trigger becomes `qexo evolve` when
+the new config key `evolve: on` is set (`qexo config
+--evolve`; default off; flipping it while the timer is
+installed reinstalls the unit with the new trigger — a unit
+names its command, so the key alone never pretends to
+rewrite it). Manual `qexo evolve` always converges, whatever
+the key says; the key only steers the timer. Persona records
+born before lineage existed are not rewritten: they read as
+revision-1 roots whose stamp is computed from their content,
+and identical roots share ancestry by construction.
+
 ## 1.1.0 (v1.1.0) — built and gated, 2026-11-12
 
 Automatic updates over the phextnet: qexo nodes now update
