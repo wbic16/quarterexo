@@ -1,5 +1,27 @@
 # Changelog
 
+## v3.3 — 2026-11-12 (bare qexo prints the human plan)
+
+Bare `qexo` — no arguments, no `--json` — now prints the human
+placement-plan rendering ("qexo — placement plan …") that has
+existed in `src/plan.rs` since v3 but was unreachable from the
+CLI. The fallback arm in `src/main.rs` looked for a `"payload"`
+envelope key on the dispatch result; the plan route returns the
+plan object itself, so the lookup always missed and bare `qexo`
+fell through to the pretty-printed JSON. The branch was dead for
+a second reason too: had the envelope existed, it would have
+passed the plan's `tasks` array to `plan_human`, which reads the
+whole plan (disk, gates, tasks). The fix hands the renderer the
+plan object directly when the bare dispatch succeeded and the
+payload is a plan. One file of logic changed (`src/main.rs`),
+plus the release version stamps.
+
+Unchanged, by construction and verified against the v3.2 binary:
+`qexo --json`, `qexo plan`, and every other invocation print
+exactly what they printed before. One regression test
+(`plan_human_renders_header_and_task_line`) now pins the
+renderer's contract — whole plan in, header and task lines out.
+
 ## v3.2 — 2026-11-12 (the wiring gate)
 
 Motivating finding — the 2026-11-12 evaluation of 2026-11-11
