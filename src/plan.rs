@@ -1,7 +1,14 @@
 //! The plan: placement proposal in the four currencies, with the
 //! disk gates carried from the old line (v2.1 byte gate, v2.2
 //! file-count gate, v2.3 forecast gate — behavior preserved, tests
-//! ported).
+//! ported) and, from v1.0.2, re-based on the volume the gate
+//! actually measures: the old absolute byte thresholds were the
+//! Muse VM's staging quota wearing a universal costume. The gate
+//! now reads through two lenses — a volume lens (free fraction of
+//! the measured volume) and a quota lens (absolute used-bytes
+//! ceiling, on only where a node configures it) — plus the file
+//! lens, with every threshold read from the node's own config
+//! record in state.phext.
 //!
 //! From-scratch shape: this module is the pure core. It computes
 //! from VALUES — a current disk observation, a history of
@@ -24,7 +31,7 @@ const BUILD_TOKENS: &[&str] = &[
     "benchmark", "bulk", "suite", "phcc",
 ];
 
-pub const PLAN_VERSION: &str = "v1.0.1";
+pub const PLAN_VERSION: &str = "v1.0.2";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Class {
@@ -113,6 +120,250 @@ pub struct DiskObs {
     /// The watcher's own level word ("GREEN"/"AMBER"/"RED"/"?").
     pub level: String,
     pub files: u64,
+}
+
+/// A volume as the probe measures it: the filesystem under a
+/// named root, in bytes. The gate judges THIS volume — not a
+/// quota remembered from another machine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Volume {
+    /// The measured root (its volume is what was measured).
+    pub root: String,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    /// Bytes available to an unprivileged writer (statvfs f_bavail).
+    pub free_bytes: u64,
+}
+
+impl Volume {
+    /// Free space as a percentage of the whole volume.
+    pub fn free_pct(&self) -> f64 {
+        if self.total_bytes == 0 {
+            return 100.0;
+        }
+        self.free_bytes as f64 * 100.0 / self.total_bytes as f64
+    }
+}
+
+/// The gate's thresholds, read from the node's config record in
+/// state.phext (homeland 9.9.9/9.9.9/9.9.9). Absent keys mean the
+/// defaults — the defaults are the volume lens only: a ranch
+/// volume is judged by its own free fraction, and no absolute
+/// ceiling applies until a node writes one into its config.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateConfig {
+    pub volume_on: bool,
+    /// Volume lens: AMBER when free < this % of total.
+    pub free_amber_pct: f64,
+    /// Volume lens: RED when free < this % of total.
+    pub free_red_pct: f64,
+    pub quota_on: bool,
+    /// Quota lens: AMBER at this many GB used (decimal, telemetry GB).
+    pub quota_amber_gb: f64,
+    /// Quota lens: RED at this many GB used.
+    pub quota_red_gb: f64,
+    /// File lens: AMBER at this many files under the staging root.
+    pub file_amber: u64,
+    /// File lens: RED at this many files.
+    pub file_red: u64,
+}
+
+impl Default for GateConfig {
+    fn default() -> Self {
+        GateConfig {
+            volume_on: true,
+            free_amber_pct: 25.0,
+            free_red_pct: 10.0,
+            quota_on: false,
+            quota_amber_gb: 95.0,
+            quota_red_gb: 102.0,
+            file_amber: 1_100_000,
+            file_red: 1_300_000,
+        }
+    }
+}
+
+impl GateConfig {
+    /// Build from a config record via a field lookup (the record's
+    /// `key: value` lines; the caller supplies the reader so this
+    /// module stays free of lattice mechanics). Keys:
+    /// volume_lens, disk_gate_free_amber_pct, disk_gate_free_red_pct,
+    /// quota_lens, quota_amber_gb, quota_red_gb, file_amber, file_red.
+    pub fn from_lookup<F: Fn(&str) -> Option<String>>(get: F) -> GateConfig {
+        let mut cfg = GateConfig::default();
+        let on = |v: &str| v.eq_ignore_ascii_case("on") || v.eq_ignore_ascii_case("true");
+        if let Some(v) = get("volume_lens") {
+            cfg.volume_on = on(&v);
+        }
+        if let Some(v) = get("disk_gate_free_amber_pct").and_then(|s| s.parse().ok()) {
+            cfg.free_amber_pct = v;
+        }
+        if let Some(v) = get("disk_gate_free_red_pct").and_then(|s| s.parse().ok()) {
+            cfg.free_red_pct = v;
+        }
+        if let Some(v) = get("quota_lens") {
+            cfg.quota_on = on(&v);
+        }
+        if let Some(v) = get("quota_amber_gb").and_then(|s| s.parse().ok()) {
+            cfg.quota_amber_gb = v;
+        }
+        if let Some(v) = get("quota_red_gb").and_then(|s| s.parse().ok()) {
+            cfg.quota_red_gb = v;
+        }
+        if let Some(v) = get("file_amber").and_then(|s| s.parse().ok()) {
+            cfg.file_amber = v;
+        }
+        if let Some(v) = get("file_red").and_then(|s| s.parse().ok()) {
+            cfg.file_red = v;
+        }
+        cfg
+    }
+}
+
+/// Everything the gate needs beyond the observations: the volume
+/// the probe measured (None when the probe could not read one),
+/// the root the file count was taken under, and the thresholds.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateInputs {
+    pub volume: Option<Volume>,
+    pub files_root: String,
+    pub config: GateConfig,
+}
+
+/// The gate's verdict, with its reasons kept as text: which lens
+/// fired and the numbers it fired on. The plan renders these; a
+/// gate that cannot say why it fired is a gate no one can argue
+/// with — or trust.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GateEval {
+    pub byte_gate: String,
+    pub file_gate: String,
+    pub disk_gate: String,
+    /// Why the byte half reads as it does, lens by lens.
+    pub byte_detail: String,
+    /// The file half, with the counted root named.
+    pub file_detail: String,
+    /// The firing lens's reason (the worse half's detail).
+    pub reason: String,
+    /// The directive line for the combined gate (pre-forecast).
+    pub action: String,
+}
+
+fn sev(g: &str) -> i32 {
+    match g {
+        "RED" => 2,
+        "AMBER" => 1,
+        _ => 0,
+    }
+}
+
+fn gate_word(s: i32) -> &'static str {
+    match s {
+        2 => "RED",
+        1 => "AMBER",
+        _ => "GREEN",
+    }
+}
+
+/// Format bytes as GiB (2^30) with thousands separators — the
+/// units `df -h` speaks, labeled so no one has to guess.
+pub fn fmt_gib(bytes: u64) -> String {
+    let gib = bytes as f64 / 1_073_741_824.0;
+    let whole = gib.round() as u64;
+    let digits = whole.to_string();
+    let mut out = String::new();
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    format!("{} GiB", out)
+}
+
+/// Evaluate the disk gate from values: the current observation,
+/// the measured volume, the file count's root, the thresholds.
+/// Byte half = the worse of the lenses that are ON; disk gate =
+/// the worse of byte and file halves. The observation's own level
+/// word is NOT consulted: since the telemetry series is qexo's
+/// own, the level recorded with an observation is this very
+/// evaluation's output (the caller stamps it), not an input.
+pub fn evaluate_gate(current: &DiskObs, vol: Option<&Volume>, files_root: &str, cfg: &GateConfig) -> GateEval {
+    let mut byte_sev = 0;
+    let mut byte_parts: Vec<String> = Vec::new();
+    if cfg.volume_on {
+        if let Some(v) = vol {
+            let free_pct = v.free_pct();
+            let s = if free_pct < cfg.free_red_pct {
+                2
+            } else if free_pct < cfg.free_amber_pct {
+                1
+            } else {
+                0
+            };
+            byte_sev = byte_sev.max(s);
+            byte_parts.push(format!(
+                "volume lens: {:.0}% free of {} (AMBER under {:.0}% free, RED under {:.0}%)",
+                free_pct,
+                fmt_gib(v.total_bytes),
+                cfg.free_amber_pct,
+                cfg.free_red_pct
+            ));
+        } else {
+            byte_parts.push("volume lens: no volume reading available".to_string());
+        }
+    }
+    if cfg.quota_on {
+        let s = if current.used_gb >= cfg.quota_red_gb {
+            2
+        } else if current.used_gb >= cfg.quota_amber_gb {
+            1
+        } else {
+            0
+        };
+        byte_sev = byte_sev.max(s);
+        byte_parts.push(format!(
+            "quota lens: {:.2} GB used (AMBER at {:.0} GB, RED at {:.0} GB ceiling)",
+            current.used_gb, cfg.quota_amber_gb, cfg.quota_red_gb
+        ));
+    }
+    if byte_parts.is_empty() {
+        byte_parts.push("no byte lens configured".to_string());
+    }
+    let byte_gate = gate_word(byte_sev).to_string();
+    let byte_detail = byte_parts.join("; ");
+
+    let file_sev = if current.files >= cfg.file_red {
+        2
+    } else if current.files >= cfg.file_amber {
+        1
+    } else {
+        0
+    };
+    let file_gate = gate_word(file_sev).to_string();
+    let file_detail = format!(
+        "{} files under {} (AMBER at {}, RED at {})",
+        current.files, files_root, cfg.file_amber, cfg.file_red
+    );
+
+    let (disk_gate, reason) = if file_sev > byte_sev {
+        (file_gate.clone(), file_detail.clone())
+    } else {
+        (byte_gate.clone(), byte_detail.clone())
+    };
+    let root = vol.map(|v| v.root.as_str()).unwrap_or(files_root);
+    let action = match disk_gate.as_str() {
+        "RED" => format!(
+            "HOLD all new heavy placements — stage nothing under {} until the disk gate clears ({})",
+            root, reason
+        ),
+        "AMBER" => format!(
+            "no new staging under {} — heavy execution ranch-only until the disk gate clears ({})",
+            root, reason
+        ),
+        _ => format!("staging within headroom ({})", byte_detail),
+    };
+    GateEval { byte_gate, file_gate, disk_gate, byte_detail, file_detail, reason, action }
 }
 
 /// A task row as the planner consumes it.
@@ -211,8 +462,20 @@ pub struct PlanData {
     pub used_gb: f64,
     pub disk_level: String,
     pub files: u64,
+    /// The measured volume (root + bytes), for rendering: the
+    /// plan names the volume it judged, in GiB.
+    pub vol_root: String,
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub free_bytes: u64,
+    /// The root the file count was taken under, named in the plan.
+    pub files_root: String,
     pub byte_gate: String,
     pub file_gate: String,
+    /// Which lens fired and the numbers it fired on.
+    pub gate_reason: String,
+    pub byte_detail: String,
+    pub file_detail: String,
     pub disk_gate: String,
     pub disk_gate_action: String,
     pub forecast: Forecast,
@@ -228,49 +491,34 @@ impl PlanData {
     }
 }
 
-/// Compute the plan (old build_plan semantics):
-/// - byte gate: RED at level RED or >= 102 GB; AMBER at level AMBER
-///   or >= 95 GB (thresholds anchored to the 2026-11-08 EDQUOT
-///   failure at ~106 GB).
-/// - file gate (v2.2): AMBER at 1,100,000 files, RED at 1,300,000 —
-///   the count is the faster-moving half of the disk currency and a
-///   byte-only gate can sit GREEN while the count runs at the wall.
+/// Compute the plan:
+/// - byte gate: the worse of the lenses that are ON (see
+///   evaluate_gate) — the volume lens judges the measured volume's
+///   free fraction; the quota lens, only where a node configures
+///   it, reproduces the old absolute ceiling (AMBER 95 GB / RED
+///   102 GB, thresholds anchored to the 2026-11-08 EDQUOT failure
+///   at ~106 GB on the Muse VM's staging quota — a real ceiling
+///   on that one machine, a false verdict everywhere else).
+/// - file gate (v2.2): AMBER/RED at the configured counts under
+///   the named staging root — the count is the faster-moving half
+///   of the disk currency, and a byte-only gate can sit GREEN
+///   while the count runs at the wall.
 /// - disk gate = the worse of the two halves.
 /// - forecast gate (v2.3): a GREEN disk gate escalates to AMBER when
 ///   the nearest projected crossing is within 3 days. A planner
 ///   that only watches crossings gives no lead time.
-pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host: (f64, f64)) -> PlanData {
-    let byte_gate = if current.level.eq_ignore_ascii_case("RED") || current.used_gb >= 102.0 {
-        "RED"
-    } else if current.level.eq_ignore_ascii_case("AMBER") || current.used_gb >= 95.0 {
-        "AMBER"
-    } else {
-        "GREEN"
-    };
-    let file_gate = if current.files >= 1_300_000 {
-        "RED"
-    } else if current.files >= 1_100_000 {
-        "AMBER"
-    } else {
-        "GREEN"
-    };
-    let sev = |g: &str| match g {
-        "RED" => 2,
-        "AMBER" => 1,
-        _ => 0,
-    };
-    let mut disk_gate = if sev(file_gate) > sev(byte_gate) { file_gate } else { byte_gate };
-    let mut disk_gate_action: String = match disk_gate {
-        "RED" => "HOLD all new heavy placements — stage nothing on the VM until the disk gate clears (bytes back under 95 GB and files back under 1,100,000)".to_string(),
-        "AMBER" => "no new VM staging — heavy execution ranch-only until the disk gate clears".to_string(),
-        _ => "VM staging within quota headroom (bytes: AMBER at 95 GB, RED at 102 GB; files: AMBER at 1,100,000, RED at 1,300,000)".to_string(),
-    };
+pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host: (f64, f64), gate: &GateInputs) -> PlanData {
+    let eval = evaluate_gate(current, gate.volume.as_ref(), &gate.files_root, &gate.config);
+    let byte_gate = eval.byte_gate.as_str();
+    let file_gate = eval.file_gate.as_str();
+    let mut disk_gate = eval.disk_gate.as_str();
+    let mut disk_gate_action: String = eval.action.clone();
     let forecast = forecast_gate(history);
     if let Some(near_days) = forecast.nearest_days {
         if near_days <= 3.0 && disk_gate == "GREEN" {
             disk_gate = "AMBER";
             disk_gate_action = format!(
-                "FORECAST AMBER — {} projected in {:.1} days at the last interval's growth rate; no new VM staging, heavy execution ranch-only, move staging before the crossing",
+                "FORECAST AMBER — {} projected in {:.1} days at the last interval's growth rate; no new staging, heavy execution ranch-only, move staging before the crossing",
                 forecast.nearest_label, near_days
             );
         }
@@ -305,8 +553,16 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         used_gb: current.used_gb,
         disk_level: current.level.clone(),
         files: current.files,
+        vol_root: gate.volume.as_ref().map(|v| v.root.clone()).unwrap_or_default(),
+        total_bytes: gate.volume.as_ref().map(|v| v.total_bytes).unwrap_or(0),
+        used_bytes: gate.volume.as_ref().map(|v| v.used_bytes).unwrap_or(0),
+        free_bytes: gate.volume.as_ref().map(|v| v.free_bytes).unwrap_or(0),
+        files_root: gate.files_root.clone(),
         byte_gate: byte_gate.to_string(),
         file_gate: file_gate.to_string(),
+        gate_reason: eval.reason.clone(),
+        byte_detail: eval.byte_detail.clone(),
+        file_detail: eval.file_detail.clone(),
         disk_gate: disk_gate.to_string(),
         disk_gate_action,
         forecast,
@@ -359,17 +615,28 @@ pub fn render(plan: &PlanData) -> String {
     let mut out = String::new();
     out.push_str("qexo — placement plan\n");
     out.push_str("four currencies, at a glance:\n");
-    out.push_str(&format!(
-        "  disk:      {} GB used ({}), {} files\n",
-        plan.used_gb, plan.disk_level, plan.files
-    ));
+    if plan.total_bytes > 0 {
+        out.push_str(&format!(
+            "  disk:      {} used of {} ({} free) on the volume at {}, {} files\n",
+            fmt_gib(plan.used_bytes),
+            fmt_gib(plan.total_bytes),
+            fmt_gib(plan.free_bytes),
+            plan.vol_root,
+            plan.files
+        ));
+    } else {
+        out.push_str(&format!(
+            "  disk:      {:.2} GB used ({}), {} files — no volume reading available\n",
+            plan.used_gb, plan.disk_level, plan.files
+        ));
+    }
     out.push_str(&format!(
         "  disk gate: {} — {}\n",
         plan.disk_gate, plan.disk_gate_action
     ));
     out.push_str(&format!(
-        "  file gate: {} — {} files on the VM volume (AMBER at 1,100,000, RED at 1,300,000)\n",
-        plan.file_gate, plan.files
+        "  file gate: {} — {}\n",
+        plan.file_gate, plan.file_detail
     ));
     out.push_str(&format!("  forecast:  {}\n", forecast_line(plan)));
     out.push_str(&format!(
@@ -404,6 +671,23 @@ mod tests {
     fn task(coord: &str, title: &str) -> TaskInput {
         TaskInput { coordinate: coord.into(), title: title.into(), request: String::new() }
     }
+    /// Default gate inputs: the from-scratch defaults — volume
+    /// lens only (no volume supplied in most unit fixtures), file
+    /// lens at the standard counts.
+    fn gin() -> GateInputs {
+        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default() }
+    }
+    /// The old world's configuration: the quota lens on at the
+    /// VM's 95/102 GB ceiling. Every pre-v1.0.2 gate expectation is
+    /// expressed through this — the old behavior, now by config.
+    fn gin_quota() -> GateInputs {
+        let mut config = GateConfig::default();
+        config.quota_on = true;
+        GateInputs { volume: None, files_root: "/staging".to_string(), config }
+    }
+    fn vol(root: &str, total: u64, used: u64, free: u64) -> Volume {
+        Volume { root: root.to_string(), total_bytes: total, used_bytes: used, free_bytes: free }
+    }
 
     #[test]
     fn classify_precedence() {
@@ -415,9 +699,15 @@ mod tests {
     #[test]
     fn disk_gate_states() {
         // Ported from the old line's gate battery: same readings,
-        // same outcomes, values instead of file text.
+        // same outcomes, values instead of file text — expressed
+        // through the quota lens (gin_quota), which is what the old
+        // absolute thresholds now are. One old case is retired with
+        // its mechanism: an external watcher's level word forcing
+        // RED. The telemetry series is qexo's own now; the level
+        // recorded with an observation is this gate's own output,
+        // not an input, so there is no watcher word to honor.
         let tasks = vec![task("1.1.1/1.1.1/1.1.1", "film encode"), task("2.2.2/2.2.2/2.2.2", "think")];
-        let gate = |o: DiskObs| compute(&tasks, &o, &[], (0.0, 0.0));
+        let gate = |o: DiskObs| compute(&tasks, &o, &[], (0.0, 0.0), &gin_quota());
         let p = gate(obs(1, 71.0, "GREEN", 1));
         assert_eq!(p.disk_gate, "GREEN");
         assert_eq!(p.rows[0].execution, "ranch:aletheia-core (video — never on VM)");
@@ -425,12 +715,10 @@ mod tests {
         let p = gate(obs(1, 96.0, "GREEN", 1));
         assert_eq!(p.disk_gate, "AMBER");
         assert_eq!(p.rows[1].execution, "vm:light-coordination (no staging)");
-        let p = gate(obs(1, 50.0, "RED", 1));
+        let p = gate(obs(1, 103.0, "GREEN", 1));
         assert_eq!(p.disk_gate, "RED");
         assert_eq!(p.rows[0].execution, "HELD (disk gate RED)");
         assert_eq!(p.rows[1].execution, "vm:light-coordination");
-        let p = gate(obs(1, 103.0, "GREEN", 1));
-        assert_eq!(p.disk_gate, "RED");
         let p = gate(obs(1, 71.0, "GREEN", 1_150_000));
         assert_eq!(p.disk_gate, "AMBER");
         assert_eq!(p.file_gate, "AMBER");
@@ -442,12 +730,86 @@ mod tests {
     }
 
     #[test]
+    fn gate_ranch_volume_is_green() {
+        // The aletheia-core incident (2026-11-12): 808.96 GB used
+        // on a 3.6 TB volume with ~2.7 TB free read RED under the
+        // VM's absolute thresholds. Through the volume lens, the
+        // same numbers are what they are: a healthy volume.
+        let gib = 1_073_741_824u64;
+        let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default() };
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &obs(1, 808.96, "GREEN", 6), &[], (0.0, 0.0), &g);
+        assert_eq!(p.byte_gate, "GREEN");
+        assert_eq!(p.disk_gate, "GREEN");
+        assert!(p.gate_reason.contains("volume lens"), "reason: {}", p.gate_reason);
+        assert!(p.file_detail.contains("6 files under /var/lib/qexo"), "file detail: {}", p.file_detail);
+        let out = render(&p);
+        assert!(out.contains("754 GiB used of 3,586 GiB (2,700 GiB free)"), "disk line:\n{}", out);
+    }
+
+    #[test]
+    fn gate_vm_quota_by_configuration() {
+        // The VM case: quota lens on at 95/102 GB — the old world's
+        // behavior, reproduced only where a node configures it.
+        let gate = |used: f64| {
+            let o = obs(1, used, "GREEN", 1);
+            evaluate_gate(&o, None, "/staging", &gin_quota().config)
+        };
+        let e = gate(97.0);
+        assert_eq!(e.byte_gate, "AMBER");
+        assert_eq!(e.disk_gate, "AMBER");
+        assert!(e.reason.contains("quota lens"), "reason: {}", e.reason);
+        let e = gate(103.0);
+        assert_eq!(e.byte_gate, "RED");
+        assert_eq!(e.disk_gate, "RED");
+        // And with the quota lens off (the default), the same
+        // absolute numbers alone fire nothing.
+        let o = obs(1, 103.0, "GREEN", 1);
+        let e = evaluate_gate(&o, None, "/staging", &GateConfig::default());
+        assert_eq!(e.disk_gate, "GREEN");
+    }
+
+    #[test]
+    fn gate_dying_volume_is_red() {
+        // A volume at 5% free is RED by the volume lens regardless
+        // of absolute numbers: 94 GB used would have read GREEN
+        // under the old absolute byte gate.
+        let gib = 1_073_741_824u64;
+        let v = vol("/data", 100 * gib, 94 * gib, 5 * gib);
+        let o = obs(1, 94.0, "GREEN", 10);
+        let e = evaluate_gate(&o, Some(&v), "/data", &GateConfig::default());
+        assert_eq!(e.byte_gate, "RED");
+        assert_eq!(e.disk_gate, "RED");
+        assert!(e.reason.contains("volume lens: 5% free"), "reason: {}", e.reason);
+        assert!(e.action.contains("stage nothing under /data"), "action: {}", e.action);
+        assert!(!e.action.contains("VM"), "action must not name the VM: {}", e.action);
+    }
+
+    #[test]
+    fn gate_config_from_lookup() {
+        // Absent keys are the defaults; written keys win.
+        let empty = GateConfig::from_lookup(|_| None);
+        assert_eq!(empty, GateConfig::default());
+        let rec = "kind: qexo config\nquota_lens: on\nquota_red_gb: 120\ndisk_gate_free_red_pct: 5\nfile_red: 42\n";
+        let cfg = GateConfig::from_lookup(|k| {
+            let prefix = format!("{}:", k);
+            rec.lines().find_map(|l| l.strip_prefix(&prefix)).map(|v| v.trim().to_string())
+        });
+        assert!(cfg.quota_on);
+        assert_eq!(cfg.quota_red_gb, 120.0);
+        assert_eq!(cfg.free_red_pct, 5.0);
+        assert_eq!(cfg.file_red, 42);
+        assert_eq!(cfg.quota_amber_gb, 95.0); // untouched default
+        assert!(cfg.volume_on); // untouched default
+    }
+
+    #[test]
     fn forecast_unavailable_without_history() {
-        let p = compute(&[], &obs(1, 71.0, "GREEN", 900_000), &[], (0.0, 0.0));
+        let p = compute(&[], &obs(1, 71.0, "GREEN", 900_000), &[], (0.0, 0.0), &gin());
         assert!(!p.forecast.available);
         assert_eq!(p.disk_gate, "GREEN");
         let one = vec![obs(1, 88.0, "GREEN", 1_000_000)];
-        let p = compute(&[], &obs(1, 88.0, "GREEN", 1_000_000), &one, (0.0, 0.0));
+        let p = compute(&[], &obs(1, 88.0, "GREEN", 1_000_000), &one, (0.0, 0.0), &gin());
         assert!(!p.forecast.available);
         assert_eq!(p.disk_gate, "GREEN");
     }
@@ -461,7 +823,7 @@ mod tests {
         let d1 = days_from_civil(2026, 11, 10);
         let hist = vec![obs(d0, 78.01, "GREEN", 958_424), obs(d1, 82.0, "GREEN", 1_017_445)];
         let cur = obs(d1, 82.0, "GREEN", 1_017_445);
-        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0));
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &gin());
         assert!(p.forecast.available);
         assert_eq!(p.forecast.files_per_day, 59021.0);
         assert_eq!(p.forecast.nearest_label, "file AMBER (1,100,000)");
@@ -473,13 +835,15 @@ mod tests {
 
     #[test]
     fn forecast_does_not_touch_red_or_slow_growth() {
+        // The RED case is the quota lens's (gin_quota): the
+        // forecast must not de-escalate a gate a lens has fired.
         let hist = vec![obs(1, 70.0, "GREEN", 800_000), obs(2, 70.5, "GREEN", 801_000)];
-        let p = compute(&[], &obs(2, 70.5, "GREEN", 801_000), &hist, (0.0, 0.0));
+        let p = compute(&[], &obs(2, 70.5, "GREEN", 801_000), &hist, (0.0, 0.0), &gin_quota());
         assert_eq!(p.disk_gate, "GREEN");
-        let p = compute(&[], &obs(2, 103.0, "GREEN", 801_000), &hist, (0.0, 0.0));
+        let p = compute(&[], &obs(2, 103.0, "GREEN", 801_000), &hist, (0.0, 0.0), &gin_quota());
         assert_eq!(p.disk_gate, "RED");
         let hist = vec![obs(1, 80.0, "GREEN", 900_000), obs(2, 79.0, "GREEN", 890_000)];
-        let p = compute(&[], &obs(2, 79.0, "GREEN", 890_000), &hist, (0.0, 0.0));
+        let p = compute(&[], &obs(2, 79.0, "GREEN", 890_000), &hist, (0.0, 0.0), &gin_quota());
         assert!(p.forecast.available);
         assert_eq!(p.forecast.nearest_days, None);
     }
@@ -493,10 +857,12 @@ mod tests {
             &obs(1, 71.0, "GREEN", 900_000),
             &[],
             (4096.0, 0.5),
+            &gin(),
         );
         let out = render(&p);
         assert!(out.starts_with("qexo — placement plan\n"), "header missing");
         assert!(out.contains("[1.1.1/1.1.1/1.1.1] film encode"), "task line missing:\n{}", out);
         assert!(out.contains("disk gate: GREEN"), "gate line missing:\n{}", out);
+        assert!(out.contains("900000 files under /staging"), "file line must name the counted root:\n{}", out);
     }
 }
