@@ -1,6 +1,13 @@
-# qexo v1.0 (scratch line) — ship notes
+# qexo v1.0.1 (scratch line) — ship notes
 
-Status: BUILT AND GATED, 2026-11-12. This branch replaces the
+Status: v1.0.1 BUILT AND GATED, 2026-11-12 — a Windows
+correctness fix for doctor on top of v1.0: per-platform lock
+liveness (a /proc-only probe could have deleted a live
+process's lock on Windows) and per-platform keyring-permission
+semantics in the check and its test. No behavior change on
+unix. See CHANGELOG 1.0.1.
+
+Status (v1.0, historical): BUILT AND GATED, 2026-11-12. This branch replaces the
 tree's source wholesale: qexo starts over as a phext-native
 tool with no JSON in its own machinery and all of its state in
 one file, /var/lib/qexo/state.phext. Not a migration — there
