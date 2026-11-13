@@ -35,7 +35,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.1.0 (Cargo 1.1.0)");
+            println!("qexo v1.2.0 (Cargo 1.2.0)");
             0
         }
         Command::WiringCheck(dir) => {
@@ -95,11 +95,12 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             2
         }
         Command::Bare | Command::Plan => core::plan_cmd(),
-        Command::Config { auto_update } => core::config(auto_update),
+        Command::Config { auto_update, evolve } => core::config(auto_update, evolve),
         Command::List => core::list(),
         Command::Register(args) => core::register(&args),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),
+        Command::Evolve { check } => core::evolve(check),
         Command::Host { persona, boot } => core::host(persona, boot),
         Command::Unhost(name) => core::unhost(&name),
         Command::Message { persona, text } => core::message(&persona, &text),

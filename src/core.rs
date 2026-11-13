@@ -197,7 +197,45 @@ fn ensure_update_config(lat: &mut Lattice) -> Vec<String> {
     added
 }
 
-pub fn config(auto_update: bool) -> i32 {
+/// The evolve key (v1.2.0), seeded visibly like the others:
+/// `evolve: on` tells the automatic timer to fire a full
+/// `qexo evolve` convergence pass instead of `qexo update`
+/// alone — update is one stage of evolve, so the timer's
+/// trigger widens, its logic does not move. Seeded OFF: a
+/// node converges on a schedule only by its operator's word.
+/// Running `qexo evolve` by hand never consults this key.
+fn evolve_config_defaults() -> Vec<(&'static str, String)> {
+    vec![("evolve", "off".to_string())]
+}
+
+/// Ensure the config record carries the evolve key, adding it
+/// only when absent. Returns the keys that were added.
+fn ensure_evolve_config(lat: &mut Lattice) -> Vec<String> {
+    let mut added = Vec::new();
+    let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
+    for (k, v) in evolve_config_defaults() {
+        if lattice::field(&text, k).is_none() {
+            text = lattice::set_field(&text, k, &v);
+            added.push(k.to_string());
+        }
+    }
+    if !added.is_empty() {
+        lat.px.insert(lattice::CONFIG_RECORD, text);
+    }
+    added
+}
+
+/// Whether the config record carries `evolve: on` — the timer
+/// trigger reads this, nothing else does.
+fn evolve_enabled(lat: &Lattice) -> bool {
+    lat.px
+        .get(&lattice::CONFIG_RECORD)
+        .and_then(|t| lattice::field(t, "evolve"))
+        .map(|v| v == "on")
+        .unwrap_or(false)
+}
+
+pub fn config(auto_update: bool, evolve: bool) -> i32 {
     let dir = lattice::state_dir();
     let path = lattice::state_path();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -224,6 +262,7 @@ pub fn config(auto_update: bool) -> i32 {
         let fp = lattice::field(t, "fingerprint").unwrap_or_default();
         let mut added = ensure_gate_config(&mut lat);
         added.extend(ensure_update_config(&mut lat));
+        added.extend(ensure_evolve_config(&mut lat));
         if !added.is_empty() {
             lattice::regen_indexes(&mut lat.px);
             if let Err(e) = lat.save() {
@@ -236,6 +275,12 @@ pub fn config(auto_update: bool) -> i32 {
         println!("state: {}", path.display());
         println!("node key fingerprint: {}", fp);
         println!("home: {}", fmt_coord(&lattice::HOME));
+        if evolve {
+            let code = finish_evolve_flag();
+            if code != 0 {
+                return code;
+            }
+        }
         if auto_update {
             return finish_auto_update();
         }
@@ -279,7 +324,7 @@ pub fn config(auto_update: bool) -> i32 {
             ("name", &name),
             ("node", &node),
             ("born", &stamp),
-            ("qexo", "v1.1.0"),
+            ("qexo", "v1.2.0"),
             ("state", &path.display().to_string()),
         ]),
     );
@@ -323,6 +368,10 @@ pub fn config(auto_update: bool) -> i32 {
         for (k, v) in &upd {
             fields.push((*k, v.as_str()));
         }
+        let evo = evolve_config_defaults();
+        for (k, v) in &evo {
+            fields.push((*k, v.as_str()));
+        }
         let rec = lattice::record(&fields);
         lat.px.insert(lattice::CONFIG_RECORD, rec);
     }
@@ -352,6 +401,12 @@ pub fn config(auto_update: bool) -> i32 {
     println!("node key fingerprint: {}", fp);
     println!("home index: {}", fmt_coord(&lattice::HOME));
     println!("birth receipt: {}", fmt_coord(&receipt));
+    if evolve {
+        let code = finish_evolve_flag();
+        if code != 0 {
+            return code;
+        }
+    }
     if auto_update {
         return finish_auto_update();
     }
@@ -372,6 +427,7 @@ fn finish_auto_update() -> i32 {
         Err(c) => return c,
     };
     ensure_update_config(&mut lat);
+    ensure_evolve_config(&mut lat);
     let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
     text = lattice::set_field(&text, "auto_update", "on");
     lat.px.insert(lattice::CONFIG_RECORD, text.clone());
@@ -380,23 +436,65 @@ fn finish_auto_update() -> i32 {
         return 1;
     }
     let hours: u64 = lattice::field(&text, "update_interval_hours").and_then(|v| v.parse().ok()).unwrap_or(24);
-    println!("auto_update: on (poll every {}h; the trust rule in the config record still governs every poll)", hours);
-    print!("{}", install_update_timer(hours));
+    let evolve_on = lattice::field(&text, "evolve").map(|v| v == "on").unwrap_or(false);
+    println!(
+        "auto_update: on (poll every {}h; the trust rule in the config record still governs every poll{})",
+        hours,
+        if evolve_on { "; trigger: qexo evolve" } else { "" }
+    );
+    print!("{}", install_update_timer(hours, evolve_on));
     0
 }
 
-/// The systemd units for the update timer: a oneshot service
-/// running `qexo update` by this binary's own path, and the
-/// timer that fires it. Pure text — tested, and printed verbatim
-/// when installation isn't possible here.
-fn update_unit_texts(exe: &Path, hours: u64) -> (String, String) {
+/// `qexo config --evolve`'s act: set `evolve: on` in the config
+/// record — the node's own word that its automatic trigger is
+/// a full convergence pass, not an update alone (update ⊂
+/// evolve: the self-update is evolve's third stage). An
+/// installed systemd unit names its command in its own text,
+/// so when auto_update is already on, the unit is reinstalled
+/// here with the widened trigger; flipping the key alone is
+/// never left pretending to have rewritten a unit on disk.
+fn finish_evolve_flag() -> i32 {
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    ensure_evolve_config(&mut lat);
+    let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
+    text = lattice::set_field(&text, "evolve", "on");
+    let auto_on = lattice::field(&text, "auto_update").map(|v| v == "on").unwrap_or(false);
+    let hours: u64 = lattice::field(&text, "update_interval_hours").and_then(|v| v.parse().ok()).unwrap_or(24);
+    lat.px.insert(lattice::CONFIG_RECORD, text);
+    if let Err(e) = lat.save() {
+        eprintln!("qexo config: cannot save state: {}", e);
+        return 1;
+    }
+    println!("evolve: on (the automatic trigger, when installed, runs a full evolve pass; update is its third stage)");
+    if auto_on {
+        print!("{}", install_update_timer(hours, true));
+    } else {
+        println!("auto_update is off, so no timer stands to refresh; the trigger takes effect when the timer is installed (qexo config --auto-update)");
+    }
+    0
+}
+
+/// The systemd units for the automatic timer: a oneshot service
+/// running the node's trigger by this binary's own path —
+/// `qexo update`, or `qexo evolve` when the config record's
+/// evolve key is on — and the timer that fires it. Pure text —
+/// tested, and printed verbatim when installation isn't
+/// possible here.
+fn update_unit_texts(exe: &Path, hours: u64, evolve_trigger: bool) -> (String, String) {
+    let trigger = if evolve_trigger { "evolve" } else { "update" };
     let service = format!(
-        "[Unit]\nDescription=qexo automatic update (phextnet, signed-manifest trust rule)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart={} update\n",
-        exe.display()
+        "[Unit]\nDescription=qexo automatic {} (phextnet, signed-manifest trust rule)\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=oneshot\nExecStart={} {}\n",
+        if evolve_trigger { "evolve pass" } else { "update" },
+        exe.display(),
+        trigger
     );
     let timer = format!(
-        "[Unit]\nDescription=Run qexo update every {}h\n\n[Timer]\nOnBootSec=15min\nOnUnitActiveSec={}h\nUnit=qexo-update.service\n\n[Install]\nWantedBy=timers.target\n",
-        hours, hours
+        "[Unit]\nDescription=Run qexo {} every {}h\n\n[Timer]\nOnBootSec=15min\nOnUnitActiveSec={}h\nUnit=qexo-update.service\n\n[Install]\nWantedBy=timers.target\n",
+        trigger, hours, hours
     );
     (service, timer)
 }
@@ -405,9 +503,9 @@ fn update_unit_texts(exe: &Path, hours: u64) -> (String, String) {
 /// way. Installed only where all three hold: running as root,
 /// systemd is the running init, systemctl answers. Anything
 /// less and nothing is written outside the config record.
-fn install_update_timer(hours: u64) -> String {
+fn install_update_timer(hours: u64, evolve_trigger: bool) -> String {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("qexo"));
-    let (service, timer) = update_unit_texts(&exe, hours);
+    let (service, timer) = update_unit_texts(&exe, hours, evolve_trigger);
     let mut why_not: Vec<String> = Vec::new();
     let uid0 = std::fs::read_to_string("/proc/self/status")
         .ok()
@@ -484,6 +582,21 @@ fn peer_records(px: &Phext) -> Vec<(u32, crate::phext::Coord, String)> {
     out
 }
 
+/// The TRUSTED peers: records whose status is `registered` —
+/// the operator's own act (`qexo register`) put them there.
+/// Everything that polls, syncs, or takes a release offer
+/// iterates THIS set and no other. A `discovered` record (v1.2.0
+/// gossip) is knowledge about the phextnet, not trust in it:
+/// it is never polled for releases, never synced from, and
+/// never eligible as a release signer, until the operator
+/// registers its key and the record is promoted.
+fn trusted_peer_records(px: &Phext) -> Vec<(u32, crate::phext::Coord, String)> {
+    peer_records(px)
+        .into_iter()
+        .filter(|(_, _, t)| lattice::field(t, "status").as_deref() == Some("registered"))
+        .collect()
+}
+
 pub fn register(args: &[String]) -> i32 {
     if args.is_empty() {
         eprintln!("usage: qexo register <pubkey> [--endpoint <url>] — armored text, a file path, or - for stdin");
@@ -555,8 +668,61 @@ pub fn register(args: &[String]) -> i32 {
             return 1;
         }
     };
-    for (_, addr, text) in peer_records(&lat.px) {
+    for (cluster, addr, text) in peer_records(&lat.px) {
         if lattice::field(&text, "fingerprint").as_deref() == Some(fp.as_str()) {
+            if lattice::field(&text, "status").as_deref() == Some("discovered") {
+                // Promotion: this key was learned by gossip —
+                // knowledge, not trust. The operator registering
+                // it is the act that makes it trust. The record
+                // is promoted in place; its via/discovered lines
+                // stay, as provenance of how it was first met.
+                if let Err(e) = gpg.import_public(&armored) {
+                    eprintln!("qexo register: gpg import failed: {}", e);
+                    return 1;
+                }
+                let (_, stamp) = now_stamp();
+                let name = lattice::field(&text, "name").unwrap_or_default();
+                let via = lattice::field(&text, "via").unwrap_or_else(|| "unknown".to_string());
+                let key_addr = lattice::at(lattice::HL_PEERS, [cluster, 1, 1, 1, 1, 2]);
+                let mut rec = lattice::set_field(&text, "status", "registered");
+                rec = lattice::set_field(&rec, "registered", &stamp);
+                rec = lattice::set_field(&rec, "public key", &fmt_coord(&key_addr));
+                if let Some(ep) = &endpoint {
+                    rec = lattice::set_field(&rec, "endpoint", ep);
+                }
+                lat.px.insert(addr, rec);
+                lat.px.insert(key_addr, armored.trim_end().to_string() + "\n");
+                let kb = lattice::next_free_book(&lat.px, [2, 2, 2, lattice::KEYS_PEER_C, 1], 1);
+                let kaddr = lattice::at(lattice::HL_KEYS, [lattice::KEYS_PEER_C, 1, kb, 1, 1, 1]);
+                lat.px.insert(
+                    kaddr,
+                    lattice::record(&[
+                        ("kind", "peer key"),
+                        ("name", &name),
+                        ("fingerprint", &fp),
+                        ("peer", &fmt_coord(&addr)),
+                        ("status", "registered"),
+                    ]),
+                );
+                let receipt = append_receipt(
+                    &mut lat.px,
+                    "register",
+                    &[
+                        ("peer", &fmt_coord(&addr)),
+                        ("fingerprint", &fp),
+                        ("promoted", &format!("from discovered (via {})", via)),
+                    ],
+                );
+                lattice::regen_indexes(&mut lat.px);
+                if let Err(e) = lat.save() {
+                    eprintln!("qexo register: cannot save state: {}", e);
+                    return 1;
+                }
+                println!("registered {} at {} — promoted from discovered (via {})", name, fmt_coord(&addr), via);
+                println!("fingerprint: {}", fp);
+                println!("receipt: {}", fmt_coord(&receipt));
+                return 0;
+            }
             // Already known — but an endpoint named now backfills
             // the record (the peer becomes pollable).
             if let Some(ep) = &endpoint {
@@ -651,6 +817,110 @@ pub fn list() -> i32 {
     };
     print!("{}", peers_text(&lat));
     0
+}
+
+// ----------------------------------------------------------------
+// persona lineage — revision / follows / history / stamp (v1.2.0)
+//
+// A persona copy carries its lineage in its record: `revision`
+// (1 at birth, +1 per local edit), `follows` ("none" at birth,
+// else "<revision> <stamp>" naming the copy it directly
+// succeeds — the scroll names the revision it follows),
+// `history` (the comma-joined stamp chain from the root to
+// this copy), and `stamp` (this copy's own stamp). A stamp is
+// a short content address — sha256 over name + revision +
+// follows + boot text — so two nodes advancing the same
+// ancestor the same way arrive at the same stamp, and two
+// advancing it differently provably diverge. Sync (`qexo
+// evolve`) judges copies by their histories: a history that
+// extends yours names a descendant; anything that is neither
+// your descendant nor your ancestor is another line, and
+// both stand (the KSO divergence ruling: keep both attempts,
+// never last-writer-wins).
+// ----------------------------------------------------------------
+
+/// A persona copy's stamp: first 16 hex of sha256 over the
+/// copy's identity-bearing content.
+fn persona_stamp(name: &str, revision: u64, follows: &str, boot: &str) -> String {
+    let h = hash::sha256_hex(format!("{}\n{}\n{}\n{}", name, revision, follows, boot).as_bytes());
+    h[..16].to_string()
+}
+
+/// One node's copy of a persona, as its record + boot present
+/// it. Records born before lineage existed read as revision 1
+/// with a computed stamp — the implicit-lineage rule: a copy
+/// with no named parent is a root, and identical roots (same
+/// name, same boot) share ancestry by construction.
+#[derive(Debug, Clone, PartialEq)]
+struct PersonaCopy {
+    revision: u64,
+    follows: String,
+    history: Vec<String>,
+    stamp: String,
+    boot: String,
+}
+
+fn copy_view(record_text: &str, boot: &str) -> PersonaCopy {
+    let name = lattice::field(record_text, "name").unwrap_or_default();
+    let revision: u64 = lattice::field(record_text, "revision").and_then(|v| v.parse().ok()).unwrap_or(1);
+    let follows = lattice::field(record_text, "follows").unwrap_or_else(|| "none".to_string());
+    let history: Vec<String> = match lattice::field(record_text, "history") {
+        Some(h) if !h.trim().is_empty() => h.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect(),
+        _ => Vec::new(),
+    };
+    if history.is_empty() {
+        let stamp = lattice::field(record_text, "stamp")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| persona_stamp(&name, revision, &follows, boot));
+        PersonaCopy { revision, follows, history: vec![stamp.clone()], stamp, boot: boot.to_string() }
+    } else {
+        let stamp = history.last().cloned().unwrap_or_default();
+        PersonaCopy { revision, follows, history, stamp, boot: boot.to_string() }
+    }
+}
+
+/// How two copies of one persona stand to each other.
+#[derive(Debug, PartialEq)]
+enum SyncDecision {
+    /// Same line, same head: nothing to do.
+    Same,
+    /// The remote history extends the local one: a descendant —
+    /// adopt it whole.
+    Adopt,
+    /// The local history extends the remote one: we are ahead.
+    Behind,
+    /// Neither history extends the other: the lines forked (or
+    /// never met). Both stand; the incoming copy is kept as an
+    /// attempt artifact. Never last-writer-wins.
+    Diverge,
+}
+
+fn sync_decision(local: &PersonaCopy, remote: &PersonaCopy) -> SyncDecision {
+    fn is_prefix(a: &[String], b: &[String]) -> bool {
+        a.len() <= b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y)
+    }
+    if local.history == remote.history {
+        // Same head stamp. A different boot under the same stamp
+        // could only be surgery or collision — a fork; keep both.
+        return if local.boot == remote.boot { SyncDecision::Same } else { SyncDecision::Diverge };
+    }
+    if is_prefix(&local.history, &remote.history) {
+        return SyncDecision::Adopt;
+    }
+    if is_prefix(&remote.history, &local.history) {
+        return SyncDecision::Behind;
+    }
+    SyncDecision::Diverge
+}
+
+/// This node's own name for prose (the identity record's name,
+/// e.g. "qexo node <host>").
+fn node_name(lat: &Lattice) -> String {
+    lat.px
+        .get(&lattice::IDENTITY)
+        .and_then(|t| lattice::field(t, "name"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("qexo node {}", hostname()))
 }
 
 // ----------------------------------------------------------------
@@ -817,12 +1087,37 @@ pub fn host(persona: Option<String>, boot: Option<String>) -> i32 {
         boot_text = Some(text);
         boot_source = source;
     }
+    // A --boot file against an existing home whose boot differs
+    // is a LOCAL EDIT (v1.2.0): the replacement is stamped below
+    // as the next revision of the persona's line. (host() has
+    // already returned for a hosted persona, so an edit never
+    // swaps a live session's boot under it.)
+    let mut edit_of: Option<PersonaCopy> = None;
+    if let (Some(c), Some(bp)) = (cluster, &boot) {
+        if let Some(existing) = boot_text.clone() {
+            match boot_from_file(Path::new(bp)) {
+                Ok(t) if t != existing => {
+                    let rec = lat.px.get(&persona_addr(c, 1, 1)).cloned().unwrap_or_default();
+                    edit_of = Some(copy_view(&rec, &existing));
+                    boot_text = Some(t);
+                    boot_source = format!("--boot {} (local edit)", bp);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("qexo host: cannot read boot text: {}", e);
+                    return 1;
+                }
+            }
+        }
+    }
     let boot_text = boot_text.unwrap();
     let (_, stamp) = now_stamp();
     let c = match cluster {
         Some(c) => c,
         None => {
             let c = lattice::next_free_cluster(&lat.px, lattice::HL_PERSONAS, 2);
+            let pstamp = persona_stamp(&name, 1, "none", &boot_text);
+            let origin = node_name(&lat);
             lat.px.insert(
                 persona_addr(c, 1, 1),
                 lattice::record(&[
@@ -831,22 +1126,67 @@ pub fn host(persona: Option<String>, boot: Option<String>) -> i32 {
                     ("status", "resident"),
                     ("born", &stamp),
                     ("boot source", &boot_source),
+                    ("revision", "1"),
+                    ("follows", "none"),
+                    ("history", &pstamp),
+                    ("stamp", &pstamp),
+                    ("origin", &origin),
                 ]),
             );
             cluster = Some(c);
             c
         }
     };
-    // Store the boot text as an adjacent scroll run if this home
-    // has none yet (a persona's boot is cite-able in parts).
-    if boot_text_of(&lat.px, c).is_none() {
+    // Store the boot text as an adjacent scroll run when this
+    // home has none yet, or when this call is a local edit
+    // replacing it (a persona's boot is cite-able in parts).
+    if edit_of.is_some() || boot_text_of(&lat.px, c).is_none() {
+        let old_chunks: Vec<crate::phext::Coord> = lattice::prefix_scrolls(&lat.px, &[4, 4, 4, c, 1, 2, 1, 1])
+            .iter()
+            .map(|(a, _)| *a)
+            .collect();
+        for a in old_chunks {
+            lat.px.scrolls.remove(&a);
+        }
         for (i, chunk) in chunk_text(&boot_text, 3800).iter().enumerate() {
             lat.px.insert(persona_addr(c, 2, (i + 1) as u32), chunk.clone());
         }
-        lat.px.insert(
-            persona_addr(c, 3, 1),
-            lattice::record(&[("kind", "persona state"), ("persona", &name), ("status", "resident")]),
-        );
+        if lat.px.get(&persona_addr(c, 3, 1)).is_none() {
+            lat.px.insert(
+                persona_addr(c, 3, 1),
+                lattice::record(&[("kind", "persona state"), ("persona", &name), ("status", "resident")]),
+            );
+        }
+    }
+    // Lineage bookkeeping for the ways a boot arrives after
+    // birth: a local edit bumps the revision and names the copy
+    // it follows; a first lineage stamp lands on a record that
+    // predates lineage (its root, computed like any root).
+    if let Some(old) = &edit_of {
+        let new_rev = old.revision + 1;
+        let follows = format!("{} {}", old.revision, old.stamp);
+        let pstamp = persona_stamp(&name, new_rev, &follows, &boot_text);
+        let mut history = old.history.clone();
+        history.push(pstamp.clone());
+        let origin = node_name(&lat);
+        if let Some(rec) = lat.px.get(&persona_addr(c, 1, 1)).cloned() {
+            let mut rec = lattice::set_field(&rec, "revision", &new_rev.to_string());
+            rec = lattice::set_field(&rec, "follows", &follows);
+            rec = lattice::set_field(&rec, "history", &history.join(","));
+            rec = lattice::set_field(&rec, "stamp", &pstamp);
+            rec = lattice::set_field(&rec, "origin", &origin);
+            rec = lattice::set_field(&rec, "boot source", &boot_source);
+            lat.px.insert(persona_addr(c, 1, 1), rec);
+        }
+    } else if let Some(rec) = lat.px.get(&persona_addr(c, 1, 1)).cloned() {
+        if lattice::field(&rec, "revision").is_none() && boot_text_of(&lat.px, c).is_some() {
+            let pstamp = persona_stamp(&name, 1, "none", &boot_text);
+            let mut rec = lattice::set_field(&rec, "revision", "1");
+            rec = lattice::set_field(&rec, "follows", "none");
+            rec = lattice::set_field(&rec, "history", &pstamp);
+            rec = lattice::set_field(&rec, "stamp", &pstamp);
+            lat.px.insert(persona_addr(c, 1, 1), rec);
+        }
     }
 
     // The one foreign border: load into local inference.
@@ -1006,7 +1346,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.1.0 — node status");
+    println!("qexo v1.2.0 — node status");
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,
@@ -1407,7 +1747,7 @@ pub fn serve(port: u16) -> i32 {
         }
     };
     println!("qexo serve — http://{}:{} — payloads are scroll text", bind_ip, port);
-    println!("routes: / (home index), /v1/doctor, /v1/plan, /v1/peers, /v1/release, /v1/release/signature, /release/qexo-<version>");
+    println!("routes: / (home index), /v1/doctor, /v1/plan, /v1/peers, /v1/scroll/<coord>, /v1/release, /v1/release/signature, /release/qexo-<version>");
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(s) => s,
@@ -1478,6 +1818,22 @@ fn route(path: &str) -> (String, &'static str, Vec<u8>) {
                 .unwrap_or_else(|| "no plan emitted yet — bare qexo on the node computes the first\n".to_string()),
         ),
         "/v1/peers" => text_route("200 OK", peers_text(&lat)),
+        _ if path.starts_with("/v1/scroll/") => {
+            // One scroll by its full 9D coordinate — the read the
+            // phextnet's convergence passes navigate by: a peer's
+            // index scroll names the records, this route carries
+            // them. Read-only, like everything serve does; state
+            // changes only ever arrive as whole verified acts
+            // (register, sync adoption), never as writes here.
+            let coord_s = &path["/v1/scroll/".len()..];
+            match crate::phext::parse_coord(coord_s) {
+                Some(c) => match lat.px.get(&c) {
+                    Some(t) => text_route("200 OK", t.clone()),
+                    None => text_route("404 Not Found", format!("no scroll at {}\n", coord_s)),
+                },
+                None => text_route("400 Bad Request", format!("not a full 9D coordinate: {}\n", coord_s)),
+            }
+        }
         "/v1/release" => match latest_release(&lat.px) {
             Some((manifest, _)) => text_route("200 OK", manifest),
             None => text_route("404 Not Found", "no release announced on this node — `qexo release` on the signer announces one\n".to_string()),
@@ -1502,7 +1858,7 @@ fn route(path: &str) -> (String, &'static str, Vec<u8>) {
         }
         _ => text_route(
             "404 Not Found",
-            "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers, /v1/release, /v1/release/signature, /release/qexo-<version> (payloads are scroll text; the release binary is the one byte route)\n".to_string(),
+            "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers, /v1/scroll/<coord>, /v1/release, /v1/release/signature, /release/qexo-<version> (payloads are scroll text; the release binary is the one byte route)\n".to_string(),
         ),
     }
 }
@@ -1761,31 +2117,93 @@ pub fn release() -> i32 {
     0
 }
 
-/// `qexo update [--check]` — poll the registered peers, judge
+/// How an update pass is being run: Apply and Check are
+/// `qexo update`'s own modes (its prints and ledger receipts
+/// stand as they have since v1.1.0); JudgeOnly is evolve's
+/// --check borrowing the same eyes — identical polling and
+/// verification, but mute and writeless: no prints of its own,
+/// no receipts, never an application, so a dry pass over the
+/// node changes nothing on disk.
+#[derive(Clone, Copy, PartialEq)]
+enum UpdateMode {
+    Apply,
+    Check,
+    JudgeOnly,
+}
+
+/// What an update pass concluded, in facts another caller
+/// (evolve's receipt) can cite. `qexo update` maps these back
+/// to the exit codes it has always returned.
+#[derive(Debug, PartialEq)]
+enum UpdateOutcome {
+    Applied { from: String, to: String },
+    RolledBack { from: String, to: String },
+    AlreadyCurrent { offered: String },
+    Available { from: String, to: String, via: String },
+    NoOffer,
+    IgnoredOffers,
+    Refused(String),
+    NoSigner,
+    SignerUnregistered,
+}
+
+/// `qexo update [--check]` — poll the trusted peers, judge
 /// every offer by the trust rule, and apply the trusted one.
 pub fn update(check_only: bool) -> i32 {
+    let mode = if check_only { UpdateMode::Check } else { UpdateMode::Apply };
+    match update_inner(mode) {
+        // The exit codes are v1.1.0's, exactly: a judged pass
+        // that applied, found nothing newer, or found nothing to
+        // apply is 0; refusals, rollbacks, and the two trust
+        // preconditions are 1.
+        Ok(outcome) => match outcome {
+            UpdateOutcome::Applied { .. }
+            | UpdateOutcome::AlreadyCurrent { .. }
+            | UpdateOutcome::Available { .. }
+            | UpdateOutcome::NoOffer
+            | UpdateOutcome::IgnoredOffers => 0,
+            _ => 1,
+        },
+        Err(code) => code,
+    }
+}
+
+/// The update pass itself. Err(code) is a state-level failure
+/// (unborn / unreadable state) whose message require_born
+/// already printed; Ok(outcome) is a judged result.
+fn update_inner(mode: UpdateMode) -> Result<UpdateOutcome, i32> {
+    let loud = mode != UpdateMode::JudgeOnly;
+    let receipts = mode != UpdateMode::JudgeOnly;
     let mut lat = match require_born() {
         Ok(l) => l,
-        Err(c) => return c,
+        Err(c) => return Err(c),
     };
     let cfg_text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_default();
     let trusted = match lattice::field(&cfg_text, "release_signer").filter(|s| !s.is_empty()) {
         Some(fp) => fp,
         None => {
-            eprintln!(
-                "qexo update: no trusted release signer configured — set `release_signer: <fingerprint>` in the config record ({}) to the node whose signed releases this node trusts. Nothing was polled and nothing changed.",
-                fmt_coord(&lattice::CONFIG_RECORD)
-            );
-            return 1;
+            if loud {
+                eprintln!(
+                    "qexo update: no trusted release signer configured — set `release_signer: <fingerprint>` in the config record ({}) to the node whose signed releases this node trusts. Nothing was polled and nothing changed.",
+                    fmt_coord(&lattice::CONFIG_RECORD)
+                );
+            }
+            return Ok(UpdateOutcome::NoSigner);
         }
     };
-    let peers = peer_records(&lat.px);
+    // Only TRUSTED peers are ever polled: a discovered record
+    // (gossip's knowledge) is not in this set, and the signer
+    // must stand in it as registered — a fingerprint learned
+    // second-hand grants nothing.
+    let peers = trusted_peer_records(&lat.px);
     if !peers.iter().any(|(_, _, t)| lattice::field(t, "fingerprint").as_deref() == Some(trusted.as_str())) {
-        eprintln!(
-            "qexo update: release signer {} is not in this node's peer registry — register their public key first (`qexo register <pubkey> --endpoint <url>`). No key, no trust: nothing was polled and nothing changed.",
-            trusted
-        );
-        return 1;
+        if loud {
+            eprintln!(
+                "qexo update: release signer {} is not in this node's peer registry — register their public key first (`qexo register <pubkey> --endpoint <url>`). No key, no trust: nothing was polled and nothing changed.",
+                trusted
+            );
+        }
+        return Ok(UpdateOutcome::SignerUnregistered);
     }
     let current = env!("CARGO_PKG_VERSION").to_string();
     let gpg = Gpg::open_in(&lattice::state_dir());
@@ -1797,25 +2215,33 @@ pub fn update(check_only: bool) -> i32 {
         let endpoint = match lattice::field(text, "endpoint").filter(|s| !s.is_empty()) {
             Some(e) => e.trim_end_matches('/').to_string(),
             None => {
-                println!(
-                    "peer {}: no endpoint recorded — not pollable (re-register with --endpoint <url> to add one)",
-                    name
-                );
+                if loud {
+                    println!(
+                        "peer {}: no endpoint recorded — not pollable (re-register with --endpoint <url> to add one)",
+                        name
+                    );
+                }
                 continue;
             }
         };
         let manifest_bytes = match http_get(&format!("{}/v1/release", endpoint)) {
             Ok((200, b)) => b,
             Ok((404, _)) => {
-                println!("peer {} ({}): no release announced", name, endpoint);
+                if loud {
+                    println!("peer {} ({}): no release announced", name, endpoint);
+                }
                 continue;
             }
             Ok((s, _)) => {
-                println!("peer {} ({}): /v1/release answered HTTP {} — skipped", name, endpoint, s);
+                if loud {
+                    println!("peer {} ({}): /v1/release answered HTTP {} — skipped", name, endpoint, s);
+                }
                 continue;
             }
             Err(e) => {
-                println!("peer {} ({}): unreachable — {}", name, endpoint, e);
+                if loud {
+                    println!("peer {} ({}): unreachable — {}", name, endpoint, e);
+                }
                 continue;
             }
         };
@@ -1824,7 +2250,9 @@ pub fn update(check_only: bool) -> i32 {
         let manifest = match parse_manifest(&manifest_text) {
             Ok(m) => m,
             Err(e) => {
-                println!("peer {} ({}): unusable manifest — {} — skipped", name, endpoint, e);
+                if loud {
+                    println!("peer {} ({}): unusable manifest — {} — skipped", name, endpoint, e);
+                }
                 continue;
             }
         };
@@ -1832,13 +2260,15 @@ pub fn update(check_only: bool) -> i32 {
         // own announcement is not this node's trust — note and
         // move on WITHOUT fetching its signature or binary.
         if manifest.signer != trusted {
-            println!(
-                "peer {} offers qexo {} signed by {} — not this node's release signer ({}); ignored",
-                name,
-                manifest.version,
-                lattice::fp_short(&manifest.signer),
-                lattice::fp_short(&trusted)
-            );
+            if loud {
+                println!(
+                    "peer {} offers qexo {} signed by {} — not this node's release signer ({}); ignored",
+                    name,
+                    manifest.version,
+                    lattice::fp_short(&manifest.signer),
+                    lattice::fp_short(&trusted)
+                );
+            }
             continue;
         }
         // The offer CLAIMS the trusted signer. Verify before
@@ -1847,23 +2277,31 @@ pub fn update(check_only: bool) -> i32 {
             Ok((200, b)) => String::from_utf8_lossy(&b).to_string(),
             Ok((s, _)) => {
                 let why = format!("the manifest's signature could not be fetched (HTTP {})", s);
-                update_receipt(
-                    &mut lat,
-                    "refused",
-                    &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
-                );
-                eprintln!("qexo update: release from {} claims the trusted signer but {}", endpoint, why);
-                return 1;
+                if receipts {
+                    update_receipt(
+                        &mut lat,
+                        "refused",
+                        &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
+                    );
+                }
+                if loud {
+                    eprintln!("qexo update: release from {} claims the trusted signer but {}", endpoint, why);
+                }
+                return Ok(UpdateOutcome::Refused(why));
             }
             Err(e) => {
                 let why = format!("the manifest's signature could not be fetched ({})", e);
-                update_receipt(
-                    &mut lat,
-                    "refused",
-                    &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
-                );
-                eprintln!("qexo update: release from {} claims the trusted signer but {}", endpoint, why);
-                return 1;
+                if receipts {
+                    update_receipt(
+                        &mut lat,
+                        "refused",
+                        &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
+                    );
+                }
+                if loud {
+                    eprintln!("qexo update: release from {} claims the trusted signer but {}", endpoint, why);
+                }
+                return Ok(UpdateOutcome::Refused(why));
             }
         };
         let verified = gpg.verify_detached(&sig_text, manifest_text.as_bytes());
@@ -1877,42 +2315,59 @@ pub fn update(check_only: bool) -> i32 {
         match verdict {
             Assess::NotOurSigner => unreachable!("signer equality checked above"),
             Assess::Refuse(why) => {
-                update_receipt(
-                    &mut lat,
-                    "refused",
-                    &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
-                );
-                eprintln!(
-                    "qexo update: REFUSED — the release offered by {} claims signer {} but {} — nothing was downloaded and the running binary is untouched",
-                    endpoint, lattice::fp_short(&trusted), why
-                );
-                return 1;
+                if receipts {
+                    update_receipt(
+                        &mut lat,
+                        "refused",
+                        &[("reason", &why), ("from", &current), ("offered", &manifest.version), ("signer", &trusted)],
+                    );
+                }
+                if loud {
+                    eprintln!(
+                        "qexo update: REFUSED — the release offered by {} claims signer {} but {} — nothing was downloaded and the running binary is untouched",
+                        endpoint, lattice::fp_short(&trusted), why
+                    );
+                }
+                return Ok(UpdateOutcome::Refused(why));
             }
             Assess::AlreadyCurrent => {
                 current_offer = Some(manifest.version.clone());
             }
             Assess::Accept => {
-                if check_only {
-                    println!(
-                        "update available: {} → {} (signer {}, via {}) — run `qexo update` to apply",
-                        current, manifest.version, lattice::fp_short(&trusted), endpoint
-                    );
-                    return 0;
+                if mode != UpdateMode::Apply {
+                    if mode == UpdateMode::Check {
+                        println!(
+                            "update available: {} → {} (signer {}, via {}) — run `qexo update` to apply",
+                            current, manifest.version, lattice::fp_short(&trusted), endpoint
+                        );
+                    }
+                    return Ok(UpdateOutcome::Available {
+                        from: current.clone(),
+                        to: manifest.version.clone(),
+                        via: endpoint.clone(),
+                    });
                 }
-                return apply_update(&mut lat, &endpoint, &manifest, &trusted, &current);
+                let (_code, outcome) = apply_update(&mut lat, &endpoint, &manifest, &trusted, &current);
+                return Ok(outcome);
             }
         }
     }
 
     if let Some(offered) = current_offer {
-        println!("already current — this node runs qexo {}; the trusted signer offers {}", current, offered);
-        0
+        if loud {
+            println!("already current — this node runs qexo {}; the trusted signer offers {}", current, offered);
+        }
+        Ok(UpdateOutcome::AlreadyCurrent { offered })
     } else if saw_offer {
-        println!("qexo update: offers were seen, none from this node's release signer — nothing applied");
-        1
+        if loud {
+            println!("qexo update: offers were seen, none from this node's release signer — nothing applied");
+        }
+        Ok(UpdateOutcome::IgnoredOffers)
     } else {
-        println!("qexo update: no peer offered a release manifest — nothing applied");
-        1
+        if loud {
+            println!("qexo update: no peer offered a release manifest — nothing applied");
+        }
+        Ok(UpdateOutcome::NoOffer)
     }
 }
 
@@ -1921,12 +2376,14 @@ pub fn update(check_only: bool) -> i32 {
 /// against the registry key named by `release_signer`) and
 /// novelty (strictly newer). What remains is the bytes' own
 /// verdict: size + sha256 against the manifest, then the swap.
-fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted: &str, current: &str) -> i32 {
+/// Returns the exit code `qexo update` has always returned,
+/// beside the outcome in facts.
+fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted: &str, current: &str) -> (i32, UpdateOutcome) {
     let exe = match std::env::current_exe() {
         Ok(e) => e,
         Err(e) => {
             eprintln!("qexo update: cannot locate the running binary: {}", e);
-            return 1;
+            return (1, UpdateOutcome::Refused(format!("cannot locate the running binary: {}", e)));
         }
     };
     let dir = exe.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| PathBuf::from("."));
@@ -1940,7 +2397,7 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
                 &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
             );
             eprintln!("qexo update: REFUSED — {}", why);
-            return 1;
+            return (1, UpdateOutcome::Refused(why));
         }
         Err(e) => {
             let why = format!("binary download failed: {}", e);
@@ -1950,7 +2407,7 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
                 &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
             );
             eprintln!("qexo update: REFUSED — {}", why);
-            return 1;
+            return (1, UpdateOutcome::Refused(why));
         }
     };
     let tmp = dir.join("qexo.update-tmp");
@@ -1960,7 +2417,7 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
             tmp.display(),
             e
         );
-        return 1;
+        return (1, UpdateOutcome::Refused(format!("cannot stage the download beside the running binary: {}", e)));
     }
     #[cfg(unix)]
     {
@@ -1984,7 +2441,7 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
             &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
         );
         eprintln!("qexo update: REFUSED — {} — the running binary is untouched", why);
-        return 1;
+        return (1, UpdateOutcome::Refused(why));
     }
     // The swap: current aside as qexo.prev, the verified bytes
     // into place — renames within one directory, atomic each.
@@ -1995,7 +2452,7 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
     if let Err(e) = std::fs::rename(&exe, &prev) {
         let _ = std::fs::remove_file(&tmp);
         eprintln!("qexo update: cannot set the running binary aside ({}): {}", prev.display(), e);
-        return 1;
+        return (1, UpdateOutcome::Refused(format!("cannot set the running binary aside: {}", e)));
     }
     if let Err(e) = std::fs::rename(&tmp, &exe) {
         let _ = std::fs::rename(&prev, &exe);
@@ -2006,7 +2463,10 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
             &[("reason", &why), ("from", current), ("to", &manifest.version), ("sha256", &manifest.sha256), ("signer", trusted)],
         );
         eprintln!("qexo update: {}", why);
-        return 1;
+        return (
+            1,
+            UpdateOutcome::RolledBack { from: current.to_string(), to: manifest.version.clone() },
+        );
     }
     // Post-check: the new binary must speak its own version and
     // pass doctor against this node's state. Anything less and
@@ -2022,7 +2482,10 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
             println!("updated: qexo {} → {} (signer {})", current, manifest.version, lattice::fp_short(trusted));
             println!("sha256 verified: {}", manifest.sha256);
             println!("previous binary kept at {}", prev.display());
-            0
+            (
+                0,
+                UpdateOutcome::Applied { from: current.to_string(), to: manifest.version.clone() },
+            )
         }
         Err(why) => {
             let _ = std::fs::remove_file(&exe);
@@ -2037,9 +2500,589 @@ fn apply_update(lat: &mut Lattice, endpoint: &str, manifest: &Manifest, trusted:
                 why,
                 if restored { "qexo.prev restored; the node still runs the previous binary" } else { "RESTORE FAILED — qexo.prev is still beside the binary; move it back by hand" }
             );
-            1
+            (
+                1,
+                UpdateOutcome::RolledBack { from: current.to_string(), to: manifest.version.clone() },
+            )
         }
     }
+}
+
+// ----------------------------------------------------------------
+// evolve — one receipted convergence pass over the phextnet (v1.2.0)
+//
+// `update` moves the binary; `evolve` is the node's full
+// convergence pass — everything a node can learn from its
+// peers, applied in one receipted cycle:
+//   1. peer gossip — what trusted peers know about the
+//      network, recorded as knowledge, never as trust;
+//   2. persona sync — copies of this node's personas held by
+//      trusted peers: adopted when they descend from ours,
+//      kept beside ours when the lines fork;
+//   3. self-update — the v1.1.0 mechanism, invoked in-process;
+//   4. one evolution receipt in the ledgers homeland naming
+//      every stage's outcome.
+// Each stage fails independently — a stage's failure never
+// blocks the next. --check performs every read and prints the
+// plan, and writes nothing at all: the knowledge stages run
+// against a throwaway copy of the lattice and the binary
+// stage only judges.
+// ----------------------------------------------------------------
+
+/// This node's own key fingerprint, from its node-key record
+/// ("" when the node has no key — a born node always has one).
+fn own_fingerprint(px: &Phext) -> String {
+    px.get(&lattice::NODE_KEY_RECORD)
+        .and_then(|t| lattice::field(t, "fingerprint"))
+        .unwrap_or_default()
+}
+
+/// A peer as a reporting peer's index + records describe it.
+#[derive(Debug, PartialEq)]
+struct ReportedPeer {
+    name: String,
+    fingerprint: Option<String>,
+    endpoint: Option<String>,
+}
+
+/// What gossip makes of one reported peer.
+#[derive(Debug, PartialEq)]
+enum GossipVerdict {
+    /// The report is about this node itself.
+    SkipSelf,
+    /// The report confirms a trusted peer (fingerprint agrees).
+    Confirm,
+    /// Already recorded as discovered; nothing to add.
+    Known,
+    /// A known NAME with a different fingerprint, or a known
+    /// FINGERPRINT under a different name: a conflict — warn,
+    /// never overwrite.
+    Conflict(String),
+    /// New to this node: record as discovered.
+    Discover,
+}
+
+/// The gossip trust rule, in one pure function: discovery is
+/// knowledge, not trust. A report can confirm what the
+/// operator already registered, or add an untrusted record —
+/// it can never promote, demote, or overwrite anything, and a
+/// fingerprint conflict for a known name is a warning, never
+/// a silent overwrite.
+fn gossip_verdict(
+    via: &str,
+    own_fp: &str,
+    trusted: &[(String, String)],
+    discovered: &[(String, String)],
+    rep: &ReportedPeer,
+) -> GossipVerdict {
+    let rep_fp = rep.fingerprint.clone().unwrap_or_default();
+    if !rep_fp.is_empty() && rep_fp == own_fp {
+        return GossipVerdict::SkipSelf;
+    }
+    for (tname, tfp) in trusted {
+        if *tname == rep.name {
+            return if !rep_fp.is_empty() && rep_fp == *tfp {
+                GossipVerdict::Confirm
+            } else {
+                GossipVerdict::Conflict(format!(
+                    "gossip via {}: {} reported with fingerprint {} — this node's trusted record says {} — report not adopted, record untouched",
+                    via,
+                    rep.name,
+                    lattice::fp_short(&rep_fp),
+                    lattice::fp_short(tfp)
+                ))
+            };
+        }
+        if !rep_fp.is_empty() && rep_fp == *tfp {
+            return GossipVerdict::Conflict(format!(
+                "gossip via {}: fingerprint {} reported under the name {} — this node trusts that fingerprint as {} — report not adopted, record untouched",
+                via,
+                lattice::fp_short(&rep_fp),
+                rep.name,
+                tname
+            ));
+        }
+    }
+    for (dname, dfp) in discovered {
+        if *dname == rep.name || (!rep_fp.is_empty() && rep_fp == *dfp) {
+            return if rep_fp == *dfp && *dname == rep.name {
+                GossipVerdict::Known
+            } else {
+                GossipVerdict::Conflict(format!(
+                    "gossip via {}: {} reported with fingerprint {} — the discovered record on file says {} ({}) — report not adopted, record untouched",
+                    via,
+                    rep.name,
+                    lattice::fp_short(&rep_fp),
+                    lattice::fp_short(dfp),
+                    dname
+                ))
+            };
+        }
+    }
+    GossipVerdict::Discover
+}
+
+/// One pass's facts, accumulated stage by stage and written
+/// into the evolution receipt whole.
+#[derive(Default)]
+struct EvolveReport {
+    peers_polled: usize,
+    peers_learned: Vec<String>,
+    peers_confirmed: usize,
+    personas_considered: usize,
+    personas_adopted: Vec<String>,
+    divergences_kept: Vec<String>,
+    personas_ahead: usize,
+    binary: String,
+    binary_bad: bool,
+    warnings: Vec<String>,
+}
+
+/// Stage 1 — peer gossip. For each TRUSTED peer with an
+/// endpoint: read its peers index, fetch each record it names,
+/// and judge the reports. Mutates the given lattice (the real
+/// one in a live pass, a throwaway copy under --check).
+fn gossip_stage(px: &mut Phext, report: &mut EvolveReport) {
+    let own_fp = own_fingerprint(px);
+    let trusted_list: Vec<(String, String)> = trusted_peer_records(px)
+        .iter()
+        .filter_map(|(_, _, t)| Some((lattice::field(t, "name")?, lattice::field(t, "fingerprint").filter(|s| !s.is_empty())?)))
+        .collect();
+    let poll: Vec<(String, String)> = trusted_peer_records(px)
+        .iter()
+        .filter_map(|(_, _, t)| {
+            Some((
+                lattice::field(t, "name")?,
+                lattice::field(t, "endpoint").filter(|s| !s.is_empty())?.trim_end_matches('/').to_string(),
+            ))
+        })
+        .collect();
+    for (pname, endpoint) in &poll {
+        report.peers_polled += 1;
+        let index_url = format!("{}/v1/scroll/{}", endpoint, fmt_coord(&lattice::index_addr(lattice::HL_PEERS)));
+        let index_text = match http_get(&index_url) {
+            Ok((200, b)) => String::from_utf8_lossy(&b).to_string(),
+            Ok((s, _)) => {
+                report.warnings.push(format!(
+                    "gossip: peer {} ({}) answered its peers index with HTTP {} — skipped",
+                    pname, endpoint, s
+                ));
+                continue;
+            }
+            Err(e) => {
+                report.warnings.push(format!("gossip: peer {} ({}) unreachable — {}", pname, endpoint, e));
+                continue;
+            }
+        };
+        // The peers index names its records, one per line:
+        // "- <name> — <coord> — status <s>". Fetch each record
+        // by coordinate from the same peer and judge it.
+        let mut reported: Vec<ReportedPeer> = Vec::new();
+        for line in index_text.lines() {
+            let line = line.trim();
+            if !line.starts_with("- ") {
+                continue;
+            }
+            let parts: Vec<&str> = line.split(" — ").collect();
+            if parts.len() < 2 {
+                continue;
+            }
+            let rname = parts[0].trim_start_matches("- ").trim().to_string();
+            let rcoord = match crate::phext::parse_coord(parts[1].trim()) {
+                Some(c) => c,
+                None => continue,
+            };
+            let rec_url = format!("{}/v1/scroll/{}", endpoint, fmt_coord(&rcoord));
+            match http_get(&rec_url) {
+                Ok((200, b)) => {
+                    let t = String::from_utf8_lossy(&b).to_string();
+                    reported.push(ReportedPeer {
+                        name: lattice::field(&t, "name").unwrap_or(rname),
+                        fingerprint: lattice::field(&t, "fingerprint").filter(|s| !s.is_empty()),
+                        endpoint: lattice::field(&t, "endpoint").filter(|s| !s.is_empty()),
+                    });
+                }
+                Ok((s, _)) => report.warnings.push(format!(
+                    "gossip: peer {} lists {} but its record answered HTTP {} — skipped",
+                    pname, rname, s
+                )),
+                Err(e) => report.warnings.push(format!(
+                    "gossip: peer {} lists {} but its record is unreachable — {}",
+                    pname, rname, e
+                )),
+            }
+        }
+        for rep in &reported {
+            // Judged against the registry as it stands NOW —
+            // records learned earlier in this same pass count.
+            let discovered_list: Vec<(String, String)> = peer_records(px)
+                .iter()
+                .filter(|(_, _, t)| lattice::field(t, "status").as_deref() == Some("discovered"))
+                .filter_map(|(_, _, t)| Some((lattice::field(t, "name")?, lattice::field(t, "fingerprint")?)))
+                .collect();
+            match gossip_verdict(pname, &own_fp, &trusted_list, &discovered_list, rep) {
+                GossipVerdict::SkipSelf | GossipVerdict::Known => {}
+                GossipVerdict::Confirm => report.peers_confirmed += 1,
+                GossipVerdict::Conflict(msg) => report.warnings.push(msg),
+                GossipVerdict::Discover => {
+                    let c = lattice::next_free_cluster(px, lattice::HL_PEERS, 2);
+                    let addr = lattice::at(lattice::HL_PEERS, [c, 1, 1, 1, 1, 1]);
+                    let (_, stamp) = now_stamp();
+                    let mut fields: Vec<(&str, &str)> = vec![
+                        ("kind", "peer"),
+                        ("name", &rep.name),
+                        ("fingerprint", rep.fingerprint.as_deref().unwrap_or("")),
+                        ("status", "discovered"),
+                        ("via", pname),
+                        ("discovered", &stamp),
+                    ];
+                    if let Some(ep) = &rep.endpoint {
+                        fields.push(("endpoint", ep));
+                    }
+                    px.insert(addr, lattice::record(&fields));
+                    report.peers_learned.push(format!("{} via {} at {}", rep.name, pname, fmt_coord(&addr)));
+                }
+            }
+        }
+    }
+}
+
+/// Stage 2 — persona sync. For each persona this node holds,
+/// poll each TRUSTED peer for its copy (found through the
+/// peer's own personas index, never by guessing coordinates)
+/// and judge the two copies by their lineages.
+fn persona_stage(px: &mut Phext, report: &mut EvolveReport) {
+    let mut mine: Vec<(u32, String)> = Vec::new();
+    for r in lattice::records(px) {
+        if r.kind == "persona" {
+            mine.push((r.coord[3], r.name.clone()));
+        }
+    }
+    if mine.is_empty() {
+        return;
+    }
+    let poll: Vec<(String, String)> = trusted_peer_records(px)
+        .iter()
+        .filter_map(|(_, _, t)| {
+            Some((
+                lattice::field(t, "name")?,
+                lattice::field(t, "endpoint").filter(|s| !s.is_empty())?.trim_end_matches('/').to_string(),
+            ))
+        })
+        .collect();
+    for (cluster, name) in &mine {
+        report.personas_considered += 1;
+        for (pname, endpoint) in &poll {
+            // Re-read the local copy each time: an adoption
+            // earlier in this pass changes what "local" means
+            // for the next peer.
+            let local_rec = match px.get(&persona_addr(*cluster, 1, 1)) {
+                Some(t) => t.clone(),
+                None => continue,
+            };
+            let local_boot = boot_text_of(px, *cluster).unwrap_or_default();
+            let local = copy_view(&local_rec, &local_boot);
+            let idx_url = format!("{}/v1/scroll/{}", endpoint, fmt_coord(&lattice::index_addr(lattice::HL_PERSONAS)));
+            let idx_text = match http_get(&idx_url) {
+                Ok((200, b)) => String::from_utf8_lossy(&b).to_string(),
+                Ok((s, _)) => {
+                    report.warnings.push(format!(
+                        "persona sync: peer {} answered its personas index with HTTP {} — skipped for {}",
+                        pname, s, name
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    report.warnings.push(format!(
+                        "persona sync: peer {} unreachable — {} — skipped for {}",
+                        pname, e, name
+                    ));
+                    continue;
+                }
+            };
+            let remote_cluster = idx_text.lines().find_map(|line| {
+                let parts: Vec<&str> = line.split(" — ").collect();
+                if parts.len() >= 2 && parts[0].trim_start_matches("- ").trim() == name.as_str() {
+                    crate::phext::parse_coord(parts[1].trim()).map(|c| c[3])
+                } else {
+                    None
+                }
+            });
+            let rc = match remote_cluster {
+                Some(c) => c,
+                None => continue,
+            };
+            let rec_url = format!("{}/v1/scroll/{}", endpoint, fmt_coord(&persona_addr(rc, 1, 1)));
+            let remote_rec = match http_get(&rec_url) {
+                Ok((200, b)) => String::from_utf8_lossy(&b).to_string(),
+                Ok((s, _)) => {
+                    report.warnings.push(format!(
+                        "persona sync: peer {} lists {} but its record answered HTTP {} — skipped",
+                        pname, name, s
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    report.warnings.push(format!(
+                        "persona sync: peer {} lists {} but its record is unreachable — {}",
+                        pname, name, e
+                    ));
+                    continue;
+                }
+            };
+            if lattice::field(&remote_rec, "kind").as_deref() != Some("persona") {
+                continue;
+            }
+            // The remote boot run: chunk scrolls until a gap.
+            let mut chunks: Vec<String> = Vec::new();
+            let mut s = 1u32;
+            loop {
+                let u = format!("{}/v1/scroll/{}", endpoint, fmt_coord(&persona_addr(rc, 2, s)));
+                match http_get(&u) {
+                    Ok((200, b)) => {
+                        chunks.push(String::from_utf8_lossy(&b).to_string());
+                        s += 1;
+                    }
+                    _ => break,
+                }
+                if s > 4096 {
+                    break;
+                }
+            }
+            if chunks.is_empty() {
+                continue;
+            }
+            let remote_boot = chunks.concat();
+            let remote = copy_view(&remote_rec, &remote_boot);
+            match sync_decision(&local, &remote) {
+                SyncDecision::Same => {}
+                SyncDecision::Behind => report.personas_ahead += 1,
+                SyncDecision::Adopt => {
+                    // Adopt whole: the remote record verbatim
+                    // (its lineage IS the adoption's proof) and
+                    // its boot run in its own chunking.
+                    px.insert(persona_addr(*cluster, 1, 1), remote_rec.clone());
+                    let old: Vec<crate::phext::Coord> = lattice::prefix_scrolls(px, &[4, 4, 4, *cluster, 1, 2, 1, 1])
+                        .iter()
+                        .map(|(a, _)| *a)
+                        .collect();
+                    for a in old {
+                        px.scrolls.remove(&a);
+                    }
+                    for (i, ch) in chunks.iter().enumerate() {
+                        px.insert(persona_addr(*cluster, 2, (i + 1) as u32), ch.clone());
+                    }
+                    report.personas_adopted.push(format!(
+                        "{} revision {} → {} from {} (it follows {})",
+                        name, local.revision, remote.revision, pname, remote.follows
+                    ));
+                }
+                SyncDecision::Diverge => {
+                    // KEEP BOTH — the KSO divergence ruling:
+                    // the incoming copy lands beside ours as an
+                    // attempt artifact named by its origin node.
+                    // Ours is untouched; nothing is dropped
+                    // silently; a copy already kept (same stamp)
+                    // is not kept twice.
+                    let mut already = false;
+                    for b in lattice::component_values(px, &[4, 4, 4, *cluster, 1], 5) {
+                        if let Some(t) = px.get(&persona_addr(*cluster, b, 1)) {
+                            if lattice::field(t, "kind").as_deref() == Some("persona attempt")
+                                && lattice::field(t, "stamp").as_deref() == Some(remote.stamp.as_str())
+                            {
+                                already = true;
+                            }
+                        }
+                    }
+                    if !already {
+                        let b = lattice::next_free_book(px, [4, 4, 4, *cluster, 1], 5);
+                        let (_, tstamp) = now_stamp();
+                        px.insert(
+                            persona_addr(*cluster, b, 1),
+                            lattice::record(&[
+                                ("kind", "persona attempt"),
+                                ("persona", name),
+                                ("origin", pname),
+                                ("revision", &remote.revision.to_string()),
+                                ("follows", &remote.follows),
+                                ("history", &remote.history.join(",")),
+                                ("stamp", &remote.stamp),
+                                ("received", &tstamp),
+                                ("note", "divergent copy kept under the KSO ruling — both lines stand; the resident copy is unchanged"),
+                            ]),
+                        );
+                        for (i, ch) in chunks.iter().enumerate() {
+                            px.insert(persona_addr(*cluster, b, (i + 2) as u32), ch.clone());
+                        }
+                        report.divergences_kept.push(format!(
+                            "{}: {}'s revision {} (stamp {}) kept as attempt at {} — local revision {} (stamp {}) unchanged",
+                            name,
+                            pname,
+                            remote.revision,
+                            remote.stamp,
+                            fmt_coord(&persona_addr(*cluster, b, 1)),
+                            local.revision,
+                            local.stamp
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Fold the binary stage's outcome into the report, in words
+/// the receipt can carry.
+fn set_binary_outcome(report: &mut EvolveReport, outcome: &UpdateOutcome) {
+    report.binary = match outcome {
+        UpdateOutcome::Applied { from, to } => format!("updated {} → {}", from, to),
+        UpdateOutcome::RolledBack { from, to } => format!("update to {} FAILED and rolled back — still {}", to, from),
+        UpdateOutcome::AlreadyCurrent { offered } => format!("already current (the signer offers {})", offered),
+        UpdateOutcome::Available { from, to, via } => format!("update available: {} → {} via {} (not applied — check only)", from, to, via),
+        UpdateOutcome::NoOffer => "no release offered by any trusted peer".to_string(),
+        UpdateOutcome::IgnoredOffers => "offers seen, none from the trusted signer — nothing applied".to_string(),
+        UpdateOutcome::Refused(why) => format!("REFUSED — {}", why),
+        UpdateOutcome::NoSigner => "no release signer configured — binary stage had nothing to trust".to_string(),
+        UpdateOutcome::SignerUnregistered => "release signer not in the peer registry — binary stage had nothing to trust".to_string(),
+    };
+    report.binary_bad = matches!(outcome, UpdateOutcome::Refused(_) | UpdateOutcome::RolledBack { .. });
+}
+
+/// The evolution receipt's fields: every stage, every count,
+/// every named outcome, every warning. The pass is not done
+/// until its outcomes are on the ledger.
+fn evolve_receipt_fields(report: &EvolveReport) -> Vec<(String, String)> {
+    let mut f: Vec<(String, String)> = vec![
+        ("peers polled".into(), report.peers_polled.to_string()),
+        ("peers learned".into(), report.peers_learned.len().to_string()),
+        ("peers confirmed".into(), report.peers_confirmed.to_string()),
+        ("personas considered".into(), report.personas_considered.to_string()),
+        ("personas adopted".into(), report.personas_adopted.len().to_string()),
+        ("divergences kept".into(), report.divergences_kept.len().to_string()),
+        ("binary".into(), report.binary.clone()),
+        ("warnings".into(), report.warnings.len().to_string()),
+    ];
+    for l in &report.peers_learned {
+        f.push(("learned".into(), l.clone()));
+    }
+    for a in &report.personas_adopted {
+        f.push(("adopted".into(), a.clone()));
+    }
+    for d in &report.divergences_kept {
+        f.push(("divergence kept".into(), d.clone()));
+    }
+    for w in &report.warnings {
+        f.push(("warning".into(), w.clone()));
+    }
+    f
+}
+
+/// The pass's summary lines — printed by a live pass above its
+/// receipt coordinate, and by --check as the plan.
+fn evolve_plan_lines(report: &EvolveReport, check: bool) -> String {
+    let mut s = String::new();
+    s.push_str(&format!(
+        "  gossip: {} trusted peer(s) polled, {} learned, {} confirmed\n",
+        report.peers_polled,
+        report.peers_learned.len(),
+        report.peers_confirmed
+    ));
+    for l in &report.peers_learned {
+        s.push_str(&format!("    {} {}\n", if check { "would learn" } else { "learned" }, l));
+    }
+    s.push_str(&format!(
+        "  personas: {} considered, {} adopted, {} divergence(s) kept, {} peer(s) behind us\n",
+        report.personas_considered,
+        report.personas_adopted.len(),
+        report.divergences_kept.len(),
+        report.personas_ahead
+    ));
+    for a in &report.personas_adopted {
+        s.push_str(&format!("    adopted {}\n", a));
+    }
+    for d in &report.divergences_kept {
+        s.push_str(&format!("    kept {}\n", d));
+    }
+    s.push_str(&format!("  binary: {}\n", report.binary));
+    for w in &report.warnings {
+        s.push_str(&format!("  warning: {}\n", w));
+    }
+    s
+}
+
+/// `qexo evolve [--check]` — one convergence pass over the
+/// phextnet. Manual runs always converge, whatever the
+/// `evolve` config key says — the key only steers the auto
+/// timer's trigger (see `qexo config --evolve`).
+pub fn evolve(check_only: bool) -> i32 {
+    let lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+
+    if check_only {
+        // Every read, no writes: the knowledge stages run
+        // against a throwaway copy of the lattice and the
+        // binary stage only judges. Nothing in this branch
+        // touches the disk.
+        let mut report = EvolveReport::default();
+        let mut px = lat.px.clone();
+        gossip_stage(&mut px, &mut report);
+        persona_stage(&mut px, &mut report);
+        match update_inner(UpdateMode::JudgeOnly) {
+            Ok(o) => set_binary_outcome(&mut report, &o),
+            Err(_) => report.binary = "state unreadable".to_string(),
+        }
+        println!("evolve --check — what a pass would do (nothing was written):");
+        print!("{}", evolve_plan_lines(&report, true));
+        return if report.binary_bad { 1 } else { 0 };
+    }
+
+    let mut report = EvolveReport::default();
+    let mut work = lat;
+    gossip_stage(&mut work.px, &mut report);
+    persona_stage(&mut work.px, &mut report);
+    lattice::regen_indexes(&mut work.px);
+    if let Err(e) = work.save() {
+        eprintln!("qexo evolve: cannot save state after the knowledge stages: {}", e);
+        return 1;
+    }
+    // Stage 3 runs the v1.1.0 mechanism in-process; it opens
+    // its own view of the (just-saved) state and writes its
+    // own receipts, exactly as `qexo update` does.
+    match update_inner(UpdateMode::Apply) {
+        Ok(o) => set_binary_outcome(&mut report, &o),
+        Err(_) => {
+            report.binary = "state unreadable".to_string();
+            report.binary_bad = true;
+        }
+    }
+    // Reload before receipting: the binary stage's receipts
+    // landed in the on-disk state; the evolution receipt joins
+    // them there, in the same ledgers family sequence.
+    let mut lat2 = match Lattice::load() {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            eprintln!("qexo evolve: state vanished before the evolution receipt could be written");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("qexo evolve: cannot reload state for the evolution receipt: {}", e);
+            return 1;
+        }
+    };
+    let fields = evolve_receipt_fields(&report);
+    let refs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let receipt = append_receipt(&mut lat2.px, "evolve", &refs);
+    lattice::regen_indexes(&mut lat2.px);
+    if let Err(e) = lat2.save() {
+        eprintln!("qexo evolve: cannot save the evolution receipt: {}", e);
+        return 1;
+    }
+    println!("evolve — one convergence pass over the phextnet:");
+    print!("{}", evolve_plan_lines(&report, false));
+    println!("receipt: {}", fmt_coord(&receipt));
+    if report.binary_bad { 1 } else { 0 }
 }
 
 /// Post-swap check: `--version` must name the new version and
@@ -2149,11 +3192,242 @@ mod tests {
 
     #[test]
     fn timer_units_carry_the_trigger_not_the_logic() {
-        let (service, timer) = update_unit_texts(Path::new("/usr/local/bin/qexo"), 12);
+        let (service, timer) = update_unit_texts(Path::new("/usr/local/bin/qexo"), 12, false);
         assert!(service.contains("ExecStart=/usr/local/bin/qexo update"), "{}", service);
         assert!(service.contains("Type=oneshot"), "{}", service);
         assert!(timer.contains("OnUnitActiveSec=12h"), "{}", timer);
         assert!(timer.contains("WantedBy=timers.target"), "{}", timer);
+        // with evolve: on, the same thin trigger names the wider
+        // pass — the decision logic still lives in the command,
+        // never in the unit.
+        let (service, timer) = update_unit_texts(Path::new("/usr/local/bin/qexo"), 12, true);
+        assert!(service.contains("ExecStart=/usr/local/bin/qexo evolve"), "{}", service);
+        assert!(timer.contains("Run qexo evolve every 12h"), "{}", timer);
+    }
+
+    // ---- v1.2.0: evolve — gossip trust, persona lineage ----
+
+    fn rep(name: &str, fp: &str) -> ReportedPeer {
+        ReportedPeer { name: name.to_string(), fingerprint: Some(fp.to_string()), endpoint: None }
+    }
+
+    #[test]
+    fn gossip_discovers_but_never_promotes() {
+        let own = "AAAA".repeat(10);
+        let trusted = vec![("peer-bbbb".to_string(), "BBBB".repeat(10))];
+        // a new name+fingerprint is discovered — and discovery
+        // is the ONLY thing that can happen to it here: the
+        // verdict vocabulary has no "trust" outcome at all.
+        assert_eq!(
+            gossip_verdict("peer-bbbb", &own, &trusted, &[], &rep("peer-cccc", &"CCCC".repeat(10))),
+            GossipVerdict::Discover
+        );
+        // a report about ourselves is skipped
+        assert_eq!(
+            gossip_verdict("peer-bbbb", &own, &trusted, &[], &rep("peer-aaaa", &own)),
+            GossipVerdict::SkipSelf
+        );
+        // a faithful report about a trusted peer confirms it
+        assert_eq!(
+            gossip_verdict("peer-cccc", &own, &trusted, &[], &rep("peer-bbbb", &"BBBB".repeat(10))),
+            GossipVerdict::Confirm
+        );
+        // an already-discovered peer is simply known
+        let disc = vec![("peer-cccc".to_string(), "CCCC".repeat(10))];
+        assert_eq!(
+            gossip_verdict("peer-bbbb", &own, &trusted, &disc, &rep("peer-cccc", &"CCCC".repeat(10))),
+            GossipVerdict::Known
+        );
+    }
+
+    #[test]
+    fn gossip_conflicts_warn_and_never_overwrite() {
+        let own = "AAAA".repeat(10);
+        let trusted = vec![("peer-bbbb".to_string(), "BBBB".repeat(10))];
+        // a known NAME with a foreign fingerprint: conflict
+        match gossip_verdict("peer-cccc", &own, &trusted, &[], &rep("peer-bbbb", &"EEEE".repeat(10))) {
+            GossipVerdict::Conflict(m) => {
+                assert!(m.contains("record untouched"), "{}", m);
+                assert!(m.contains("peer-cccc"), "{}", m);
+            }
+            other => panic!("expected Conflict, got {:?}", other),
+        }
+        // a known FINGERPRINT under a foreign name: conflict
+        match gossip_verdict("peer-cccc", &own, &trusted, &[], &rep("peer-zzzz", &"BBBB".repeat(10))) {
+            GossipVerdict::Conflict(m) => assert!(m.contains("record untouched"), "{}", m),
+            other => panic!("expected Conflict, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn discovered_peers_are_never_in_the_trusted_set() {
+        let mut px = Phext::new();
+        // a registered peer and a discovered peer, side by side
+        px.insert(
+            lattice::at(lattice::HL_PEERS, [2, 1, 1, 1, 1, 1]),
+            lattice::record(&[("kind", "peer"), ("name", "peer-reg"), ("fingerprint", "F1"), ("status", "registered")]),
+        );
+        px.insert(
+            lattice::at(lattice::HL_PEERS, [3, 1, 1, 1, 1, 1]),
+            lattice::record(&[
+                ("kind", "peer"),
+                ("name", "peer-disc"),
+                ("fingerprint", "F2"),
+                ("status", "discovered"),
+                ("via", "peer-reg"),
+            ]),
+        );
+        let all = peer_records(&px);
+        assert_eq!(all.len(), 2, "both records exist as knowledge");
+        let trusted = trusted_peer_records(&px);
+        assert_eq!(trusted.len(), 1, "only the registered peer is trusted");
+        assert!(trusted[0].2.contains("peer-reg"));
+    }
+
+    fn copy(rev: u64, follows: &str, history: &[&str], boot: &str) -> PersonaCopy {
+        PersonaCopy {
+            revision: rev,
+            follows: follows.to_string(),
+            history: history.iter().map(|s| s.to_string()).collect(),
+            stamp: history.last().copied().unwrap_or("").to_string(),
+            boot: boot.to_string(),
+        }
+    }
+
+    #[test]
+    fn sync_decision_judges_by_lineage() {
+        let root = copy(1, "none", &["s1"], "boot one");
+        let child = copy(2, "1 s1", &["s1", "s2"], "boot two");
+        let grandchild = copy(3, "2 s2", &["s1", "s2", "s3"], "boot three");
+        assert_eq!(sync_decision(&root, &root), SyncDecision::Same);
+        assert_eq!(sync_decision(&root, &child), SyncDecision::Adopt);
+        assert_eq!(sync_decision(&child, &grandchild), SyncDecision::Adopt);
+        assert_eq!(sync_decision(&grandchild, &child), SyncDecision::Behind);
+        // a fork off the same root is a divergence, both ways
+        let fork = copy(2, "1 s1", &["s1", "s2x"], "boot two, other words");
+        assert_eq!(sync_decision(&child, &fork), SyncDecision::Diverge);
+        assert_eq!(sync_decision(&fork, &child), SyncDecision::Diverge);
+        // unrelated roots diverge even at the same revision
+        let alien = copy(1, "none", &["s9"], "someone else's boot");
+        assert_eq!(sync_decision(&root, &alien), SyncDecision::Diverge);
+    }
+
+    #[test]
+    fn persona_stamps_are_deterministic_and_parented() {
+        // same content, same stamp — two nodes editing alike agree
+        let a = persona_stamp("Pell", 1, "none", "boot text");
+        let b = persona_stamp("Pell", 1, "none", "boot text");
+        assert_eq!(a, b);
+        // a copy_view over a record written by host reads back
+        // the lineage the record carries
+        let rec = lattice::record(&[
+            ("kind", "persona"),
+            ("name", "Pell"),
+            ("revision", "2"),
+            ("follows", &format!("1 {}", a)),
+            ("history", &format!("{},{}", a, persona_stamp("Pell", 2, &format!("1 {}", a), "boot two"))),
+            ("stamp", &persona_stamp("Pell", 2, &format!("1 {}", a), "boot two")),
+        ]);
+        let v = copy_view(&rec, "boot two");
+        assert_eq!(v.revision, 2);
+        assert_eq!(v.history.len(), 2);
+        assert_eq!(v.history[0], a);
+        assert_eq!(v.follows, format!("1 {}", a));
+        // a legacy record with no lineage fields reads as a root
+        let legacy = lattice::record(&[("kind", "persona"), ("name", "Pell")]);
+        let v = copy_view(&legacy, "boot text");
+        assert_eq!(v.revision, 1);
+        assert_eq!(v.history, vec![a]);
+    }
+
+    #[test]
+    fn divergence_keeps_both_copies_in_state() {
+        // B holds Pell at revision 2 on one line; a divergent
+        // revision 2 arrives from a peer. The stage's Diverge
+        // arm is exercised at the state level here: local copy
+        // untouched, attempt preserved with its origin named.
+        let mut px = Phext::new();
+        let s1 = persona_stamp("Pell", 1, "none", "boot one");
+        let s2 = persona_stamp("Pell", 2, &format!("1 {}", s1), "boot two");
+        let rec = lattice::record(&[
+            ("kind", "persona"),
+            ("name", "Pell"),
+            ("revision", "2"),
+            ("follows", &format!("1 {}", s1)),
+            ("history", &format!("{},{}", s1, s2)),
+            ("stamp", &s2),
+        ]);
+        px.insert(persona_addr(2, 1, 1), rec.clone());
+        for (i, ch) in chunk_text("boot two", 3800).iter().enumerate() {
+            px.insert(persona_addr(2, 2, (i + 1) as u32), ch.clone());
+        }
+        // boots are read back in their stored form: chunk_text
+        // newline-terminates every line, and that normalized
+        // form is the canonical text sync compares
+        let local = copy_view(&rec, "boot two\n");
+        // the divergent incoming copy: same root, other child
+        let s2x = persona_stamp("Pell", 2, &format!("1 {}", s1), "boot two, other words");
+        let remote = PersonaCopy {
+            revision: 2,
+            follows: format!("1 {}", s1),
+            history: vec![s1.clone(), s2x.clone()],
+            stamp: s2x.clone(),
+            boot: "boot two, other words\n".to_string(),
+        };
+        assert_eq!(sync_decision(&local, &remote), SyncDecision::Diverge);
+        // keep it the way persona_stage does
+        let b = lattice::next_free_book(&px, [4, 4, 4, 2, 1], 5);
+        assert!(b >= 5);
+        px.insert(
+            persona_addr(2, b, 1),
+            lattice::record(&[
+                ("kind", "persona attempt"),
+                ("persona", "Pell"),
+                ("origin", "peer-cee"),
+                ("stamp", &remote.stamp),
+            ]),
+        );
+        px.insert(persona_addr(2, b, 2), remote.boot.clone());
+        // both stand: the resident record and boot are the
+        // originals, and the attempt is beside them
+        assert_eq!(px.get(&persona_addr(2, 1, 1)), Some(&rec));
+        assert_eq!(boot_text_of(&px, 2).as_deref(), Some("boot two\n"));
+        let attempt = px.get(&persona_addr(2, b, 1)).expect("attempt record");
+        assert!(attempt.contains("origin: peer-cee"), "{}", attempt);
+        assert_eq!(px.get(&persona_addr(2, b, 2)).map(|s| s.as_str()), Some("boot two, other words\n"));
+    }
+
+    #[test]
+    fn evolve_receipt_names_every_stage() {
+        let mut r = EvolveReport::default();
+        r.peers_polled = 2;
+        r.peers_learned.push("peer-dee via peer-cee at 3.3.3/3.3.3/4.1.1".to_string());
+        r.peers_confirmed = 1;
+        r.personas_considered = 1;
+        r.personas_adopted.push("Pell revision 2 → 3 from peer-aye".to_string());
+        r.divergences_kept.push("Pell: peer-cee's revision 3 kept as attempt".to_string());
+        r.binary = "updated 1.1.0 → 1.2.0".to_string();
+        r.warnings.push("gossip via peer-cee: a lie".to_string());
+        let fields = evolve_receipt_fields(&r);
+        let keys: Vec<&str> = fields.iter().map(|(k, _)| k.as_str()).collect();
+        for want in [
+            "peers polled",
+            "peers learned",
+            "peers confirmed",
+            "personas considered",
+            "personas adopted",
+            "divergences kept",
+            "binary",
+            "warnings",
+            "learned",
+            "adopted",
+            "divergence kept",
+            "warning",
+        ] {
+            assert!(keys.contains(&want), "receipt is missing the {} field: {:?}", want, keys);
+        }
+        let bin = fields.iter().find(|(k, _)| k == "binary").map(|(_, v)| v.as_str());
+        assert_eq!(bin, Some("updated 1.1.0 → 1.2.0"));
     }
 }
 
