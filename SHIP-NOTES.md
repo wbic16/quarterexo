@@ -1,3 +1,24 @@
+# qexo v1.3.0 (scratch line) — ship notes
+
+Status: v1.3.0 BUILT AND GATED, 2026-11-13 — the parser is
+libphext-rs now (crate pinned 0.5.0, as phext-lattice pins
+it); src/phext.rs is an adapter, the hand-rolled reckoning
+is deleted. The one-byte divergence it carried (library
+break \x02 vs the reference \x01) is diagnosed in the
+CHANGELOG with measurements from SQ 0.6.0 and libphext
+0.5.0, and pinned by two regression tests, one of them
+tonight's file shape byte-for-byte. Siblings: `config
+--release-signer` (the signer as a command, not a hand
+edit) and the `select <coord>` state form (Will's error
+was an argument-shape trap, reproduced on Linux under the
+old binary — never a Windows bug). Old fleet states parse
+but stand at drifted addresses under the library — the
+fleet wipe/re-birth is Will's call, runbook prepared; GPG
+identities survive it (keyring lives beside the state).
+Gates: 50/50 tests, wiring 12/12, windows-gnu full link,
+sandbox against the live fleet signer, disk gate GREEN.
+Base is exo (v1.2.0, PR #15). See CHANGELOG 1.3.0.
+
 # qexo v1.2.0 (scratch line) — ship notes
 
 Status: v1.2.0 BUILT AND GATED, 2026-11-13 — `qexo evolve`,
