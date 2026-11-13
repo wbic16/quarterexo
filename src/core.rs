@@ -239,7 +239,7 @@ pub fn config() -> i32 {
             ("name", &name),
             ("node", &node),
             ("born", &stamp),
-            ("qexo", "v1.0.3"),
+            ("qexo", "v1.0.4"),
             ("state", &path.display().to_string()),
         ]),
     );
@@ -806,7 +806,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.0.3 — node status");
+    println!("qexo v1.0.4 — node status");
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,
@@ -871,53 +871,19 @@ pub fn status() -> i32 {
 // ----------------------------------------------------------------
 
 /// What the disk probe reads: the volume under one root (bytes,
-/// from statvfs) and a file count under another. The probe takes
-/// no position on what the numbers MEAN — thresholds live in
-/// plan::evaluate_gate, fed by the node's config record. (Before
-/// v1.0.2 this function carried the VM quota's 95/102 GB verdicts
-/// inside itself; a probe that judges is a gate no one configured.)
+/// from the platform's own volume call — see volume_at) and a
+/// file count under another. The probe takes no position on what
+/// the numbers MEAN — thresholds live in plan::evaluate_gate,
+/// fed by the node's config record. (Before v1.0.2 this function
+/// carried the VM quota's 95/102 GB verdicts inside itself; a
+/// probe that judges is a gate no one configured.)
 struct DiskProbe {
     volume: Option<plan::Volume>,
     files: u64,
 }
 
 fn probe_disk(volume_root: &Path, files_root: &Path, file_cap: u64) -> DiskProbe {
-    #[repr(C)]
-    struct Statvfs {
-        f_bsize: u64,
-        f_frsize: u64,
-        f_blocks: u64,
-        f_bfree: u64,
-        f_bavail: u64,
-        f_files: u64,
-        f_ffree: u64,
-        f_favail: u64,
-        f_fsid: u64,
-        f_flag: u64,
-        f_namemax: u64,
-        f_spare: [i32; 6],
-    }
-    extern "C" {
-        fn statvfs(path: *const std::os::raw::c_char, buf: *mut Statvfs) -> i32;
-    }
-    let mut volume: Option<plan::Volume> = None;
-    if let Ok(cpath) = std::ffi::CString::new(volume_root.display().to_string()) {
-        let mut st = Statvfs {
-            f_bsize: 0, f_frsize: 0, f_blocks: 0, f_bfree: 0, f_bavail: 0,
-            f_files: 0, f_ffree: 0, f_favail: 0, f_fsid: 0, f_flag: 0, f_namemax: 0,
-            f_spare: [0; 6],
-        };
-        let rc = unsafe { statvfs(cpath.as_ptr(), &mut st) };
-        if rc == 0 && st.f_blocks > 0 {
-            let fr = st.f_frsize;
-            volume = Some(plan::Volume {
-                root: volume_root.display().to_string(),
-                total_bytes: st.f_blocks * fr,
-                used_bytes: (st.f_blocks - st.f_bfree) * fr,
-                free_bytes: st.f_bavail * fr,
-            });
-        }
-    }
+    let volume = volume_at(volume_root);
     // file count under the staging root, capped just past the RED
     // threshold — past it, the exact number stops mattering.
     let cap: u64 = file_cap + 1;
@@ -943,6 +909,110 @@ fn probe_disk(volume_root: &Path, files_root: &Path, file_cap: u64) -> DiskProbe
         }
     }
     DiskProbe { volume, files }
+}
+
+/// The volume under a root, read by the platform's own call.
+/// On any failure — and on platforms with no read here — the
+/// probe honestly has no volume: plan already works from an
+/// absent volume (every consumer reads it through Option).
+#[cfg(unix)]
+fn volume_at(root: &Path) -> Option<plan::Volume> {
+    #[repr(C)]
+    struct Statvfs {
+        f_bsize: u64,
+        f_frsize: u64,
+        f_blocks: u64,
+        f_bfree: u64,
+        f_bavail: u64,
+        f_files: u64,
+        f_ffree: u64,
+        f_favail: u64,
+        f_fsid: u64,
+        f_flag: u64,
+        f_namemax: u64,
+        f_spare: [i32; 6],
+    }
+    extern "C" {
+        fn statvfs(path: *const std::os::raw::c_char, buf: *mut Statvfs) -> i32;
+    }
+    let mut volume: Option<plan::Volume> = None;
+    if let Ok(cpath) = std::ffi::CString::new(root.display().to_string()) {
+        let mut st = Statvfs {
+            f_bsize: 0, f_frsize: 0, f_blocks: 0, f_bfree: 0, f_bavail: 0,
+            f_files: 0, f_ffree: 0, f_favail: 0, f_fsid: 0, f_flag: 0, f_namemax: 0,
+            f_spare: [0; 6],
+        };
+        let rc = unsafe { statvfs(cpath.as_ptr(), &mut st) };
+        if rc == 0 && st.f_blocks > 0 {
+            let fr = st.f_frsize;
+            volume = Some(plan::Volume {
+                root: root.display().to_string(),
+                total_bytes: st.f_blocks * fr,
+                used_bytes: (st.f_blocks - st.f_bfree) * fr,
+                free_bytes: st.f_bavail * fr,
+            });
+        }
+    }
+    volume
+}
+
+/// Windows volume read, std-only via kernel32:
+/// GetDiskFreeSpaceExW answers for the volume under a directory
+/// path — total bytes, total free bytes, and the bytes available
+/// to the caller (the quota-aware figure). (Through v1.0.3 the
+/// probe declared POSIX statvfs on every platform; Windows has
+/// no such symbol, so the Windows build failed at link time —
+/// and `cargo check` gates could not see it, because check
+/// never links. Fixed in v1.0.4.)
+#[cfg(windows)]
+fn volume_at(root: &Path) -> Option<plan::Volume> {
+    extern "system" {
+        fn GetDiskFreeSpaceExW(
+            lp_directory_name: *const u16,
+            lp_free_bytes_available_to_caller: *mut u64,
+            lp_total_number_of_bytes: *mut u64,
+            lp_total_number_of_free_bytes: *mut u64,
+        ) -> i32;
+    }
+    let wide: Vec<u16> = root
+        .display()
+        .to_string()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut avail: u64 = 0;
+    let mut total: u64 = 0;
+    let mut total_free: u64 = 0;
+    let ok = unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut avail, &mut total, &mut total_free) };
+    if ok == 0 || total == 0 {
+        return None;
+    }
+    Some(win32_volume(root.display().to_string(), total, total_free, avail))
+}
+
+/// Map GetDiskFreeSpaceExW's three numbers onto plan::Volume in
+/// the same terms as the statvfs read, so the gate cannot tell
+/// which platform measured: total is the whole volume; used is
+/// every byte not free at all (the f_bfree analog, derived from
+/// lpTotalNumberOfFreeBytes); free is what the caller may
+/// actually write (the f_bavail analog, lpFreeBytesAvailableToCaller
+/// — quota-aware). Deliberately not cfg-gated: the mapping is
+/// pure math and is unit-tested on every platform; on
+/// non-Windows builds the test is its only caller.
+#[allow(dead_code)]
+fn win32_volume(root: String, total_bytes: u64, total_free_bytes: u64, free_bytes: u64) -> plan::Volume {
+    plan::Volume {
+        root,
+        total_bytes,
+        used_bytes: total_bytes.saturating_sub(total_free_bytes),
+        free_bytes,
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn volume_at(root: &Path) -> Option<plan::Volume> {
+    let _ = root;
+    None
 }
 
 /// Task rows from the task register phext named by the config
@@ -1173,6 +1243,30 @@ fn route(path: &str) -> (String, String) {
             "404 Not Found".to_string(),
             "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers (payloads are scroll text)\n".to_string(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn win32_volume_maps_in_statvfs_terms() {
+        // GetDiskFreeSpaceExW reports total / total-free /
+        // available-to-caller. The mapping must land in the same
+        // terms as the statvfs read: used = total − total_free
+        // (the f_bfree analog); free = available-to-caller (the
+        // f_bavail analog). The two free figures differ exactly
+        // when a quota reserves space the caller may not write —
+        // transposing them would misstate used by the reserve.
+        let v = win32_volume("C:\\".to_string(), 1_000, 400, 350);
+        assert_eq!(v.total_bytes, 1_000);
+        assert_eq!(v.used_bytes, 600);
+        assert_eq!(v.free_bytes, 350);
+        // a degenerate report (total_free > total) must not underflow
+        let v = win32_volume("C:\\".to_string(), 100, 140, 0);
+        assert_eq!(v.used_bytes, 0);
+        assert_eq!(v.free_bytes, 0);
     }
 }
 

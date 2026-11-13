@@ -1,5 +1,40 @@
 # qexo changelog — the scratch line
 
+## 1.0.4 (v1.0.4) — built and gated, 2026-11-12
+
+The disk probe declared POSIX on every platform. probe_disk
+read its volume through an unconditional `extern "C" statvfs`
+— a symbol Windows does not have — so the Windows build of
+v1.0.3 failed at link time with `unresolved external symbol
+statvfs`, reported by Will from exo 1b819c2. The unix build
+linked fine, and the v1.0.1 gate set could not have caught
+it: those gates ran `cargo check` for the Windows targets,
+and check never links, so an unsatisfiable extern sails
+through. The gate set now includes a full Windows link
+(`cargo build --target x86_64-pc-windows-gnu`, producing
+qexo.exe), not just checks.
+
+The volume read is now one function per platform, behind
+`volume_at(root) -> Option<Volume>`: unix keeps the statvfs
+read with identical semantics (total = f_blocks, used =
+f_blocks − f_bfree, free = f_bavail — df's Used/Avail);
+Windows reads the volume through kernel32
+GetDiskFreeSpaceExW, mapped into the same terms (used =
+total − total-free-bytes; free = bytes available to the
+caller, the quota-aware f_bavail analog), so the gate cannot
+tell which platform measured; any other platform — and any
+failure — yields no volume, which plan already tolerates
+(every consumer reads the volume through Option). The
+mapping is a pure function, unit-tested on every platform.
+The file-count half of the probe is unchanged, as is all
+unix behavior. An audit of the rest of src/ found no other
+unconditional unix extern: doctor's kernel32 block is
+cfg(windows) (v1.0.1), the PermissionsExt uses sit inside
+cfg(unix) blocks, and the /proc reads (hostname, meminfo,
+loadavg) are ordinary file reads with graceful fallbacks —
+on Windows they simply find nothing, which is a snapshot
+that reads empty, not a build that fails.
+
 ## 1.0.3 (v1.0.3) — built and gated, 2026-11-12
 
 The forecast kept the old VM ceilings after the gate moved.
