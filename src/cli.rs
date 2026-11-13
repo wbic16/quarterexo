@@ -16,10 +16,12 @@ pub enum Command {
     /// parse / explode / implode / seal / unseal / select / get,
     /// with their raw argument tails.
     FileOp(Vec<String>),
-    Config,
+    Config { auto_update: bool },
     Doctor { fix: bool },
     List,
     Register(Vec<String>),
+    Release,
+    Update { check: bool },
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
     Message { persona: String, text: String },
@@ -40,10 +42,12 @@ pub fn parse(args: &[String]) -> Command {
         "parse" | "explode" | "implode" | "seal" | "unseal" | "select" | "get" => {
             Command::FileOp(args.to_vec())
         }
-        "config" => Command::Config,
+        "config" => Command::Config { auto_update: args.iter().any(|a| a == "--auto-update") },
         "doctor" => Command::Doctor { fix: args.iter().any(|a| a == "--fix") },
         "list" => Command::List,
         "register" => Command::Register(args[1..].to_vec()),
+        "release" => Command::Release,
+        "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
         "host" => {
             let mut persona: Option<String> = None;
             let mut boot: Option<String> = None;
@@ -75,7 +79,7 @@ pub fn parse(args: &[String]) -> Command {
 
 pub fn help_text() -> String {
     let mut s = String::new();
-    s.push_str("qexo v1.0.4 — the Exocortex coordinator (phext-native)\n");
+    s.push_str("qexo v1.1.0 — the Exocortex coordinator (phext-native)\n");
     s.push_str("All node state lives in one file: /var/lib/qexo/state.phext\n");
     s.push_str("(QEXO_STATE overrides the path for development and tests.)\n\n");
 
@@ -88,8 +92,18 @@ pub fn help_text() -> String {
 
     s.push_str("Identity & peers:\n");
     s.push_str("  qexo config               birth the node: create state.phext, set up the node GPG key\n");
+    s.push_str("  qexo config --auto-update turn automatic updates on (config record) and install the systemd timer where possible\n");
     s.push_str("  qexo list                 the registered peers\n");
-    s.push_str("  qexo register <pubkey>    register a peer's public key (armored text, a file path, or - for stdin)\n\n");
+    s.push_str("  qexo register <pubkey> [--endpoint <url>]   register a peer's public key (armored text, a file path, or - for stdin);\n");
+    s.push_str("                            the endpoint (its qexo serve base URL) is recorded on the peer so update can poll it\n\n");
+
+    s.push_str("Updates — over the phextnet:\n");
+    s.push_str("  qexo release              announce this node's binary as a signed release (manifest scroll in the ledgers;\n");
+    s.push_str("                            the binary itself is served from the releases dir beside the state file)\n");
+    s.push_str("  qexo update               poll peers for the trusted signer's release; verify signature + sha256, then swap\n");
+    s.push_str("  qexo update --check       the same poll, report only — downloads and changes nothing\n");
+    s.push_str("                            trust rule: only a release whose manifest signature verifies against the peer\n");
+    s.push_str("                            whose fingerprint is the config record's release_signer is ever applied\n\n");
 
     s.push_str("Personas & inference:\n");
     s.push_str("  qexo host <persona>       load a persona into local inference (--boot <path> for a boot text file)\n");
@@ -127,7 +141,11 @@ mod tests {
         assert_eq!(parse(&v(&["--help"])), Command::Help);
         assert_eq!(parse(&v(&["-h"])), Command::Help);
         assert_eq!(parse(&v(&["help"])), Command::Help);
-        assert_eq!(parse(&v(&["config"])), Command::Config);
+        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false });
+        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true });
+        assert_eq!(parse(&v(&["release"])), Command::Release);
+        assert_eq!(parse(&v(&["update"])), Command::Update { check: false });
+        assert_eq!(parse(&v(&["update", "--check"])), Command::Update { check: true });
         assert_eq!(parse(&v(&["doctor"])), Command::Doctor { fix: false });
         assert_eq!(parse(&v(&["doctor", "--fix"])), Command::Doctor { fix: true });
         assert_eq!(parse(&v(&["list"])), Command::List);
@@ -155,7 +173,7 @@ mod tests {
     fn help_lists_every_command() {
         let h = help_text();
         for word in [
-            "config", "doctor", "list", "register", "host", "unhost", "message", "status",
+            "config", "doctor", "list", "register", "release", "update", "host", "unhost", "message", "status",
             "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal",
             "select", "get", "--help", "/var/lib/qexo/state.phext",
         ] {

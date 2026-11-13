@@ -1,13 +1,45 @@
-# qexo v1.0.4 (scratch line) — ship notes
+# qexo v1.1.0 (scratch line) — ship notes
 
-Status: v1.0.4 BUILT AND GATED, 2026-11-12 — the Windows
-build links again: the disk probe's volume read is split per
-platform (statvfs on unix, GetDiskFreeSpaceExW on Windows,
-none elsewhere) after v1.0.3 failed to link on Windows with
-`unresolved external symbol statvfs`. The gate set gains a
-full Windows link (cargo build for x86_64-pc-windows-gnu);
-check-only gates cannot see a link error. No behavior change
-on unix. Base is exo (v1.0.3). See CHANGELOG 1.0.4.
+Status: v1.1.0 BUILT AND GATED, 2026-11-12 — automatic updates
+over the phextnet. A release is a signed manifest scroll in the
+signer's ledgers homeland; `qexo update` polls peers, verifies
+the manifest's signature against the config record's
+`release_signer` (whose key must stand in the local registry)
+plus the binary's sha256 against the manifest, swaps with
+rollback, and receipts the outcome. Proven in a two-node
+sandbox on the hub, including the three refusals (corrupted
+bytes, impersonated signer, already current). Base is exo
+(v1.0.4) — rebased onto the v1.0.4 merge (PR #13) at Will's
+direction, 2026-11-12. See CHANGELOG 1.1.0.
+
+## Automatic updates — the operator's four steps
+
+The code ships dark on every node until its operator turns it
+on; trust is a node's own act, recorded in its own state.
+
+1. **Cross-register.** On each node: `qexo register <signer's
+   armored public key> --endpoint http://<signer-tailnet-ip>:8484`
+   — the registry must hold the signer's key, and the endpoint
+   makes the signer pollable. (Registration without an endpoint
+   still works for trust; the peer just can't be polled, and
+   `qexo update` says so by name.)
+2. **Name the signer.** In each node's config record
+   (state.phext, 9.9.9/2.1.1/1.1.1): `release_signer:
+   <fingerprint>`. Until this line names a fingerprint,
+   `qexo update` refuses plainly and changes nothing.
+3. **Be reachable.** On the signer: set `serve_bind:
+   <tailnet address>` in its config record and run
+   `qexo serve`. Loopback (the default) serves only the node
+   itself — a signer nobody can reach announces to nobody.
+4. **Announce + poll.** Signer: `qexo release`. Nodes:
+   `qexo update` by hand, `qexo update --check` to look first,
+   or `qexo config --auto-update` once and the systemd timer
+   polls on `update_interval_hours` (default 24).
+
+What a node will never do: apply an unsigned or wrongly signed
+manifest, apply a release whose bytes fail the manifest's
+sha256, move sideways or backwards in version, or trust a
+signer its config record does not name.
 
 Status (v1.0.3, historical): BUILT AND GATED, 2026-11-12 — the forecast gate
 now projects the same lenses the gate reads. v1.0.2 moved the
