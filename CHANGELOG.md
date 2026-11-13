@@ -1,5 +1,72 @@
 # qexo changelog — the scratch line
 
+## 1.1.0 (v1.1.0) — built and gated, 2026-11-12
+
+Automatic updates over the phextnet: qexo nodes now update
+themselves through qexo's own peer network — not through
+GitHub, a package repo, or anyone's hands.
+
+The mechanism. A release is announced as a signed scroll: the
+signer runs `qexo release`, which stages the running binary in
+a `releases/` directory beside its state file and writes a
+manifest record into the ledgers homeland of its state.phext —
+version, sha256, size, built-from commit, signer fingerprint —
+with a detached GPG signature over the manifest scroll itself
+in the adjacent scroll. `qexo serve` carries the manifest and
+its signature as scroll text (the existing routes' shape) and
+the binary at one byte route, `/release/qexo-<version>`. The
+manifest is the trust object — what travels and what gets
+verified; the bytes are just bytes, and integrity never
+depends on the transport.
+
+The trust rule. `qexo update` polls the registered peers'
+serve endpoints and applies a release only when ALL of these
+hold: the manifest's signature verifies, and the fingerprint
+it verifies under is exactly the config record's
+`release_signer` AND that key stands in the node's own peer
+registry; the offered version is strictly newer than the
+running binary (never a downgrade, never a same-version swap);
+and the downloaded bytes hash to the manifest's sha256. The
+swap is renames within the binary's directory: the old binary
+keeps as `qexo.prev`, the new one must speak its version and
+pass doctor against the node's state, and any failure rolls
+back to `qexo.prev`. Every applied, rolled-back, or refused
+attempt writes a receipt scroll. An offer that CLAIMS the
+trusted signer but fails verification is a hard stop with a
+receipt — that shape is impersonation, and the node does not
+shop around. Offers signed by anyone else are noted and
+ignored: each node's trust is its own config record's word.
+`qexo update --check` reports only. `qexo config
+--auto-update` sets `auto_update: on` and installs a systemd
+timer (`qexo update` every `update_interval_hours`) where
+systemd + root allow — and says plainly, with the unit files
+printed, where it can't; the timer is a thin trigger and every
+decision stays inside `qexo update`.
+
+Supporting changes. Peer records gain an `endpoint` field —
+`qexo register <pubkey> --endpoint <url>` records it, and
+re-registering a known key backfills it; `qexo update` names
+every registered peer that has no endpoint rather than
+guessing one. serve's bind address becomes the config key
+`serve_bind` (default 127.0.0.1, as before): a node that wants
+phextnet traffic sets it to its tailnet address. The config
+record gains the update keys visibly at birth and by backfill:
+serve_bind, auto_update (off), update_interval_hours (24),
+release_signer (EMPTY — trust is an operator's act, never a
+default).
+
+Fleet prerequisite, stated as operator steps, not fine print:
+(1) cross-register the nodes' public keys so each node's
+registry holds the signer's key; (2) register with endpoints
+(or backfill them) so peers are pollable; (3) set
+`release_signer: <fingerprint>` in each node's config record;
+(4) on the signer, set `serve_bind` to its tailnet address and
+run serve where peers can reach it. Until steps 1–3 are done,
+`qexo update` answers with the plain refusal those steps
+answer — "no trusted release signer configured" — which is
+the fleet's true state tonight: keys exist on 19 nodes,
+cross-registration has not run.
+
 ## 1.0.3 (v1.0.3) — built and gated, 2026-11-12
 
 The forecast kept the old VM ceilings after the gate moved.
