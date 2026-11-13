@@ -1,5 +1,104 @@
 # qexo changelog — the scratch line
 
+## 1.3.0 (v1.3.0) — built and gated, 2026-11-13
+
+**libphext-rs is the parser now.** qexo no longer reckons
+phext itself: `src/phext.rs` is a thin adapter over the
+`libphext` crate (pinned `0.5.0`, the version phext-lattice —
+the reference editor stack — builds against), and address
+computation, delimiter emission, and duplicate-address
+behavior are the library's, full stop.
+
+Why, in one paragraph: through v1.2.0 qexo carried a
+hand-rolled parser whose delimiter table diverged from
+libphext in exactly one byte — its library break was \x02
+(STX) where the reference uses \x01 (SOH); the other eight
+breaks agreed. The divergence was invisible for seven
+versions because qexo only ever read files qexo wrote. It
+surfaced on 2026-11-13 when Will edited his laptop node's
+config record in Phext Notepad to set `release_signer`, and
+`qexo update` kept refusing: the editor's append (SOH×10,
+US×8, RS×8, GS×1, then the filled signer scroll, appended
+after the 9.9.9 homeland anchor) landed at 9.17.9/2.1.1/1.1.1
+under qexo's reckoning, at 11.9.9/2.1.1/1.1.1 under
+libphext's (measured identically with SQ 0.6.0 / libphext
+0.3.3 and with libphext 0.5.0 before this slice was built) —
+and under neither reckoning does the append shadow the
+config record, whose signer line stayed empty. A file is
+only phext if the reference implementation reads it the
+same way; now there is one reckoning in the codebase,
+imported, not re-derived.
+
+What the adapter keeps: qexo's document model (a BTreeMap
+of [u32; 9] coordinates to scroll texts — the shape
+lattice.rs and the Layer 2 addressing are written against),
+its coordinate string grammar, and the format's own rule
+that a scroll exists when it holds at least a byte
+(libphext's explode also names the empty stops on a climb;
+the adapter keeps only scrolls with text). Nothing else in
+the old phext.rs was genuinely qexo-specific.
+
+Regressions added: `library_break_is_soh_not_stx` (the
+one-byte divergence, pinned) and
+`editor_append_lands_where_libphext_puts_it` (tonight's
+file shape byte-for-byte as a fixture: the signer scroll at
+11.9.9/2.1.1/1.1.1, nothing at the hand-rolled parser's
+9.17.9/2.1.1/1.1.1, the config record unshadowed and itself
+found at 1.37.9/2.1.1/1.1.1 under the library's walk of an
+old-serializer file). All 48 pre-existing tests pass
+unmodified — none encoded the divergent behavior, which is
+precisely how it survived: every test roundtripped through
+qexo's own serializer. 50/50 with the two new ones.
+
+Siblings in this slice:
+
+- `qexo config --release-signer <FP>` — the trusted signer
+  fingerprint becomes a command (written into the config
+  record via the lattice field editor, on birth and on
+  re-run alike) instead of a hand edit of the scroll from
+  another tool — the gap that started the evening.
+- `qexo select <coord>` — the verb gains the state form
+  Will reached for: one argument that parses as a coordinate
+  reads this node's state. The error he hit ("<coord>: The
+  system cannot find the path specified. (os error 3)") was
+  never a platform bug: the verb took its first argument as
+  a file path unconditionally, so the coordinate was opened
+  as a path. Reproduced on Linux with the v1.2.0 binary
+  ("No such file or directory (os error 2)", exit 2); the
+  two-argument file form is unchanged, and a bare verb now
+  prints usage instead of inventing a path.
+
+Old-state verdict (states written by the hand-rolled
+serializer — i.e. every fleet node today), measured with
+this build against a copy of aletheia-core's live state:
+the file parses cleanly and every scroll's text survives
+(106/106), but the records stand at drifted addresses under
+the library's walk — doctor finds the home index (Library
+1 is unaffected) and reports all eight higher homeland
+indexes missing; the node key record, the peer registry,
+and the config record (signer included) are unreadable at
+their Layer 2 addresses. A v1.2.0 state is therefore not
+salvageable as state: the fleet will be wiped and re-born
+under the corrected parser (runbook prepared separately).
+What survives a wipe untouched: the node's GPG identity —
+the keyring lives in /var/lib/qexo/gnupg beside the state,
+and config reuses it on rebirth, so node fingerprints stand
+— plus every .asc and fingerprint in the fleet registry,
+from which the peer wiring is rebuilt.
+
+Version note: wbic16/qexo's Android port also wears 1.3.0
+in its own repo lineage — versions are per-repo; this is
+quarterexo's 1.3.0.
+
+Gates: cargo test 50/50; release build; wiring-check 12/12;
+full windows-gnu LINK (qexo.exe, GetDiskFreeSpaceExW
+imported, no statvfs); sandbox — birth, the new setter,
+both select forms, register + `update --check` against the
+live fleet signer ("already current — this node runs qexo
+1.3.0; the trusted signer offers 1.2.0"), `evolve --check`
+gossiping the real fleet, bare plan disk gate GREEN on the
+ranch volume (74% free, volume lens).
+
 ## 1.2.1 (v1.2.1) — built and gated, 2026-11-13
 
 The forecast stops whipsawing: growth is rated from the
@@ -365,3 +464,4 @@ holds the scroll-existence rule — the single-delimiter form
 could not represent the homeland addresses at all. Gates:
 29/29 cargo tests, 59/59 CLI battery, wiring ok, json confined
 to the inference edge and one rule-stating comment.
+

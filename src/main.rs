@@ -35,7 +35,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.2.1 (Cargo 1.2.1)");
+            println!("qexo v1.3.0 (Cargo 1.3.0)");
             0
         }
         Command::WiringCheck(dir) => {
@@ -95,7 +95,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             2
         }
         Command::Bare | Command::Plan => core::plan_cmd(),
-        Command::Config { auto_update, evolve } => core::config(auto_update, evolve),
+        Command::Config { auto_update, evolve, release_signer } => core::config(auto_update, evolve, release_signer),
         Command::List => core::list(),
         Command::Register(args) => core::register(&args),
         Command::Release => core::release(),
@@ -194,6 +194,21 @@ fn phext_file_ops(args: &[String]) -> i32 {
             }
         }
         "select" | "get" => {
+            // Two forms: `qexo select <file> <coord>` reads any
+            // phext file; `qexo select <coord>` reads this node's
+            // state. Before v1.3.0 the one-argument form took the
+            // coordinate AS the file path and reported it missing
+            // ("<coord>: The system cannot find the path
+            // specified") — the coordinate was never a path; the
+            // verb simply had no state form.
+            let (path, coord_s) = if args.len() >= 3 {
+                (args[1].clone(), args[2].clone())
+            } else if args.len() == 2 && phext::parse_coord(&args[1]).is_some() {
+                (lattice::state_path().display().to_string(), args[1].clone())
+            } else {
+                eprintln!("usage: qexo select <file> <coord> — or qexo select <coord> for this node's state");
+                return 2;
+            };
             let text = match std::fs::read_to_string(&path) {
                 Ok(t) => t,
                 Err(e) => {
@@ -201,7 +216,6 @@ fn phext_file_ops(args: &[String]) -> i32 {
                     return 2;
                 }
             };
-            let coord_s = args.get(2).cloned().unwrap_or_default();
             let px = phext::Phext::parse(&text);
             match phext::parse_coord(&coord_s).and_then(|c| px.get(&c)) {
                 Some(body) => {
