@@ -122,6 +122,45 @@ fn chunk_text(text: &str, max: usize) -> Vec<String> {
 // config — the node's birth
 // ----------------------------------------------------------------
 
+/// The disk gate's default config lines, seeded visibly into the
+/// config record so a node operator can see and edit them in the
+/// phext: the volume lens on (judge the volume by its own free
+/// fraction), the quota lens off (no absolute ceiling until the
+/// node writes one), the standard file counts. plan reads the
+/// same keys via plan::GateConfig::from_lookup; absent = default,
+/// so seeding is for the operator's eyes, not the gate's needs.
+fn gate_config_defaults() -> Vec<(&'static str, String)> {
+    vec![
+        ("volume_lens", "on".to_string()),
+        ("disk_gate_free_amber_pct", "25".to_string()),
+        ("disk_gate_free_red_pct", "10".to_string()),
+        ("quota_lens", "off".to_string()),
+        ("quota_amber_gb", "95".to_string()),
+        ("quota_red_gb", "102".to_string()),
+        ("staging_root", lattice::state_dir().display().to_string()),
+        ("file_amber", "1100000".to_string()),
+        ("file_red", "1300000".to_string()),
+    ]
+}
+
+/// Ensure the config record carries every gate key, adding only
+/// the absent ones (an operator's edits are never overwritten).
+/// Returns the keys that were added.
+fn ensure_gate_config(lat: &mut Lattice) -> Vec<String> {
+    let mut added = Vec::new();
+    let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
+    for (k, v) in gate_config_defaults() {
+        if lattice::field(&text, k).is_none() {
+            text = lattice::set_field(&text, k, &v);
+            added.push(k.to_string());
+        }
+    }
+    if !added.is_empty() {
+        lat.px.insert(lattice::CONFIG_RECORD, text);
+    }
+    added
+}
+
 pub fn config() -> i32 {
     let dir = lattice::state_dir();
     let path = lattice::state_path();
@@ -142,9 +181,20 @@ pub fn config() -> i32 {
     };
 
     // Idempotent: a node key record already in the lattice means
-    // this node is born; say so and stop.
+    // this node is born; say so and stop — but first backfill any
+    // gate config keys this binary knows that the record predates
+    // (defaults are seeded visibly; existing values never touched).
     if let Some(t) = lat.px.get(&lattice::NODE_KEY_RECORD) {
         let fp = lattice::field(t, "fingerprint").unwrap_or_default();
+        let added = ensure_gate_config(&mut lat);
+        if !added.is_empty() {
+            lattice::regen_indexes(&mut lat.px);
+            if let Err(e) = lat.save() {
+                eprintln!("qexo config: cannot save state: {}", e);
+                return 1;
+            }
+            println!("gate config defaults added: {}", added.join(", "));
+        }
         println!("already configured — this node was born {}", lattice::field(lat.px.get(&lattice::IDENTITY).map(|s| s.as_str()).unwrap_or(""), "born").unwrap_or_default());
         println!("state: {}", path.display());
         println!("node key fingerprint: {}", fp);
@@ -189,7 +239,7 @@ pub fn config() -> i32 {
             ("name", &name),
             ("node", &node),
             ("born", &stamp),
-            ("qexo", "v1.0.1"),
+            ("qexo", "v1.0.2"),
             ("state", &path.display().to_string()),
         ]),
     );
@@ -218,16 +268,19 @@ pub fn config() -> i32 {
             let ws = format!("{}/workspace", home_dir);
             if Path::new(&ws).is_dir() { ws } else { dir.display().to_string() }
         };
-        lat.px.insert(
-            lattice::CONFIG_RECORD,
-            lattice::record(&[
-                ("kind", "qexo config"),
-                ("ollama endpoint", &inf.endpoint),
-                ("model", &inf.model),
-                ("tasks source", tasks_source),
-                ("disk root", &disk_root),
-            ]),
-        );
+        let mut fields: Vec<(&str, &str)> = vec![
+            ("kind", "qexo config"),
+            ("ollama endpoint", &inf.endpoint),
+            ("model", &inf.model),
+            ("tasks source", tasks_source),
+            ("disk root", &disk_root),
+        ];
+        let defaults = gate_config_defaults();
+        for (k, v) in &defaults {
+            fields.push((*k, v.as_str()));
+        }
+        let rec = lattice::record(&fields);
+        lat.px.insert(lattice::CONFIG_RECORD, rec);
     }
 
     // Wiring registry (9.9.9, cluster 2): one scroll per module —
@@ -753,7 +806,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.0.1 — node status");
+    println!("qexo v1.0.2 — node status");
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,
@@ -817,11 +870,18 @@ pub fn status() -> i32 {
 // plan — telemetry in, plan scroll out (anchor 5.5.5/5.5.5/5.5.5, fed by 8.8.8/8.8.8/8.8.8)
 // ----------------------------------------------------------------
 
-/// Probe the disk under `root`: (used GB, file count, level word).
-/// Bytes come from statvfs on the volume itself; the file count
-/// walks the tree (capped at the RED threshold — past it, the
-/// exact number stops mattering to the gate).
-fn probe_disk(root: &Path) -> (f64, u64, String) {
+/// What the disk probe reads: the volume under one root (bytes,
+/// from statvfs) and a file count under another. The probe takes
+/// no position on what the numbers MEAN — thresholds live in
+/// plan::evaluate_gate, fed by the node's config record. (Before
+/// v1.0.2 this function carried the VM quota's 95/102 GB verdicts
+/// inside itself; a probe that judges is a gate no one configured.)
+struct DiskProbe {
+    volume: Option<plan::Volume>,
+    files: u64,
+}
+
+fn probe_disk(volume_root: &Path, files_root: &Path, file_cap: u64) -> DiskProbe {
     #[repr(C)]
     struct Statvfs {
         f_bsize: u64,
@@ -840,8 +900,8 @@ fn probe_disk(root: &Path) -> (f64, u64, String) {
     extern "C" {
         fn statvfs(path: *const std::os::raw::c_char, buf: *mut Statvfs) -> i32;
     }
-    let mut used_gb = 0.0f64;
-    if let Ok(cpath) = std::ffi::CString::new(root.display().to_string()) {
+    let mut volume: Option<plan::Volume> = None;
+    if let Ok(cpath) = std::ffi::CString::new(volume_root.display().to_string()) {
         let mut st = Statvfs {
             f_bsize: 0, f_frsize: 0, f_blocks: 0, f_bfree: 0, f_bavail: 0,
             f_files: 0, f_ffree: 0, f_favail: 0, f_fsid: 0, f_flag: 0, f_namemax: 0,
@@ -849,14 +909,20 @@ fn probe_disk(root: &Path) -> (f64, u64, String) {
         };
         let rc = unsafe { statvfs(cpath.as_ptr(), &mut st) };
         if rc == 0 && st.f_blocks > 0 {
-            let used = (st.f_blocks - st.f_bfree) as f64 * st.f_frsize as f64;
-            used_gb = (used / 1.0e9 * 100.0).round() / 100.0;
+            let fr = st.f_frsize;
+            volume = Some(plan::Volume {
+                root: volume_root.display().to_string(),
+                total_bytes: st.f_blocks * fr,
+                used_bytes: (st.f_blocks - st.f_bfree) * fr,
+                free_bytes: st.f_bavail * fr,
+            });
         }
     }
-    // file count, capped
-    let cap: u64 = 1_300_001;
+    // file count under the staging root, capped just past the RED
+    // threshold — past it, the exact number stops mattering.
+    let cap: u64 = file_cap + 1;
     let mut files: u64 = 0;
-    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+    let mut stack: Vec<PathBuf> = vec![files_root.to_path_buf()];
     while let Some(d) = stack.pop() {
         if files >= cap {
             break;
@@ -876,14 +942,7 @@ fn probe_disk(root: &Path) -> (f64, u64, String) {
             }
         }
     }
-    let byte_level = if used_gb >= 102.0 { 2 } else if used_gb >= 95.0 { 1 } else { 0 };
-    let file_level = if files >= 1_300_000 { 2 } else if files >= 1_100_000 { 1 } else { 0 };
-    let level = match byte_level.max(file_level) {
-        2 => "RED",
-        1 => "AMBER",
-        _ => "GREEN",
-    };
-    (used_gb, files, level.to_string())
+    DiskProbe { volume, files }
 }
 
 /// Task rows from the task register phext named by the config
@@ -939,10 +998,35 @@ pub fn plan_cmd() -> i32 {
         Err(c) => return c,
     };
     let cfg = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_default();
+    let gate_cfg = plan::GateConfig::from_lookup(|k| lattice::field(&cfg, k));
     let disk_root_s = lattice::field(&cfg, "disk root").unwrap_or_else(|| lattice::state_dir().display().to_string());
-    let (used_gb, files, level) = probe_disk(Path::new(&disk_root_s));
+    let staging_root_s = lattice::field(&cfg, "staging_root").unwrap_or_else(|| lattice::state_dir().display().to_string());
+    let probe = probe_disk(Path::new(&disk_root_s), Path::new(&staging_root_s), gate_cfg.file_red);
+    let used_gb = probe
+        .volume
+        .as_ref()
+        .map(|v| (v.used_bytes as f64 / 1.0e9 * 100.0).round() / 100.0)
+        .unwrap_or(0.0);
+    let files = probe.files;
+    let gate_inputs = plan::GateInputs {
+        volume: probe.volume.clone(),
+        files_root: staging_root_s.clone(),
+        config: gate_cfg,
+    };
     let (day, stamp) = now_stamp();
     let (y, m, d) = civil_from_days(day);
+
+    // The level recorded with the observation is the gate's own
+    // evaluation of this reading (pre-forecast): the telemetry
+    // series carries qexo's verdicts, computed from the node's
+    // configured thresholds — never a probe's private constants.
+    let draft = plan::DiskObs { day, used_gb, level: String::new(), files };
+    let level = plan::evaluate_gate(&draft, gate_inputs.volume.as_ref(), &gate_inputs.files_root, &gate_inputs.config).disk_gate;
+    let (total_bytes, free_bytes) = probe
+        .volume
+        .as_ref()
+        .map(|v| (v.total_bytes.to_string(), v.free_bytes.to_string()))
+        .unwrap_or_else(|| ("".to_string(), "".to_string()));
 
     // Record the observation in the telemetry homeland: the
     // series is native now; the forecast reads its own lattice.
@@ -955,8 +1039,11 @@ pub fn plan_cmd() -> i32 {
             ("day", &day.to_string()),
             ("date", &format!("{:04}-{:02}-{:02}", y, m, d)),
             ("used_gb", &format!("{:.2}", used_gb)),
+            ("total_bytes", &total_bytes),
+            ("free_bytes", &free_bytes),
             ("level", &level),
             ("files", &files.to_string()),
+            ("files root", &staging_root_s),
             ("root", &disk_root_s),
         ]),
     );
@@ -984,7 +1071,7 @@ pub fn plan_cmd() -> i32 {
     };
 
     let host = plan::host_snapshot();
-    let mut data = plan::compute(&tasks, &current, &history, host);
+    let mut data = plan::compute(&tasks, &current, &history, host, &gate_inputs);
     data.disk_date = format!("{:04}-{:02}-{:02}", y, m, d);
     let rendered = plan::render(&data);
 
@@ -995,6 +1082,7 @@ pub fn plan_cmd() -> i32 {
         ("plan version", plan::PLAN_VERSION),
         ("emitted", &stamp),
         ("disk gate", &data.disk_gate),
+        ("gate reason", &data.gate_reason),
         ("open tasks", &data.open_tasks().to_string()),
         ("tasks source", if tasks_source.is_empty() { "(none configured)" } else { &tasks_source }),
         ("observation", &fmt_coord(&oaddr)),
