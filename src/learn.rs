@@ -53,7 +53,7 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "verbs-config",
         front: "What does `qexo config` do — and where does a per-user install keep its state?",
-        back: "Births the node: creates the state phext and sets up the node GPG key. The state path resolves as: QEXO_STATE when set; for a verb that writes, your per-user state whenever the system state is not writable by you; else /var/lib/qexo/state.phext when it exists and is readable; else ~/.qexo/state.phext. A normal user births a per-user node — no sudo anywhere.",
+        back: "Births the node: creates the state phext and sets up the node GPG key. The state path resolves as: QEXO_STATE when set; for a verb that writes, your per-user state whenever the system state is not writable by you; for `qexo learn`, your per-user state whenever you have one; else /var/lib/qexo/state.phext when it exists and is readable; else ~/.qexo/state.phext. A normal user births a per-user node — no sudo anywhere.",
     },
     CardSpec {
         id: "verbs-register",

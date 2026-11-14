@@ -40,7 +40,9 @@
 //!   (v1.4.1): a write-intending verb in unprivileged hands
 //!   never adopts a system state it cannot write; it selects
 //!   the per-user state instead. Read-only verbs keep the
-//!   v1.4.0 order unchanged. The full order is stated at
+//!   v1.4.0 order unchanged. And `qexo learn` prefers an
+//!   existing per-user deck (v1.4.2) — the deck is the
+//!   operator's own. The full order is stated at
 //!   `pick_state_path`.
 //!
 //! The state's substance: every scrap of node state — metadata,
@@ -690,6 +692,9 @@ pub struct StateFacts {
     /// The running verb intends to WRITE state (v1.4.1): set by
     /// main() from the parsed command — see `set_write_intent`.
     pub write_intent: bool,
+    /// The running verb is `qexo learn` (v1.4.2): set by main()
+    /// — see `set_learn_preference`.
+    pub learn_pref: bool,
 }
 
 /// The process's intent, declared once by main() before any
@@ -711,6 +716,27 @@ pub fn write_intent() -> bool {
     WRITE_INTENT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The learn preference (v1.4.2): the deck is the operator's
+/// OWN — when a per-user state exists, `qexo learn` reads and
+/// writes it in preference to the system state, because
+/// practice is personal even on a shared machine. v1.4.1
+/// classified both learn forms as write-intending, which made
+/// `learn --status` on a machine with a readable system state
+/// but NO per-user state yet divert to the missing per-user
+/// path and error "not born" — where v1.4.0 answered from the
+/// readable deck. The preference therefore applies only when
+/// a per-user state EXISTS; with none, learn falls through to
+/// the shipped order and answers.
+static LEARN_PREF: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_learn_preference() {
+    LEARN_PREF.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn learn_preference() -> bool {
+    LEARN_PREF.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// The resolution order (v1.4.1), stated exactly as shipped:
 ///   1. QEXO_STATE, when set non-empty (the caller's word).
 ///   2. THE WRITE-INTENT RULE (new in v1.4.1): a write-intending
@@ -720,6 +746,13 @@ pub fn write_intent() -> bool {
 ///      state belongs to its owner; this user's node is their
 ///      own. (Read-only verbs are untouched by this rule and
 ///      keep the order below exactly as v1.4.0 shipped it.)
+///   2b. THE LEARN RULE (new in v1.4.2): `qexo learn` in
+///      unprivileged hands, when a per-user state EXISTS,
+///      selects the per-user path — the deck belongs to the
+///      operator, not to the machine's owner. With no
+///      per-user state, learn falls through to the order
+///      below like any reader (v1.4.1 diverted it to the
+///      missing path and errored; v1.4.0 answered).
 ///   3. The system path, when the system state exists and this
 ///      process can read it — a system install stays canonical,
 ///      byte-for-byte, and read-only verbs never fail on its
@@ -737,6 +770,11 @@ pub fn write_intent() -> bool {
 /// exists, and `qexo status` names which path is live.
 pub fn pick_state_path(facts: StateFacts, system: &std::path::Path, user: Option<&std::path::Path>) -> PathBuf {
     if facts.write_intent && !facts.privileged && facts.system_exists && !facts.system_writable {
+        if let Some(u) = user {
+            return u.to_path_buf();
+        }
+    }
+    if facts.learn_pref && !facts.privileged && facts.user_exists {
         if let Some(u) = user {
             return u.to_path_buf();
         }
@@ -800,6 +838,7 @@ fn probe_facts(user: &Option<PathBuf>) -> StateFacts {
         user_exists: user.as_ref().map(|u| u.exists()).unwrap_or(false),
         privileged: is_privileged(),
         write_intent: write_intent(),
+        learn_pref: learn_preference(),
     }
 }
 
@@ -1004,11 +1043,18 @@ mod tests {
     fn facts(se: bool, sr: bool, ue: bool, priv_: bool) -> StateFacts {
         // read intent (v1.4.0's rows): writability is not probed
         // into the decision, so its value here is inert.
-        StateFacts { system_exists: se, system_readable: sr, system_writable: true, user_exists: ue, privileged: priv_, write_intent: false }
+        StateFacts { system_exists: se, system_readable: sr, system_writable: true, user_exists: ue, privileged: priv_, write_intent: false, learn_pref: false }
     }
 
     fn facts_w(se: bool, sr: bool, sw: bool, ue: bool, priv_: bool) -> StateFacts {
-        StateFacts { system_exists: se, system_readable: sr, system_writable: sw, user_exists: ue, privileged: priv_, write_intent: true }
+        StateFacts { system_exists: se, system_readable: sr, system_writable: sw, user_exists: ue, privileged: priv_, write_intent: true, learn_pref: false }
+    }
+
+    fn facts_learn(se: bool, sr: bool, ue: bool, priv_: bool) -> StateFacts {
+        // `qexo learn --status`: the learn preference without
+        // write intent (a session carries both flags; the
+        // preference rows are the same when a deck exists).
+        StateFacts { system_exists: se, system_readable: sr, system_writable: true, user_exists: ue, privileged: priv_, write_intent: false, learn_pref: true }
     }
 
     #[test]
@@ -1052,6 +1098,25 @@ mod tests {
         assert_eq!(pick_state_path(facts_w(false, false, false, false, true), sys, Some(usr)), sys);
         // no home to anchor to: fall through to the honest path
         assert_eq!(pick_state_path(facts_w(true, true, false, false, false), sys, None), sys);
+    }
+
+    #[test]
+    fn resolution_learn_prefers_an_existing_per_user_deck() {
+        let sys = std::path::Path::new("/var/lib/qexo/state.phext");
+        let usr = std::path::Path::new("/home/op/.qexo/state.phext");
+        // the operator HAS a deck: learn reads it, not the
+        // machine owner's — even though the system state is
+        // readable (v1.4.0's order showed the owner's deck)
+        assert_eq!(pick_state_path(facts_learn(true, true, true, false), sys, Some(usr)), usr);
+        // THE v1.4.1 REGRESSION ROW: no per-user state yet —
+        // learn falls through to the shipped order and the
+        // readable system deck ANSWERS (v1.4.1 diverted to the
+        // missing path and errored "not born")
+        assert_eq!(pick_state_path(facts_learn(true, true, false, false), sys, Some(usr)), sys);
+        // root's learn is root's own: never diverted
+        assert_eq!(pick_state_path(facts_learn(true, true, true, true), sys, Some(usr)), sys);
+        // nothing anywhere: the birth order decides, as shipped
+        assert_eq!(pick_state_path(facts_learn(false, false, false, false), sys, Some(usr)), usr);
     }
 
     #[test]

@@ -1,5 +1,28 @@
 # qexo changelog — the scratch line
 
+## 1.4.2 (v1.4.2) — the learn-resolution refinement, 2026-11-14
+
+**A regression v1.4.1 introduced, caught by its own
+crates.io consumer proof:** v1.4.1 classified `qexo learn
+--status` as write-intending. On a machine with a readable
+root-owned system state but NO per-user state yet, resolution
+diverted to the missing per-user path and `learn --status`
+errored "not born yet" — where v1.4.0 answered from the
+readable deck. A consumer installing qexo on a fleet node
+met a wall where 1.4.0 had given an answer.
+
+**The refinement:** learn carries a preference, not a write
+intent, in its `--status` form. When a per-user state
+EXISTS, `qexo learn` (both forms) selects it over the system
+state — the deck is the operator's own, which was defect
+#3's substance. When none exists, learn falls through to
+the shipped resolution order and answers from whatever deck
+is readable, exactly as v1.4.0 did. Sessions remain
+write-intending (they save grades), so a session with no
+node of one's own still points at `qexo config` — which
+births the per-user node — instead of dying on a save.
+Everything else in 1.4.1 stands unchanged.
+
 ## 1.4.1 (v1.4.1) — the upgrade-path hotfix, 2026-11-14
 
 **The defect, stated plainly:** v1.4.0's update post-check ran

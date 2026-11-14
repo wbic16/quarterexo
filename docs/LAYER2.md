@@ -93,14 +93,18 @@ being rewritten at its new full 9D home with a forwarding line left
 behind — the way a landscape actually evolves, as CYOA's history
 shows.
 
-## Where the file lives (v1.4.1)
+## Where the file lives (v1.4.2)
 
 The state file's PATH is resolved, in this order: QEXO_STATE when
-set; then ONE intent-aware step (v1.4.1) — when the verb WRITES
+set; then the intent-aware steps — when the verb WRITES
 and the process is unprivileged and the system state exists but
 is not writable by this process, the per-user path answers,
 because adopting a state the verb's first save cannot write is
-a resolution error, whatever its readability; then the system
+a resolution error, whatever its readability; and `qexo learn`
+in unprivileged hands answers from the per-user path whenever a
+per-user state exists, because the deck is the operator's own
+(v1.4.2; with no per-user state, learn falls through like any
+reader); then the system
 path /var/lib/qexo/state.phext when it exists and is readable;
 the per-user path ~/.qexo/state.phext (Windows: under the user
 profile) when a per-user state exists; the system path again

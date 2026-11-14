@@ -38,8 +38,14 @@ fn run(cmd: Command, args: &[String]) -> i32 {
     // on; read-only verbs keep the v1.4.0 order exactly. The
     // classification is the command enum itself, case by case:
     // anything that can end in a state save is write-intending.
-    // (learn is write-intending in both forms: --status reports
-    // the operator's OWN deck, and a session saves grades.)
+    // (learn refines this in v1.4.2: a SESSION is
+    // write-intending, since it saves grades; --status is not,
+    // but learn in both forms carries the learn preference —
+    // an existing per-user deck is the operator's own and is
+    // read in preference to the system deck.)
+    if matches!(cmd, Command::Learn { .. }) {
+        lattice::set_learn_preference();
+    }
     let write_intent = matches!(
         cmd,
         Command::Config { .. }
@@ -48,7 +54,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Unhost(_)
             | Command::Message { .. }
             | Command::Release
-            | Command::Learn { .. }
+            | Command::Learn { status: false }
             | Command::Bare
             | Command::Plan
             | Command::Update { check: false }
@@ -64,7 +70,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.4.1 (Cargo 1.4.1)");
+            println!("qexo v1.4.2 (Cargo 1.4.2)");
             0
         }
         Command::WiringCheck(dir) => {
