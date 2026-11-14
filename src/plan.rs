@@ -36,7 +36,7 @@ const BUILD_TOKENS: &[&str] = &[
     "benchmark", "bulk", "suite", "phcc",
 ];
 
-pub const PLAN_VERSION: &str = "v1.2.0";
+pub const PLAN_VERSION: &str = "v1.2.1";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Class {
@@ -394,6 +394,10 @@ pub struct Forecast {
     pub files_per_day: f64,
     pub gb_per_day: f64,
     pub span_days: f64,
+    /// How many per-interval rates the reported rates are the
+    /// median of (v1.2.1): 1 means the single-interval rate, the
+    /// pre-v1.2.1 behavior, kept for a two-observation history.
+    pub intervals: usize,
     pub nearest_label: String,
     pub nearest_days: Option<f64>,
     pub file_amber_days: Option<f64>,
@@ -407,6 +411,7 @@ impl Forecast {
             files_per_day: 0.0,
             gb_per_day: 0.0,
             span_days: 0.0,
+            intervals: 0,
             nearest_label: "none".to_string(),
             nearest_days: None,
             file_amber_days: None,
@@ -424,9 +429,37 @@ impl Forecast {
 /// crossing.
 pub const FORECAST_HORIZON_DAYS: f64 = 365.0;
 
+/// How many of the most recent intervals the forecast rates
+/// (v1.2.1). The window bounds the median's memory: older
+/// intervals fall out instead of anchoring the rate forever,
+/// and a history shorter than the window simply contributes
+/// every interval it has.
+pub const FORECAST_WINDOW_INTERVALS: usize = 7;
+
+/// The median of a set of per-interval rates: the middle rate
+/// (the mean of the two middle rates for an even count). A
+/// single-interval spike or stall moves the median not at all
+/// until it is half the window — that is the point (v1.2.1).
+fn median(rates: &mut [f64]) -> f64 {
+    if rates.is_empty() {
+        return 0.0;
+    }
+    rates.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
+    let n = rates.len();
+    if n % 2 == 1 {
+        rates[n / 2]
+    } else {
+        (rates[n / 2 - 1] + rates[n / 2]) / 2.0
+    }
+}
+
 /// The forecast computation (v2.3 semantics, re-based on the
-/// gate's lenses in v1.0.3): rate growth from the history's last
-/// two observations, then project days to the crossings of the
+/// gate's lenses in v1.0.3; rates re-based on the median
+/// interval in v1.2.1): rate growth from the history — the
+/// median of the per-interval rates over the most recent
+/// FORECAST_WINDOW_INTERVALS intervals, falling back to the
+/// single interval when the history holds only two observations
+/// — then project days to the crossings of the
 /// SAME thresholds evaluate_gate reads — the volume lens's free
 /// fractions of this volume's total, the quota lens's ceilings
 /// (only when the node has that lens on), and the file lens's
@@ -444,15 +477,35 @@ pub const FORECAST_HORIZON_DAYS: f64 = 365.0;
 /// Flat or falling growth projects nothing, and nothing is
 /// projected beyond FORECAST_HORIZON_DAYS. Fewer than two usable
 /// observations degrades to unavailable — never invented.
+///
+/// Why the median (v1.2.1, from the 2026-11-12 evaluation of
+/// 2026-11-11 and re-proven by 2026-11-12's interval): rating
+/// from the last interval alone made the nearest-crossing
+/// estimate whipsaw with whatever the last day happened to do —
+/// file AMBER read ~1.4 days out on the 2026-11-10 interval,
+/// ~14 days out on 2026-11-11's, ~9.9 days out on 2026-11-12's,
+/// while the underlying series never changed character. The
+/// median of the recent intervals reports the series' typical
+/// rate: a planner whose warnings hold still long enough to
+/// act on.
 pub fn forecast_gate(history: &[DiskObs], cfg: &GateConfig, total_bytes: Option<u64>) -> Forecast {
     if history.len() < 2 {
         return Forecast::unavailable();
     }
-    let a = &history[history.len() - 2];
     let b = &history[history.len() - 1];
-    let span = (b.day - a.day).max(1) as f64;
-    let gb_rate = (b.used_gb - a.used_gb) / span;
-    let fc_rate = (b.files as f64 - a.files as f64) / span;
+    let start = history.len().saturating_sub(FORECAST_WINDOW_INTERVALS + 1);
+    let window = &history[start..];
+    let mut gb_rates: Vec<f64> = Vec::new();
+    let mut fc_rates: Vec<f64> = Vec::new();
+    for pair in window.windows(2) {
+        let ispan = (pair[1].day - pair[0].day).max(1) as f64;
+        gb_rates.push((pair[1].used_gb - pair[0].used_gb) / ispan);
+        fc_rates.push((pair[1].files as f64 - pair[0].files as f64) / ispan);
+    }
+    let intervals = gb_rates.len();
+    let gb_rate = median(&mut gb_rates);
+    let fc_rate = median(&mut fc_rates);
+    let span = (b.day - window[0].day).max(1) as f64;
     let days_to = |target: f64, cur: f64, rate: f64| -> Option<f64> {
         if cur >= target || rate <= 0.0 {
             None
@@ -520,6 +573,7 @@ pub fn forecast_gate(history: &[DiskObs], cfg: &GateConfig, total_bytes: Option<
         files_per_day: fc_rate.round(),
         gb_per_day: round2(gb_rate),
         span_days: span,
+        intervals,
         nearest_label: near_label,
         nearest_days: near_days.map(round2),
         file_amber_days: file_amber_days.map(round2),
@@ -678,11 +732,16 @@ fn forecast_line(plan: &PlanData) -> String {
             None => "never at this rate".to_string(),
         }
     };
+    let basis = if f.intervals <= 1 {
+        format!("last interval, {} d", f.span_days as i64)
+    } else {
+        format!("median of {} intervals, {} d", f.intervals, f.span_days as i64)
+    };
     format!(
-        "growth {:+.0} files/day, {:+.2} GB/day (last interval, {} d) — nearest crossing: {} in {}; file AMBER {}, byte AMBER {}",
+        "growth {:+.0} files/day, {:+.2} GB/day ({}) — nearest crossing: {} in {}; file AMBER {}, byte AMBER {}",
         f.files_per_day,
         f.gb_per_day,
-        f.span_days as i64,
+        basis,
         f.nearest_label,
         fmt_days(f.nearest_days),
         fmt_days(f.file_amber_days),
@@ -1004,6 +1063,63 @@ mod tests {
         let f = forecast_gate(&hist, &GateConfig::default(), None);
         assert_eq!(f.byte_amber_days, None);
         assert_eq!(f.nearest_days, None);
+    }
+
+    #[test]
+    fn forecast_median_damps_single_interval_whipsaw() {
+        // The real disk-watch series, 2026-11-08 → 2026-11-12
+        // (the 2026-11-13 nightly evaluation). Interval file
+        // rates: +124,074, +59,021, +5,372, +7,064 per day. The
+        // pre-v1.2.1 forecaster read only the last interval:
+        // 7,064 files/day, file AMBER ~9.9 days out — after
+        // reading ~1.4 days out on the 2026-11-10 interval and
+        // ~14 days out on 2026-11-11's. The median of the four
+        // intervals is 33,042.5 files/day: file AMBER ~2.1 days
+        // out, a warning that reflects the series, not the last
+        // day's mood.
+        let d = |day: i64| days_from_civil(2026, 11, day);
+        let hist = vec![
+            obs(d(8), 71.01, "GREEN", 834_350),
+            obs(d(9), 77.46, "GREEN", 958_424),
+            obs(d(10), 81.45, "GREEN", 1_017_445),
+            obs(d(11), 82.47, "GREEN", 1_022_817),
+            obs(d(12), 84.16, "GREEN", 1_029_881),
+        ];
+        let f = forecast_gate(&hist, &GateConfig::default(), None);
+        assert!(f.available);
+        assert_eq!(f.intervals, 4);
+        assert_eq!(f.span_days, 4.0);
+        assert_eq!(f.files_per_day, 33043.0);
+        assert_eq!(f.gb_per_day, 2.84);
+        assert_eq!(f.nearest_label, "file AMBER (1,100,000)");
+        let nd = f.nearest_days.unwrap();
+        assert!(nd > 2.1 && nd < 2.14, "median crossing {} should be ~2.12 d", nd);
+        // The contrast, stated in the same test: the last
+        // interval alone still rates 7,064 files/day when it is
+        // the only interval there is (two-observation history).
+        let f1 = forecast_gate(&hist[3..], &GateConfig::default(), None);
+        assert_eq!(f1.intervals, 1);
+        assert_eq!(f1.files_per_day, 7064.0);
+        let nd1 = f1.nearest_days.unwrap();
+        assert!(nd1 > 9.8 && nd1 < 10.0, "single-interval crossing {} should be ~9.9 d", nd1);
+    }
+
+    #[test]
+    fn forecast_window_excludes_old_spike() {
+        // Nine observations: one +400,000-file interval, then
+        // +1,000/day. The window keeps only the most recent
+        // FORECAST_WINDOW_INTERVALS intervals, so the spike —
+        // eight intervals back — is out of the rate entirely,
+        // not merely damped by the median.
+        let mut hist = vec![obs(1, 10.0, "GREEN", 100_000), obs(2, 10.0, "GREEN", 500_000)];
+        for day in 3..=9_i64 {
+            hist.push(obs(day, 10.0, "GREEN", 500_000 + (day as u64 - 2) * 1_000));
+        }
+        let f = forecast_gate(&hist, &GateConfig::default(), None);
+        assert!(f.available);
+        assert_eq!(f.intervals, FORECAST_WINDOW_INTERVALS);
+        assert_eq!(f.files_per_day, 1000.0);
+        assert_eq!(f.gb_per_day, 0.0);
     }
 
     #[test]

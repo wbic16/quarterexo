@@ -1,5 +1,57 @@
 # qexo changelog — the scratch line
 
+## 1.2.1 (v1.2.1) — built and gated, 2026-11-13
+
+The forecast stops whipsawing: growth is rated from the
+median interval, not the last one. The nightly cycle's one
+change, from the 2026-11-13 evaluation of 2026-11-12
+(EVALUATIONS.md): v1.2.0's `forecast_gate` rated growth from
+the history's last two observations, so the nearest-crossing
+estimate swung with whatever the last day happened to do —
+file AMBER read ~1.4 days out on the 2026-11-10 disk-watch
+interval, ~12–14 days out on 2026-11-11's, and ~9.9 days out
+on 2026-11-12's, while the underlying series never changed
+character. A warning that moves ten days in a night is not a
+warning anyone can plan a staging move around.
+
+What changes, all inside `src/plan.rs`:
+
+- The rates are the median of the per-interval rates over
+  the most recent 7 intervals (`FORECAST_WINDOW_INTERVALS`);
+  older intervals fall out of the window instead of anchoring
+  the rate forever. A history with exactly two observations
+  keeps the pre-v1.2.1 single-interval rate unchanged — every
+  pre-existing forecast test passes unmodified.
+- `Forecast` gains `intervals` (how many interval rates the
+  reported rates are the median of), and the rendered
+  forecast line names its basis: "median of N intervals,
+  X d" (or "last interval, X d" for the two-observation
+  case). `span_days` is now the window's span.
+- On the real disk-watch series (2026-11-08 → 2026-11-12:
+  file intervals +124,074 / +59,021 / +5,372 / +7,064 per
+  day) the median rates +33,043 files/day and +2.84 GB/day
+  and projects file AMBER ~2.1 days out — against the
+  single-interval +7,064/day and ~9.9 days the same history
+  produced the night before.
+- New tests: `forecast_median_damps_single_interval_whipsaw`
+  (the real series above, with the single-interval contrast
+  asserted in the same test) and
+  `forecast_window_excludes_old_spike` (a +400,000-file
+  interval eight intervals back is outside the window, not
+  merely damped).
+- Nothing else changes: the gate's lenses, thresholds, and
+  verdicts are v1.2.0's; the forecast still escalates GREEN
+  only, still projects only the node's configured lenses
+  (v1.0.3), and still degrades to unavailable on fewer than
+  two observations.
+- Version: Cargo 1.2.0 → 1.2.1; VERSION v1.2.1; the plan
+  payload reports `plan_version: v1.2.1`.
+- Ordering note: PR #16 (v1.3.0, libphext-rs as the parser)
+  is open against the same base (exo @ 833e2f34). This
+  change does not touch `src/phext.rs`; the only overlap is
+  the version stamps. Merge this PR before #16, or rebase
+  its stamps to v1.3.1 after — either order lands both.
+
 ## 1.2.0 (v1.2.0) — built and gated, 2026-11-13
 
 `qexo evolve` — one receipted convergence pass over the

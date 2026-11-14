@@ -1,3 +1,23 @@
+# qexo v1.2.1 (scratch line) — ship notes
+
+Status: v1.2.1 BUILT AND GATED, 2026-11-13 — the forecast
+rates growth from the median of the most recent 7 intervals
+instead of the last interval alone (the 2026-11-13 nightly
+evaluation's one change; see CHANGELOG 1.2.1 and
+EVALUATIONS.md 2026-11-13). Gates, all on aletheia-core
+(Tctl 30.5 °C at start, 53.1 °C peak during the release
+build — under the 75 °C pause line): `cargo test --release`
+50 passed, 0 failed (48 pre-existing, unmodified, plus the
+two new forecast tests); `qexo wiring-check` ok (12 module
+files); the release binary born a throwaway node in /tmp and
+emitted its plan — gate GREEN by the volume lens on the
+3,663 GiB incident volume, forecast unavailable on the first
+run and single-interval basis on the second, as designed.
+Base is exo (v1.2.0, PR #15 @ 833e2f34), fresh-cloned for
+this cycle; the stale local v3.2 mirror was not used. PR
+#16 (v1.3.0) is open against the same base; the only overlap
+is the version stamps — merge order is stated in the PR.
+
 # qexo v1.2.0 (scratch line) — ship notes
 
 Status: v1.2.0 BUILT AND GATED, 2026-11-13 — `qexo evolve`,
