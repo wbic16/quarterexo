@@ -1,13 +1,15 @@
 # qexo v1.3.0 (scratch line) — ship notes
 
 Status: v1.3.0 BUILT AND GATED, 2026-11-13 — the parser is
-libphext-rs now (crate pinned 0.5.0, as phext-lattice pins
-it); src/phext.rs is an adapter, the hand-rolled reckoning
-is deleted. The one-byte divergence it carried (library
-break \x02 vs the reference \x01) is diagnosed in the
-CHANGELOG with measurements from SQ 0.6.0 and libphext
-0.5.0, and pinned by two regression tests, one of them
-tonight's file shape byte-for-byte. Siblings: `config
+libphext-rs now (crate pinned 0.6.0 from the crates.io
+registry — the chains release; first gated on 0.5.0 and
+re-gated end to end on 0.6.0 before merge); src/phext.rs
+is an adapter, the hand-rolled reckoning is deleted. The
+one-byte divergence it carried (library break \x02 vs the
+reference \x01) is diagnosed in the CHANGELOG with
+measurements from SQ 0.6.0 and libphext 0.5.0/0.6.0, and
+pinned by two regression tests, one of them tonight's file
+shape byte-for-byte. Siblings: `config
 --release-signer` (the signer as a command, not a hand
 edit) and the `select <coord>` state form (Will's error
 was an argument-shape trap, reproduced on Linux under the
