@@ -54,12 +54,12 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "verbs-config",
         front: "What does `qexo config` do — and where does a per-user install keep its state?",
-        back: "Births the node: creates the state phext and sets up the node GPG key. The state path resolves as: QEXO_STATE when set; for a verb that writes, your per-user state whenever the system state is not writable by you; for `qexo learn`, your per-user state whenever you have one; else /var/lib/qexo/state.phext when it exists and is readable; else ~/.qexo/state.phext. A normal user births a per-user node — no sudo anywhere.",
+        back: "Births the node: creates the state phext and sets up the node key. The state path resolves as: QEXO_STATE when set; for a verb that writes, your per-user state whenever the system state is not writable by you; for `qexo learn`, your per-user state whenever you have one; else /var/lib/qexo/state.phext when it exists and is readable; else ~/.qexo/state.phext. A normal user births a per-user node — no sudo anywhere.",
     },
     CardSpec {
         id: "verbs-register",
         front: "How does a peer become trusted?",
-        back: "`qexo register <pubkey>` — the operator registers the peer's GPG public key (armored text, a file path, or - for stdin). The fingerprint and the host name are read from the key itself, never from the caller's say-so. Only registered peers are ever polled.",
+        back: "`qexo register <pubkey>` — the operator registers the peer's OpenPGP public key (armored text, a file path, or - for stdin). The fingerprint and the host name are read from the key itself, never from the caller's say-so. Only registered peers are ever polled.",
     },
     CardSpec {
         id: "verbs-list",
@@ -94,7 +94,7 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "verbs-update",
         front: "How does `qexo update` decide whether to swap the binary?",
-        back: "It polls registered peers for the trusted signer's release manifest, verifies the detached GPG signature over the manifest and the binary's size + sha256 BEFORE swapping, and keeps qexo.prev. The post-check runs the new binary's doctor: fixable state gaps (a homeland index the state predates) are repaired in place by the new binary and named in the receipt; hard failures roll back. --check reports only — downloads and changes nothing.",
+        back: "It polls registered peers for the trusted signer's release manifest, verifies the detached OpenPGP signature over the manifest and the binary's size + sha256 BEFORE swapping, and keeps qexo.prev. The post-check runs the new binary's doctor: fixable state gaps (a homeland index the state predates) are repaired in place by the new binary and named in the receipt; hard failures roll back. --check reports only — downloads and changes nothing.",
     },
     CardSpec {
         id: "verbs-evolve",
@@ -109,7 +109,7 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "verbs-release",
         front: "How does a node announce a release?",
-        back: "`qexo release` writes a signed release manifest — a record in the ledgers homeland with its detached GPG signature on the adjacent scroll — and serves the binary from the releases dir beside the state file. Only the node whose fingerprint is a peer's configured release_signer is believed.",
+        back: "`qexo release` writes a signed release manifest — a record in the ledgers homeland with its detached OpenPGP signature on the adjacent scroll — and serves the binary from the releases dir beside the state file. Only the node whose fingerprint is a peer's configured release_signer is believed.",
     },
     CardSpec {
         id: "verbs-plan",
@@ -129,7 +129,7 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "trust-gpg",
         front: "What carries identity and trust on the phextnet?",
-        back: "GPG keys. Every node is born with its own key (keyring beside the state file); peers are known by fingerprint; signatures carry trust. Endpoints are only transport — a spoofed endpoint cannot forge a signature, which is why plain http:// on the tailnet is acceptable.",
+        back: "OpenPGP keys. Every node is born with its own key (keyring beside the state file, and the cryptography runs inside qexo itself — no external gpg); peers are known by fingerprint; signatures carry trust. Endpoints are only transport — a spoofed endpoint cannot forge a signature, which is why plain http:// on the tailnet is acceptable.",
     },
     CardSpec {
         id: "trust-discovery",
@@ -397,7 +397,7 @@ const CHAPTERS: &[Chapter] = &[
         title: "First steps",
         lesson: &[
             "A node is born, not installed.",
-            "`qexo config` births your node: one state file, one GPG key of its own.",
+            "`qexo config` births your node: one state file, one OpenPGP key of its own.",
             "Trust is handed out on purpose — `qexo register` is how a peer earns it.",
             "`qexo list` draws the phextnet as a tree, so you can see where everyone lives.",
         ],
