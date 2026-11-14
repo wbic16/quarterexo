@@ -32,7 +32,9 @@
 //! 1/2/3 and saved after every card. With piped stdin it prints
 //! the --status view instead of hanging. `qexo learn --status`
 //! never writes: on an unseeded deck it computes from the baked
-//! table.
+//! table. `qexo learn --app` (v1.6.1) drives the same engine
+//! over a plain-text line protocol, for front-ends that have
+//! no terminal — the Android app is the first.
 
 use crate::core;
 use crate::lattice::{self, Lattice};
@@ -1018,6 +1020,282 @@ pub fn learn(status_only: bool) -> i32 {
     run_wizard(&mut lat, today)
 }
 
+// ----------------------------------------------------------------
+// The app protocol (v1.6.1) — the wizard's engine, over a pipe.
+//
+// The wizard needs a terminal; an app has none. `qexo learn
+// --app` speaks the smallest line protocol over the SAME engine:
+// one command per line on stdin, one `key: value` block per
+// command on stdout, every block closed by `end: <command>`.
+// Not JSON — qexo's own front-ends are not a foreign boundary.
+//
+//   status              deck + session counters
+//   chapters            the chapter map, one `chapter:` line each
+//   lesson <n>          chapter n's lesson lines
+//   next                start the due queue, or re-show its card
+//   practice <n>        start chapter n's due queue
+//   reveal              the current card's back
+//   grade again|good|easy
+//                       grade + save, exactly as the wizard does
+//   quit                session summary, then exit
+//
+// The session IS the wizard's state machine — Wizard,
+// deck_stats, due_cards, Wizard::grade: nothing about the deck,
+// the chapters, SM-2-lite, or the state records is duplicated
+// or altered, and a grade lands in state.phext identically
+// whichever surface drove it. `status` here is a session view
+// (the deck seeds at session start, as the wizard seeds);
+// `learn --status` remains the never-writes form.
+// ----------------------------------------------------------------
+
+struct AppSession {
+    wiz: Wizard,
+}
+
+impl AppSession {
+    fn status_lines(&self, lat: &Lattice, today: i64) -> Vec<String> {
+        let st = deck_stats(lat, today);
+        let mut out = vec![
+            format!("total: {}", st.total),
+            format!("due: {}", st.due_now),
+            format!("mastered: {}", st.mastered),
+            format!("streak: {}", self.wiz.streak),
+            format!("reviewed: {}", self.wiz.reviewed),
+        ];
+        match st.next_due {
+            Some((day, n)) => {
+                let (y, m, d) = core::civil_from_days(day);
+                out.push(format!("next_due: {:04}-{:02}-{:02}", y, m, d));
+                out.push(format!("next_due_cards: {}", n));
+            }
+            None => out.push("next_due: none".to_string()),
+        }
+        out
+    }
+
+    fn card_lines(&self) -> Vec<String> {
+        let (_, _, text) = &self.wiz.queue[self.wiz.pos];
+        let context = match self.wiz.queue_chapter {
+            Some(ch) => format!("Chapter {} — {}", ch + 1, CHAPTERS[ch].title),
+            None => "Due queue".to_string(),
+        };
+        vec![
+            format!("context: {}", context),
+            format!("position: {} of {}", self.wiz.pos + 1, self.wiz.queue.len()),
+            format!("card: {}", lattice::field(text, "id").unwrap_or_default()),
+            format!("front: {}", lattice::field(text, "front").unwrap_or_default()),
+            format!("revealed: {}", if self.wiz.revealed { "yes" } else { "no" }),
+        ]
+    }
+
+    /// Start a practice queue (the whole due queue, or one
+    /// chapter's slice of it); returns the first card's block,
+    /// or the empty-queue note the wizard would show.
+    fn start(&mut self, lat: &Lattice, today: i64, chapter: Option<usize>) -> Vec<String> {
+        let queue = match chapter {
+            Some(ch) => due_cards(lat, today)
+                .into_iter()
+                .filter(|(_, _, t)| {
+                    lattice::field(t, "id").and_then(|id| chapter_of(&id)) == Some(ch)
+                })
+                .collect(),
+            None => due_cards(lat, today),
+        };
+        if queue.is_empty() {
+            return vec![
+                "queue: empty".to_string(),
+                format!(
+                    "note: {}",
+                    match chapter {
+                        Some(_) => "nothing due in this chapter — the queue remembers.",
+                        None => "nothing due — the deck is ahead of you.",
+                    }
+                ),
+            ];
+        }
+        self.wiz.start_queue(queue, chapter);
+        self.card_lines()
+    }
+
+    /// One command line → (response lines, session over?).
+    fn handle(&mut self, lat: &mut Lattice, today: i64, line: &str) -> (Vec<String>, bool) {
+        let mut words = line.split_whitespace();
+        match words.next().unwrap_or("") {
+            "status" => (self.status_lines(lat, today), false),
+            "chapters" => {
+                let mut out = Vec::new();
+                for (i, ch) in CHAPTERS.iter().enumerate() {
+                    let (total, due, mastered) = Wizard::chapter_counts(lat, today, i);
+                    out.push(format!(
+                        "chapter: {} | {} | {} cards | {} due | {} mastered",
+                        i + 1,
+                        ch.title,
+                        total,
+                        due,
+                        mastered
+                    ));
+                }
+                (out, false)
+            }
+            "lesson" => {
+                let n: Option<usize> = words.next().and_then(|w| w.parse().ok());
+                match n {
+                    Some(n) if (1..=CHAPTERS.len()).contains(&n) => {
+                        let ch = &CHAPTERS[n - 1];
+                        let (total, due, _) = Wizard::chapter_counts(lat, today, n - 1);
+                        let mut out =
+                            vec![format!("chapter: {}", n), format!("title: {}", ch.title)];
+                        for l in ch.lesson {
+                            out.push(format!("lesson: {}", l));
+                        }
+                        out.push(format!("cards: {}", total));
+                        out.push(format!("due: {}", due));
+                        (out, false)
+                    }
+                    _ => (vec!["error: lesson needs a chapter number".to_string()], false),
+                }
+            }
+            "next" => {
+                if self.wiz.screen == Screen::Card {
+                    (self.card_lines(), false)
+                } else {
+                    (self.start(lat, today, None), false)
+                }
+            }
+            "practice" => {
+                let n: Option<usize> = words.next().and_then(|w| w.parse().ok());
+                match n {
+                    Some(n) if (1..=CHAPTERS.len()).contains(&n) => {
+                        (self.start(lat, today, Some(n - 1)), false)
+                    }
+                    _ => (vec!["error: practice needs a chapter number".to_string()], false),
+                }
+            }
+            "reveal" => {
+                if self.wiz.screen != Screen::Card {
+                    (vec!["error: no card on the table — next first".to_string()], false)
+                } else if self.wiz.revealed {
+                    (vec!["error: already revealed".to_string()], false)
+                } else {
+                    self.wiz.revealed = true;
+                    let (_, _, text) = &self.wiz.queue[self.wiz.pos];
+                    (
+                        vec![format!(
+                            "back: {}",
+                            lattice::field(text, "back").unwrap_or_default()
+                        )],
+                        false,
+                    )
+                }
+            }
+            "grade" => {
+                let g = match words.next() {
+                    Some("again") => Some(Grade::Again),
+                    Some("good") => Some(Grade::Good),
+                    Some("easy") => Some(Grade::Easy),
+                    _ => None,
+                };
+                match g {
+                    None => (
+                        vec!["error: grade needs again, good, or easy".to_string()],
+                        false,
+                    ),
+                    Some(_) if self.wiz.screen != Screen::Card => {
+                        (vec!["error: no card on the table — next first".to_string()], false)
+                    }
+                    Some(_) if !self.wiz.revealed => {
+                        (vec!["error: reveal the back first".to_string()], false)
+                    }
+                    Some(grade) => match self.wiz.grade(lat, today, grade) {
+                        Ok(_) => {
+                            let mut out = vec![
+                                format!(
+                                    "graded: {}",
+                                    match grade {
+                                        Grade::Again => "again",
+                                        Grade::Good => "good",
+                                        Grade::Easy => "easy",
+                                    }
+                                ),
+                                format!("remaining: {}", self.wiz.queue.len() - self.wiz.pos),
+                            ];
+                            out.extend(self.status_lines(lat, today));
+                            (out, false)
+                        }
+                        Err(e) => (vec![format!("error: cannot save state: {}", e)], false),
+                    },
+                }
+            }
+            "quit" => {
+                let st = deck_stats(lat, today);
+                (
+                    vec![
+                        format!("reviewed: {}", self.wiz.reviewed),
+                        format!("again: {}", self.wiz.again),
+                        format!("good: {}", self.wiz.good),
+                        format!("easy: {}", self.wiz.easy),
+                        format!("best_streak: {}", self.wiz.best_streak),
+                        format!("mastered: {}", st.mastered),
+                        format!("due: {}", st.due_now),
+                    ],
+                    true,
+                )
+            }
+            "" => (Vec::new(), false),
+            other => (vec![format!("error: unknown command '{}'", other)], false),
+        }
+    }
+}
+
+/// `qexo learn --app` — the wizard's engine over stdin/stdout.
+/// Exit codes match learn(): 0 clean, 1 a state save failed,
+/// plus require_born's codes when the node is unborn.
+pub fn learn_app() -> i32 {
+    let mut lat = match core::require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let (today, _) = core::now_stamp();
+    let added = seed_deck(&mut lat, today);
+    if added > 0 {
+        lattice::regen_indexes(&mut lat.px);
+        if let Err(e) = lat.save() {
+            eprintln!("qexo learn: cannot save state: {}", e);
+            return 1;
+        }
+    }
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut session = AppSession { wiz: Wizard::new() };
+    let emit = |lines: &[String], end: &str| {
+        let mut w = stdout.lock();
+        for l in lines {
+            let _ = writeln!(w, "{}", l);
+        }
+        let _ = writeln!(w, "end: {}", end);
+        let _ = w.flush();
+    };
+    emit(&session.status_lines(&lat, today), "hello");
+    loop {
+        let line = match read_line(&stdin) {
+            Some(l) => l,
+            // EOF: the front-end hung up. Grades already saved
+            // per card land exactly as the wizard's do.
+            None => break,
+        };
+        let cmd = line.split_whitespace().next().unwrap_or("").to_string();
+        if cmd.is_empty() {
+            continue;
+        }
+        let (lines, done) = session.handle(&mut lat, today, &line);
+        emit(&lines, &cmd);
+        if done {
+            break;
+        }
+    }
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,5 +1571,117 @@ mod wizard_tests {
         assert_eq!(wiz.best_streak, 3);
         // a key on the done screen exits
         assert_eq!(wiz.handle(Input::Advance, &mut lat, today).unwrap(), Flow::ExitNow);
+    }
+}
+
+#[cfg(test)]
+mod app_tests {
+    use super::*;
+
+    fn born(path: &str) -> (Lattice, i64) {
+        let mut lat = Lattice::born(std::path::PathBuf::from(path));
+        let today = 20000;
+        seed_deck(&mut lat, today);
+        lattice::regen_indexes(&mut lat.px);
+        (lat, today)
+    }
+
+    fn session() -> AppSession {
+        AppSession { wiz: Wizard::new() }
+    }
+
+    #[test]
+    fn app_session_walks_a_card_and_the_grade_persists() {
+        let (mut lat, today) = born("/tmp/qexo-app-test-a/state.phext");
+        let mut s = session();
+        let st = s.handle(&mut lat, today, "status").0;
+        assert!(st.contains(&"total: 22".to_string()));
+        assert!(st.contains(&"due: 22".to_string()));
+        assert!(st.contains(&"streak: 0".to_string()));
+        // the scripted session: next -> reveal -> grade -> next
+        let card = s.handle(&mut lat, today, "next").0;
+        assert!(card.contains(&"context: Due queue".to_string()));
+        assert!(card.contains(&"position: 1 of 22".to_string()));
+        assert!(card.iter().any(|l| l.starts_with("front: ")));
+        assert!(card.contains(&"revealed: no".to_string()));
+        // grading before reveal is refused — the wizard's rule
+        let err = s.handle(&mut lat, today, "grade good").0;
+        assert_eq!(err, vec!["error: reveal the back first".to_string()]);
+        let back = s.handle(&mut lat, today, "reveal").0;
+        assert_eq!(back.len(), 1);
+        assert!(back[0].starts_with("back: "));
+        let graded = s.handle(&mut lat, today, "grade good").0;
+        assert!(graded.contains(&"graded: good".to_string()));
+        assert!(graded.contains(&"remaining: 21".to_string()));
+        assert!(graded.contains(&"due: 21".to_string()));
+        assert!(graded.contains(&"streak: 1".to_string()));
+        // the grade is in state.phext records, not just the session
+        let cards = state_cards(&lat.px);
+        assert_eq!(
+            cards.iter().filter(|(_, _, t)| field_i64(t, "reps") > 0).count(),
+            1,
+            "exactly one card carries the grade"
+        );
+        // the session advances: the next card is on the table
+        let card2 = s.handle(&mut lat, today, "next").0;
+        assert!(card2.contains(&"position: 2 of 22".to_string()));
+        let (summary, done) = s.handle(&mut lat, today, "quit");
+        assert!(done, "quit ends the session");
+        assert!(summary.contains(&"reviewed: 1".to_string()));
+        assert!(summary.contains(&"good: 1".to_string()));
+        assert!(summary.contains(&"best_streak: 1".to_string()));
+    }
+
+    #[test]
+    fn app_chapters_lesson_and_practice_match_the_wizard() {
+        let (mut lat, today) = born("/tmp/qexo-app-test-b/state.phext");
+        let mut s = session();
+        let chapters = s.handle(&mut lat, today, "chapters").0;
+        assert_eq!(chapters.len(), CHAPTERS.len());
+        assert!(chapters[0].starts_with("chapter: 1 | First steps | 3 cards | 3 due"));
+        let lesson = s.handle(&mut lat, today, "lesson 1").0;
+        assert!(lesson.contains(&"title: First steps".to_string()));
+        assert!(lesson.iter().any(|l| l.starts_with("lesson: ")));
+        assert!(lesson.contains(&"cards: 3".to_string()));
+        assert!(lesson.contains(&"due: 3".to_string()));
+        // practice narrows the queue to the chapter, as the
+        // wizard's lesson screen does
+        let card = s.handle(&mut lat, today, "practice 1").0;
+        assert!(card.contains(&"context: Chapter 1 — First steps".to_string()));
+        assert!(card.contains(&"position: 1 of 3".to_string()));
+        s.handle(&mut lat, today, "reveal").0;
+        let graded = s.handle(&mut lat, today, "grade easy").0;
+        assert!(graded.contains(&"graded: easy".to_string()));
+        assert!(graded.contains(&"remaining: 2".to_string()));
+        // protocol errors are lines, not panics
+        assert_eq!(
+            s.handle(&mut lat, today, "frobnicate").0,
+            vec!["error: unknown command 'frobnicate'".to_string()]
+        );
+        assert_eq!(
+            s.handle(&mut lat, today, "lesson 99").0,
+            vec!["error: lesson needs a chapter number".to_string()]
+        );
+        assert_eq!(
+            s.handle(&mut lat, today, "grade sideways").0,
+            vec!["error: grade needs again, good, or easy".to_string()]
+        );
+    }
+
+    #[test]
+    fn app_empty_queue_is_a_note_not_a_hang() {
+        let (mut lat, today) = born("/tmp/qexo-app-test-c/state.phext");
+        // grade the whole deck into the future, wizard-style
+        for (_, addr, text) in state_cards(&lat.px) {
+            lat.px.insert(addr, apply_grade(&text, Grade::Easy, today));
+        }
+        let mut s = session();
+        let out = s.handle(&mut lat, today, "next").0;
+        assert!(out.contains(&"queue: empty".to_string()));
+        let out = s.handle(&mut lat, today, "practice 1").0;
+        assert!(out.contains(&"queue: empty".to_string()));
+        // reveal/grade with no card on the table refuse cleanly
+        assert!(s.handle(&mut lat, today, "reveal").0[0].starts_with("error:"));
+        assert!(s.handle(&mut lat, today, "grade good").0[0].starts_with("error:"));
     }
 }

@@ -54,7 +54,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Unhost(_)
             | Command::Message { .. }
             | Command::Release
-            | Command::Learn { status: false }
+            | Command::Learn { status: false, .. }
             | Command::Bare
             | Command::Plan
             | Command::Update { check: false }
@@ -70,7 +70,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.6.0 (Cargo 1.6.0)");
+            println!("qexo v1.6.1 (Cargo 1.6.1)");
             0
         }
         Command::WiringCheck(dir) => {
@@ -132,7 +132,13 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         Command::Bare | Command::Plan => core::plan_cmd(),
         Command::Config { auto_update, evolve, release_signer } => core::config(auto_update, evolve, release_signer),
         Command::List { json } => core::list(json),
-        Command::Learn { status } => learn::learn(status),
+        Command::Learn { status, app } => {
+            if app {
+                learn::learn_app()
+            } else {
+                learn::learn(status)
+            }
+        }
         Command::Inventory { name, install } => inventory::inventory(name, install),
         Command::Register(args) => core::register(&args),
         Command::Release => core::release(),

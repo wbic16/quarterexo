@@ -19,7 +19,7 @@ pub enum Command {
     Config { auto_update: bool, evolve: bool, release_signer: Option<String> },
     Doctor { fix: bool },
     List { json: bool },
-    Learn { status: bool },
+    Learn { status: bool, app: bool },
     Inventory { name: Option<String>, install: Option<String> },
     Register(Vec<String>),
     Release,
@@ -64,7 +64,10 @@ pub fn parse(args: &[String]) -> Command {
         }
         "doctor" => Command::Doctor { fix: args.iter().any(|a| a == "--fix") },
         "list" => Command::List { json: args.iter().any(|a| a == "--json") },
-        "learn" => Command::Learn { status: args.iter().any(|a| a == "--status") },
+        "learn" => Command::Learn {
+            status: args.iter().any(|a| a == "--status"),
+            app: args.iter().any(|a| a == "--app"),
+        },
         "inventory" | "catalog" => {
             let mut name: Option<String> = None;
             let mut install: Option<String> = None;
@@ -133,6 +136,10 @@ pub fn help_text() -> String {
     s.push_str("                            as practice. keys: space reveal, 1/2/3 grade (again/good/easy),\n");
     s.push_str("                            b chapter map, d due queue, q quit (progress saves per card)\n");
     s.push_str("  qexo learn --status       deck size, due count, mastered count — no session\n");
+    s.push_str("  qexo learn --app          the wizard's engine as a line protocol for front-ends\n");
+    s.push_str("                            (the Android app): commands status / chapters / lesson <n> /\n");
+    s.push_str("                            next / practice <n> / reveal / grade again|good|easy / quit,\n");
+    s.push_str("                            replies as key: value lines, each block closed by end: <command>\n");
     s.push_str("  qexo --help               this text\n\n");
 
     s.push_str("The ecosystem:\n");
@@ -236,8 +243,9 @@ mod tests {
         assert_eq!(parse(&v(&["doctor", "--fix"])), Command::Doctor { fix: true });
         assert_eq!(parse(&v(&["list"])), Command::List { json: false });
         assert_eq!(parse(&v(&["list", "--json"])), Command::List { json: true });
-        assert_eq!(parse(&v(&["learn"])), Command::Learn { status: false });
-        assert_eq!(parse(&v(&["learn", "--status"])), Command::Learn { status: true });
+        assert_eq!(parse(&v(&["learn"])), Command::Learn { status: false, app: false });
+        assert_eq!(parse(&v(&["learn", "--status"])), Command::Learn { status: true, app: false });
+        assert_eq!(parse(&v(&["learn", "--app"])), Command::Learn { status: false, app: true });
         assert_eq!(parse(&v(&["inventory"])), Command::Inventory { name: None, install: None });
         assert_eq!(parse(&v(&["catalog"])), Command::Inventory { name: None, install: None });
         assert_eq!(parse(&v(&["inventory", "sq"])), Command::Inventory { name: Some("sq".into()), install: None });

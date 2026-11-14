@@ -36,7 +36,7 @@ const BUILD_TOKENS: &[&str] = &[
     "benchmark", "bulk", "suite", "phcc",
 ];
 
-pub const PLAN_VERSION: &str = "v1.6.0";
+pub const PLAN_VERSION: &str = "v1.6.1";
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Class {

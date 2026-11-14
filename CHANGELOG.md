@@ -1,5 +1,25 @@
 # qexo changelog — the scratch line
 
+## 1.6.1 (v1.6.1) — Learn You a qexo! gets an app protocol, 2026-11-14
+
+**The learn wizard learns to be driven.** `qexo learn --app`
+speaks a plain-text line protocol over the wizard's own engine:
+one command per line on stdin (`status`, `chapters`,
+`lesson <n>`, `next`, `practice <n>`, `reveal`,
+`grade again|good|easy`, `quit`), one `key: value` block per
+command on stdout, every block closed by `end: <command>`.
+Not JSON — qexo's own front-ends are not a foreign boundary,
+and the phext-native rule stands.
+
+Nothing about the engine changes: the session is the wizard's
+state machine (chapter map, lessons, due queue, SM-2-lite),
+the deck and progress stay in state.phext records, and a grade
+persists after every card identically whichever surface drove
+it. The TUI and `qexo learn --status` are byte-unchanged;
+`--status` still never writes. The Android launcher (v2) is
+the first driver: a real card session in the app, plus the
+high-payoff verbs one tap from its home screen.
+
 ## 1.6.0 (v1.6.0) — OpenPGP moves inside, 2026-11-14
 
 **The gpg subprocess is gone.** Every OpenPGP operation —
