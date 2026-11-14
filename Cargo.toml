@@ -1,6 +1,6 @@
 [package]
 name = "qexo"
-version = "1.5.0"
+version = "1.6.0"
 description = "qexo — the Exocortex coordinator, phext-native: all node state lives in one phext (system /var/lib/qexo or per-user ~/.qexo; Layer 2 addressing over phext)"
 license = "MIT"
 edition = "2021"
@@ -23,6 +23,15 @@ include = [
 # qexo's src/phext.rs is only an adapter; it uses none of the
 # chain surface yet (chains are a separate slice, if ever).
 libphext = "0.6.0"
+# OpenPGP is the `pgp` crate (rpgp), in-process since v1.6.0 —
+# DESIGN §8.7's rule (never hand-roll OpenPGP) with the
+# delegate changed from the system `gpg` binary to a published
+# implementation linked in, the same move as libphext above.
+# Pure Rust: it cross-compiles to aarch64-linux-android, where
+# no gpg subprocess exists to spawn. Exact-pinned like the
+# rest of this project's young ecosystem.
+pgp = "=0.21.1"
+rand = "0.8"
 
 [profile.release]
 opt-level = 2

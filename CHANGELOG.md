@@ -1,5 +1,39 @@
 # qexo changelog — the scratch line
 
+## 1.6.0 (v1.6.0) — OpenPGP moves inside, 2026-11-14
+
+**The gpg subprocess is gone.** Every OpenPGP operation —
+key generation, detached sign and verify, armored export,
+fingerprint and user-id reads — now runs in-process on the
+`pgp` crate (rpgp), a published RFC 4880/9580 implementation.
+DESIGN §8.7's rule is unchanged (qexo never hand-rolls
+OpenPGP); the delegate changed, the way v1.3.0 swapped the
+hand-rolled phext parser for libphext-rs. Nothing about the
+wire changes: signatures and keys are standard OpenPGP and
+cross with GnuPG in both directions, which the gates prove
+rather than assume.
+
+Why: a node that lives inside an Android app cannot spawn a
+subprocess, and the phone is qexo's primary control surface.
+This is also the change that lets wbic16/qexo (the Android
+repo) come current with this tree.
+
+- The key store moves into the same keyring directory
+  (`<state dir>/gnupg`, name and mode unchanged) under
+  `qexo-keys/`: `own.secret.asc` for the node's key, one
+  `<FINGERPRINT>.asc` per public key.
+- **No stranded keys:** a GnuPG-era keyring (pubring.kbx +
+  private-keys-v1.d) migrates transparently on first use —
+  format conversion only, originals never modified, the
+  fingerprint (and so the node's identity, its peer
+  registrations, and its release-signer trust) unchanged.
+  A passphrase-protected legacy key is refused by name, and
+  key generation will not birth a replacement over it.
+- `qexo config` no longer requires `gpg` on the node at all;
+  new node key records say `suite: internal (rpgp)`.
+- encrypt_to/decrypt (the persona keychain exchange) are
+  rpgp-backed as well; no caller-visible behavior change.
+
 ## 1.5.0 (v1.5.0) — Learn You a qexo!, 2026-11-14
 
 **The learn wizard.** `qexo learn` on a terminal is now a

@@ -92,3 +92,14 @@ using phext. sequences in phext are arbitrary, which gives us
 incredible flexibility. but you must respect phext's topological
 order: no sequence may exist in the phext that violates the canonical
 order." See the file history for the removed text.
+
+---
+## Crypto note (appended 2026-11-14, v1.6.0)
+§4's "`crypto` (GPG, as before)" names the v1.0 arrangement:
+OpenPGP mechanics delegated to the system `gpg` binary. The
+§8.7 rule — never hand-roll OpenPGP — is unchanged; v1.6.0
+changes the delegate to the `pgp` crate (rpgp), linked
+in-process, because a node inside an Android app has no
+subprocess to spawn. GnuPG-era keyrings migrate in place on
+first use, originals preserved, fingerprints unchanged —
+the contract is written out in src/crypto.rs's module note.

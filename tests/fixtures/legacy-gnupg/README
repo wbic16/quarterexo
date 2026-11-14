@@ -1,0 +1,19 @@
+A GnuPG-era qexo keyring, kept as a test fixture.
+
+Generated 2026-11-14 on aletheia-core with system gpg 2.4.4,
+using the exact batch spec qexo's gpg era used (eddsa /
+ed25519, sign-only, %no-protection), name "qexo node
+fixture", comment "qexo node key". Fingerprint:
+C67424B8836BBA88E1F5B8B824570838961846C6.
+
+This key is a public test vector. It was generated solely
+for these tests, has never been a node key, is registered
+nowhere, and signs nothing outside a test sandbox. Its
+private half is here on purpose: the migration test needs
+real GnuPG output — a fixture written by the code under
+test would prove nothing.
+
+Layout mirrors a live keyring home: pubring.kbx and
+private-keys-v1.d/<keygrip>.key. trustdb.gpg and the
+revocation certificate are not included; the migration
+never reads them.

@@ -1,3 +1,25 @@
+# qexo v1.6.0 (scratch line) — ship notes
+
+Status: v1.6.0 — OpenPGP moves inside. The `gpg` subprocess
+is gone: key generation, detached sign/verify, armored
+export, fingerprint and user-id reads all run in-process
+on the `pgp` crate (rpgp), per DESIGN §8.7's standing rule
+(never hand-roll OpenPGP) with the delegate changed — the
+same move as v1.3.0's libphext swap. A node now needs no
+gpg anywhere on the machine, which is what an in-app
+Android node requires. GnuPG-era keyrings migrate on first
+use: format-only conversion, originals untouched,
+fingerprint (node identity) unchanged — the whole fleet's
+keyrings, the release signer's included, keep working as
+they are. Interop with GnuPG is gated in both directions
+(internal signatures verify under system gpg; GnuPG
+signatures verify here; keys import across with
+fingerprints intact; a full config/register/sign/verify/
+update pass runs with gpg absent from PATH). See
+CHANGELOG 1.6.0 and src/crypto.rs's module note.
+
+---
+
 # qexo v1.5.0 (scratch line) — ship notes
 
 Status: v1.5.0 — the Learn You a qexo! wizard: `qexo learn`

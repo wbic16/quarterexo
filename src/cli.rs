@@ -145,7 +145,7 @@ pub fn help_text() -> String {
 
     s.push_str("Identity & peers:\n");
     s.push_str("  qexo config               birth the node: create the state phext (the system path when\n");
-    s.push_str("                            privileged, the per-user path otherwise), set up the node GPG key\n");
+    s.push_str("                            privileged, the per-user path otherwise), set up the node key\n");
     s.push_str("  qexo config --auto-update turn automatic updates on (config record) and install the systemd timer where possible\n");
     s.push_str("  qexo config --evolve      set evolve: on — the automatic timer's trigger becomes a full evolve pass\n");
     s.push_str("  qexo config --release-signer <FP>\n                            set the trusted release signer fingerprint in the config record\n");
