@@ -1,5 +1,55 @@
 # qexo changelog — the scratch line
 
+## 1.6.2 (v1.6.2) — release manifests carry their platform, 2026-11-14
+
+**The platform gate.** Motivating finding — the 2026-11-14
+nightly evaluation of 2026-11-13 (EVALUATIONS.md, 2026-11-14
+section): on the day the phextnet became heterogeneous in
+fact — the Android port opened (an arm64 binary for a phone),
+a Windows laptop already live as a node, and the fleet
+wipe/rebirth/evolve re-announcing releases fleet-wide at
+23:29 — a release manifest still carried only version,
+sha256, and size. The gap had been recorded the same day
+(task 34.8.11/8.7.11/7.7.9) and left undispatched. In a
+fleet-wide rollout every node is offered the same version,
+so the version rule — the only pre-download guard — is
+useless in exactly the case that matters; a wrong-platform
+node was protected only by the swap's rollback, after the
+wrong bytes had already been downloaded and staged.
+
+What v1.6.2 does (one change: the manifest names its platform,
+and the update judgment reads it before any download):
+
+- `qexo release` stamps `platform: <os>-<arch>` (from the
+  built target's std::env::consts — linux-x86_64,
+  windows-x86_64, android-aarch64, ...) into the manifest
+  record, inside the signed text: the stamp is part of what
+  the signer's signature covers, and release prints it.
+- `qexo update` / `evolve`'s binary stage judge the stamp
+  after the trust rule and before any download: a trusted
+  offer stamped for another platform is skipped with the
+  reason printed (this node is X; the offer is for Y) and
+  concludes as the new outcome `WrongPlatform` — exit 0, no
+  receipt (a routine state in a mixed fleet: the signer
+  announces one manifest, and not every announcement is for
+  every node; a timer polling must not spam the ledger).
+  The gate never masks a signature refusal — trust failures
+  still hard-stop exactly as before.
+- An UNSTAMPED manifest (every pre-v1.6.2 announcement)
+  parses as platform None and proceeds, judged by signature,
+  version, and sha256 as before, with a printed note that
+  the offer carries no stamp. Refusing the standing
+  announcements would strand every node whose signer has
+  not re-announced yet; the stamp governs offers from
+  tonight forward.
+- Tests: the manifest compose/parse test now carries the
+  stamp; a legacy record with the platform line removed
+  parses as None (never an error, never an invented value);
+  the pure judgment is tested across platform pairs and the
+  local stamp's shape. Version: Cargo 1.6.1 → 1.6.2; VERSION
+  v1.6.2; the plan payload reports `plan_version: v1.6.2`.
+  No other behavior changes.
+
 ## 1.6.1 (v1.6.1) — Learn You a qexo! gets an app protocol, 2026-11-14
 
 **The learn wizard learns to be driven.** `qexo learn --app`

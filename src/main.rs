@@ -70,7 +70,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.6.1 (Cargo 1.6.1)");
+            println!("qexo v1.6.2 (Cargo 1.6.2)");
             0
         }
         Command::WiringCheck(dir) => {
