@@ -334,10 +334,6 @@ pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>) -
     let fp = match existing.last() {
         Some(f) => f.clone(),
         None => {
-            if !crate::crypto::gpg_available() {
-                eprintln!("qexo config: gpg is not available on this node; the node key cannot be set up");
-                return 1;
-            }
             match gpg.generate(&format!("qexo node {}", node), "qexo node key") {
                 Ok(f) => f,
                 Err(e) => {
@@ -375,7 +371,7 @@ pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>) -
             ("kind", "node key"),
             ("name", &name),
             ("fingerprint", &fp),
-            ("algorithm", "eddsa/ed25519, suite: gpg"),
+            ("algorithm", "eddsa/ed25519, suite: internal (rpgp)"),
             ("status", "active"),
             ("issued", &stamp),
             ("public key", &fmt_coord(&lattice::NODE_KEY_PUBLIC)),
@@ -750,7 +746,7 @@ pub fn register(args: &[String]) -> i32 {
                 // is promoted in place; its via/discovered lines
                 // stay, as provenance of how it was first met.
                 if let Err(e) = gpg.import_public(&armored) {
-                    eprintln!("qexo register: gpg import failed: {}", e);
+                    eprintln!("qexo register: key import failed: {}", e);
                     return 1;
                 }
                 let (_, stamp) = now_stamp();
@@ -833,7 +829,7 @@ pub fn register(args: &[String]) -> i32 {
         }
     }
     if let Err(e) = gpg.import_public(&armored) {
-        eprintln!("qexo register: gpg import failed: {}", e);
+        eprintln!("qexo register: key import failed: {}", e);
         return 1;
     }
     let (_, stamp) = now_stamp();

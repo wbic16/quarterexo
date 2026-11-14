@@ -2,7 +2,7 @@
 //!
 //! Two layers. The FILESYSTEM facts: the state directory exists
 //! and is writable, the state file exists and parses as phext,
-//! the GPG keyring directory is private (0700, on unix — modes
+//! the keyring directory (gnupg) is private (0700, on unix — modes
 //! do not exist elsewhere and the finding says so), no stale
 //! state lock is held by a dead process. The LATTICE facts (Layer 2):
 //! the home index and every homeland index exist, and every
