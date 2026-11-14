@@ -31,13 +31,40 @@ fn main() {
 }
 
 fn run(cmd: Command, args: &[String]) -> i32 {
+    // Intent first (v1.4.1): state resolution is intent-aware —
+    // a write-intending verb in unprivileged hands selects the
+    // per-user state when the system state is not writable by
+    // it, instead of adopting a state its first save will fail
+    // on; read-only verbs keep the v1.4.0 order exactly. The
+    // classification is the command enum itself, case by case:
+    // anything that can end in a state save is write-intending.
+    // (learn is write-intending in both forms: --status reports
+    // the operator's OWN deck, and a session saves grades.)
+    let write_intent = matches!(
+        cmd,
+        Command::Config { .. }
+            | Command::Register(_)
+            | Command::Host { .. }
+            | Command::Unhost(_)
+            | Command::Message { .. }
+            | Command::Release
+            | Command::Learn { .. }
+            | Command::Bare
+            | Command::Plan
+            | Command::Update { check: false }
+            | Command::Evolve { check: false }
+            | Command::Doctor { fix: true }
+    );
+    if write_intent {
+        lattice::set_write_intent();
+    }
     match cmd {
         Command::Help => {
             print!("{}", cli::help_text());
             0
         }
         Command::Version => {
-            println!("qexo v1.4.0 (Cargo 1.4.0)");
+            println!("qexo v1.4.1 (Cargo 1.4.1)");
             0
         }
         Command::WiringCheck(dir) => {

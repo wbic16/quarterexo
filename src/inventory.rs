@@ -210,7 +210,7 @@ fn find(query: &str) -> Option<(String, String)> {
 
 fn render_roster() -> String {
     let mut out = String::new();
-    out.push_str("phext ecosystem — inventory (baked into qexo v1.4.0; census 2026-11-14)\n");
+    out.push_str(&format!("phext ecosystem — inventory (baked into qexo v{}; census 2026-11-14)\n", env!("CARGO_PKG_VERSION")));
     let all = products();
     let n = all.len();
     for (i, (name, text)) in all.iter().enumerate() {

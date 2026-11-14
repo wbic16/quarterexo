@@ -31,6 +31,17 @@
 //!   the index scrolls — finding is navigation plus the index.
 //! - Revisions edit scrolls in place; git carries history.
 //!   Retirement is a `status:` line in the record.
+//! - A state is topped up on write (v1.4.1): `save` seeds any
+//!   index scroll the current layout defines that the document
+//!   lacks — a state born under an older binary becomes whole
+//!   under the new layout on its first write, and nothing it
+//!   already carries is ever touched by the seeding.
+//! - Which file IS the state is resolved intent-aware
+//!   (v1.4.1): a write-intending verb in unprivileged hands
+//!   never adopts a system state it cannot write; it selects
+//!   the per-user state instead. Read-only verbs keep the
+//!   v1.4.0 order unchanged. The full order is stated at
+//!   `pick_state_path`.
 //!
 //! The state's substance: every scrap of node state — metadata,
 //! keys, grants, personas, plan, ledgers, sessions — is scrolls
@@ -262,14 +273,10 @@ pub fn record(fields: &[(&str, &str)]) -> String {
     s
 }
 
-/// One-line shortening of a fingerprint for prose.
-pub fn fp_short(fp: &str) -> String {
-    if fp.len() > 16 {
-        format!("{}…{}", &fp[..8], &fp[fp.len() - 8..])
-    } else {
-        fp.to_string()
-    }
-}
+/// (v1.4.1: the fp_short helper is gone. Will's ruling from the
+/// v1.4.0 field test — "public keys shouldn't be shortened" —
+/// fingerprints print in full, all 40 hex characters, everywhere
+/// a human reads them. Callers use the fingerprint itself.)
 
 // ----------------------------------------------------------------
 // Record enumeration (truth lives in the records; doctor and the
@@ -374,7 +381,7 @@ pub fn regen_indexes(px: &mut Phext) {
                     label,
                     crate::phext::fmt_coord(&addr),
                     field(t, "name").or_else(|| field(t, "persona")).or_else(|| field(t, "peer")).unwrap_or_default(),
-                    field(t, "fingerprint").map(|f| format!("fingerprint {}", fp_short(&f))).unwrap_or_default()
+                    field(t, "fingerprint").map(|f| format!("fingerprint {}", f)).unwrap_or_default()
                 ));
             }
         }
@@ -539,7 +546,6 @@ pub fn regen_indexes(px: &mut Phext) {
         crate::phext::fmt_coord(&index_addr(HL_KEYS)),
         px.get(&NODE_KEY_RECORD)
             .and_then(|t| field(t, "fingerprint"))
-            .map(|f| fp_short(&f))
             .unwrap_or_else(|| "none".into()),
         count_cluster_books(px, [2, 2, 2, KEYS_PERSONA_C, 1])
             + count_cluster_books(px, [2, 2, 2, KEYS_PEER_C, 1])
@@ -596,9 +602,45 @@ pub fn regen_indexes(px: &mut Phext) {
     px.insert(HOME, home);
 }
 
-// ----------------------------------------------------------------
-// The state file itself
-// ----------------------------------------------------------------
+/// Every index scroll the current Layer 2 layout defines: the
+/// home index plus each homeland's anchor scroll, the tens
+/// included. This is the whole set a state must carry to be
+/// whole under the running binary's layout.
+pub fn index_addresses() -> Vec<Coord> {
+    let mut out = vec![HOME];
+    for h in [HL_KEYS, HL_PEERS, HL_PERSONAS, HL_PLAN, HL_LEDGERS, HL_MAIL, HL_TELEMETRY, HL_CONFIG, HL_LEARN] {
+        out.push(index_addr(h));
+    }
+    out
+}
+
+/// The state top-up (v1.4.1): seed any index scroll the current
+/// layout defines that this document lacks, with exactly the
+/// text `regen_indexes` would give it. Born of the v1.4.0 fleet
+/// refusal: states born under 1.3.0 carry no lessons homeland,
+/// so the new layout's index is missing through no damage of
+/// theirs — an upgraded state becomes whole by the running
+/// binary's own hand the first time it writes. Surgical by
+/// construction: an index that EXISTS is never touched (records
+/// and indexes alike), a missing one is copied from a scratch
+/// regeneration of this same document. Idempotent — a whole
+/// state seeds nothing. Returns the addresses seeded.
+pub fn seed_missing_indexes(px: &mut Phext) -> Vec<Coord> {
+    let missing: Vec<Coord> = index_addresses().into_iter().filter(|a| px.get(a).is_none()).collect();
+    if missing.is_empty() {
+        return Vec::new();
+    }
+    let mut scratch = px.clone();
+    regen_indexes(&mut scratch);
+    let mut seeded = Vec::new();
+    for a in missing {
+        if let Some(t) = scratch.get(&a) {
+            px.insert(a, t.clone());
+            seeded.push(a);
+        }
+    }
+    seeded
+}
 
 /// The system state path: /var/lib/qexo/state.phext — canonical
 /// for system installs (root-run services, the ranch fleet).
@@ -635,31 +677,70 @@ pub struct StateFacts {
     /// The system state file can be opened for reading by this
     /// process (only meaningful when it exists).
     pub system_readable: bool,
+    /// The system state file can be opened for writing by this
+    /// process (only meaningful when it exists). Probed with an
+    /// append-open, which grants or refuses on the file's own
+    /// permissions without altering a byte.
+    pub system_writable: bool,
     /// The per-user state file exists.
     pub user_exists: bool,
     /// This process runs privileged (effective uid 0 on Unix;
     /// never assumed on Windows).
     pub privileged: bool,
+    /// The running verb intends to WRITE state (v1.4.1): set by
+    /// main() from the parsed command — see `set_write_intent`.
+    pub write_intent: bool,
 }
 
-/// The resolution order (v1.4.0), stated exactly as shipped:
+/// The process's intent, declared once by main() before any
+/// state is touched: some verbs only read the node (list,
+/// status, doctor's check pass, the --check modes), and the
+/// rest write it (config, register, learn, plan, the apply
+/// modes, doctor --fix). Resolution is intent-aware (v1.4.1)
+/// because existence-plus-readability is the wrong test for a
+/// verb that will write: it handed a standard user the
+/// fleet's root-owned state to read, and the first write —
+/// qexo learn saving a graded card — died on permissions.
+static WRITE_INTENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn set_write_intent() {
+    WRITE_INTENT.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn write_intent() -> bool {
+    WRITE_INTENT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The resolution order (v1.4.1), stated exactly as shipped:
 ///   1. QEXO_STATE, when set non-empty (the caller's word).
-///   2. The system path, when the system state exists and this
+///   2. THE WRITE-INTENT RULE (new in v1.4.1): a write-intending
+///      verb in unprivileged hands, facing a system state it
+///      cannot write, selects the per-user path instead —
+///      existing or to be born there by config. The system
+///      state belongs to its owner; this user's node is their
+///      own. (Read-only verbs are untouched by this rule and
+///      keep the order below exactly as v1.4.0 shipped it.)
+///   3. The system path, when the system state exists and this
 ///      process can read it — a system install stays canonical,
 ///      byte-for-byte, and read-only verbs never fail on its
-///      permissions when a per-user state exists instead (rule 3
+///      permissions when a per-user state exists instead (rule 4
 ///      is what they fall to).
-///   3. The per-user path, when a per-user state exists.
-///   4. The system path again when it exists but cannot be read
+///   4. The per-user path, when a per-user state exists.
+///   5. The system path again when it exists but cannot be read
 ///      and no per-user state exists — the honest error names
 ///      the real file rather than inventing an empty node.
-///   5. Nothing exists: the system path for a privileged
+///   6. Nothing exists: the system path for a privileged
 ///      process, the per-user path otherwise (a fresh
 ///      `qexo config` as a normal user births a per-user node);
 ///      with no home directory to anchor to, the system path.
 /// A node has ONE state: the resolution finds the first that
 /// exists, and `qexo status` names which path is live.
 pub fn pick_state_path(facts: StateFacts, system: &std::path::Path, user: Option<&std::path::Path>) -> PathBuf {
+    if facts.write_intent && !facts.privileged && facts.system_exists && !facts.system_writable {
+        if let Some(u) = user {
+            return u.to_path_buf();
+        }
+    }
     if facts.system_exists && facts.system_readable {
         return system.to_path_buf();
     }
@@ -711,8 +792,14 @@ fn probe_facts(user: &Option<PathBuf>) -> StateFacts {
     StateFacts {
         system_exists,
         system_readable: system_exists && std::fs::File::open(&system).is_ok(),
+        // Append-open: asks the file's own permissions whether
+        // this process may write, without altering a byte and
+        // without creating anything (no create flag).
+        system_writable: system_exists
+            && std::fs::OpenOptions::new().append(true).open(&system).is_ok(),
         user_exists: user.as_ref().map(|u| u.exists()).unwrap_or(false),
         privileged: is_privileged(),
+        write_intent: write_intent(),
     }
 }
 
@@ -817,7 +904,18 @@ impl Lattice {
     /// Persist the whole document. Phext serializes canonically
     /// (ascending coordinates, delimiter ladder), so a save is a
     /// rewrite of one file — the format's write model, accepted.
-    pub fn save(&self) -> Result<(), String> {
+    ///
+    /// Every save first runs the state top-up (v1.4.1):
+    /// `seed_missing_indexes` makes the document whole under
+    /// the running binary's Layer 2 layout before it is written.
+    /// save() is the write boundary — every mutating verb ends
+    /// here, and no read or --check path ever reaches it (their
+    /// byte-inert guarantees are untouched) — so an inherited
+    /// state gains the homelands its birth binary predates on
+    /// the first write the new binary makes, whichever verb
+    /// that write belongs to.
+    pub fn save(&mut self) -> Result<(), String> {
+        seed_missing_indexes(&mut self.px);
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("{}: {}", parent.display(), e))?;
@@ -838,7 +936,7 @@ mod tests {
         let mut px = Phext::new();
         px.insert(HOME, "home".to_string());
         px.insert(IDENTITY, "second".to_string());
-        let lat = Lattice { px, path: path.clone() };
+        let mut lat = Lattice { px, path: path.clone() };
         lat.save().unwrap();
         let back = Lattice::load_from(&path).unwrap().expect("state exists");
         assert_eq!(back.px.scrolls, lat.px.scrolls);
@@ -904,7 +1002,13 @@ mod tests {
     // ---- state resolution (v1.4.0) ----
 
     fn facts(se: bool, sr: bool, ue: bool, priv_: bool) -> StateFacts {
-        StateFacts { system_exists: se, system_readable: sr, user_exists: ue, privileged: priv_ }
+        // read intent (v1.4.0's rows): writability is not probed
+        // into the decision, so its value here is inert.
+        StateFacts { system_exists: se, system_readable: sr, system_writable: true, user_exists: ue, privileged: priv_, write_intent: false }
+    }
+
+    fn facts_w(se: bool, sr: bool, sw: bool, ue: bool, priv_: bool) -> StateFacts {
+        StateFacts { system_exists: se, system_readable: sr, system_writable: sw, user_exists: ue, privileged: priv_, write_intent: true }
     }
 
     #[test]
@@ -927,6 +1031,78 @@ mod tests {
         assert_eq!(pick_state_path(facts(false, false, false, true), sys, Some(usr)), sys);
         assert_eq!(pick_state_path(facts(false, false, false, false), sys, Some(usr)), usr);
         assert_eq!(pick_state_path(facts(false, false, false, false), sys, None), sys);
+    }
+
+    #[test]
+    fn resolution_write_intent_never_adopts_an_unwritable_system_state() {
+        let sys = std::path::Path::new("/var/lib/qexo/state.phext");
+        let usr = std::path::Path::new("/home/op/.qexo/state.phext");
+        // THE v1.4.1 DEFECT ROW: system state exists, is readable,
+        // is NOT writable by this unprivileged process, and the
+        // verb intends to write (learn on a fleet node) — the
+        // per-user state is selected, whether or not it exists yet
+        assert_eq!(pick_state_path(facts_w(true, true, false, true, false), sys, Some(usr)), usr);
+        assert_eq!(pick_state_path(facts_w(true, true, false, false, false), sys, Some(usr)), usr);
+        // a system state this user CAN write stays canonical
+        assert_eq!(pick_state_path(facts_w(true, true, true, false, false), sys, Some(usr)), sys);
+        // root is never diverted (the fleet's behavior is unchanged)
+        assert_eq!(pick_state_path(facts_w(true, true, false, true, true), sys, Some(usr)), sys);
+        // nothing exists yet: the v1.4.0 birth order is untouched
+        assert_eq!(pick_state_path(facts_w(false, false, false, false, false), sys, Some(usr)), usr);
+        assert_eq!(pick_state_path(facts_w(false, false, false, false, true), sys, Some(usr)), sys);
+        // no home to anchor to: fall through to the honest path
+        assert_eq!(pick_state_path(facts_w(true, true, false, false, false), sys, None), sys);
+    }
+
+    #[test]
+    fn topup_seeds_only_what_is_missing() {
+        // a document carrying every index but the tens (the
+        // 1.3.0-born shape): exactly one seed, and every scroll
+        // it already held is byte-identical afterwards
+        let mut px = Phext::new();
+        px.insert(IDENTITY, record(&[("kind", "identity"), ("node", "topup-test")]));
+        regen_indexes(&mut px);
+        px.scrolls.remove(&index_addr(HL_LEARN));
+        let before = px.clone();
+        let seeded = seed_missing_indexes(&mut px);
+        assert_eq!(seeded, vec![index_addr(HL_LEARN)]);
+        for (a, t) in &before.scrolls {
+            assert_eq!(px.get(a), Some(t), "existing scroll at {:?} was touched", a);
+        }
+        assert!(px.get(&index_addr(HL_LEARN)).is_some());
+        // idempotent: a whole state seeds nothing
+        assert!(seed_missing_indexes(&mut px).is_empty());
+    }
+
+    #[test]
+    fn fixture_state_born_under_130_tops_up_on_save() {
+        // THE STANDING REGRESSION (v1.4.1): a real state born by
+        // the published 1.3.0 binary (tests/fixtures/, generated
+        // by that binary's own `qexo config`, never hand-edited)
+        // predates the lessons homeland. Loading it and saving —
+        // any write verb's ending — must top it up: the learn
+        // index appears, doctor's lattice check goes clean, and
+        // every scroll the 1.3.0 binary wrote survives untouched.
+        let text = include_str!("../tests/fixtures/state-1.3.0.phext");
+        let dir = std::env::temp_dir().join(format!("qexo-fixture-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.phext");
+        std::fs::write(&path, text).unwrap();
+        let mut lat = Lattice::load_from(&path).unwrap().expect("fixture loads");
+        assert!(lat.px.get(&index_addr(HL_LEARN)).is_none(), "fixture must predate the learn homeland");
+        let report = crate::doctor::check_lattice(&lat);
+        assert_eq!(report.problems(), 1, "the only complaint is the missing learn index: {}", report.render());
+        assert!(report.findings.iter().any(|f| !f.ok && f.fixable && f.item.contains("lessons")), "{}", report.render());
+        let before = lat.px.clone();
+        lat.save().unwrap();
+        let back = Lattice::load_from(&path).unwrap().expect("saved state loads");
+        assert!(back.px.get(&index_addr(HL_LEARN)).is_some(), "learn index topped up");
+        assert!(crate::doctor::check_lattice(&back).ok(), "doctor clean after the top-up");
+        for (a, t) in &before.scrolls {
+            assert_eq!(back.px.get(a), Some(t), "predecessor scroll at {:?} was touched", a);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

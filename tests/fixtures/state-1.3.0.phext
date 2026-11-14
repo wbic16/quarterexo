@@ -1,0 +1,123 @@
+qexo state — one address space
+
+This file is the node's whole state: every scrap of it —
+metadata, keys, grants, personas, plan, ledgers, sessions —
+as scrolls in one phext, addressed by meaning (Layer 2).
+Addresses are places; this scroll is the map, and the code
+keeps it current. Records are truth; indexes are derived
+prose, rebuilt from the records by `qexo doctor --fix`.
+
+node: qexo node aletheia-core (aletheia-core)
+born: 2026-11-14 07:16 UTC
+identity: 1.1.1/1.1.1/1.1.2
+
+Homelands:
+1.1.1/1.1.1/1.1.1 — this index; node identity beside it at 1.1.1/1.1.1/1.1.2
+2.2.2/2.2.2/2.2.2 — keys & trust: node key 4BCD9796…70F3BEAA, 0 record(s) in the neighboring runs
+3.3.3/3.3.3/3.3.3 — peers: 0 registered
+4.4.4/4.4.4/4.4.4 — personas: none yet
+5.5.5/5.5.5/5.5.5 — plan: no plan yet
+6.6.6/6.6.6/6.6.6 — ledgers & receipts: 1 entr(ies) across all kinds
+7.7.7/7.7.7/7.7.7 — mailbox & sessions: 0 hosted now
+8.8.8/8.8.8/8.8.8 — telemetry & forecasts: 0 disk observation(s)
+9.9.9/9.9.9/9.9.9 — config & wiring: the machine room
+kind: node identity
+name: qexo node aletheia-core
+node: aletheia-core
+born: 2026-11-14 07:16 UTC
+qexo: v1.3.0
+state: /home/wbic16/qexo-v141-fixture/state/state.phext
+kind: node key
+name: qexo node aletheia-core
+fingerprint: 4BCD9796133B1F00D9EE62B02CFCE3D270F3BEAA
+algorithm: eddsa/ed25519, suite: gpg
+status: active
+issued: 2026-11-14 07:16 UTC
+public key: 2.2.2/2.1.1/1.1.2
+-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mDMEavgK1xYJKwYBBAHaRw8BAQdATaGMf1rVcPwBY7nsev//T4x9BD0jHd8BzuBL
+yAT9Hna0J3FleG8gbm9kZSBhbGV0aGVpYS1jb3JlIChxZXhvIG5vZGUga2V5KYiT
+BBMWCgA7FiEES82XlhM7HwDZ7mKwLPzj0nDzvqoFAmr4CtcCGwMFCwkIBwICIgIG
+FQoJCAsCBBYCAwECHgcCF4AACgkQLPzj0nDzvqo2dwEAnrkkUnNiKDbeLGCD0O6/
+i4TZVWty58U1qNk6LulS6HAA/AqS0qHV500pxBMjfMwXwB8YnfiThJwF1YNCZuBx
+5z4N
+=z478
+-----END PGP PUBLIC KEY BLOCK-----
+keys & trust — homeland anchor 2.2.2/2.2.2/2.2.2
+
+Two parties, a key between them: the node's own key first,
+then persona keys, peer keys, grants, delegations, and policy,
+as neighboring runs.
+
+- node key 2.2.2/2.1.1/1.1.1 — fingerprint 4BCD9796133B1F00D9EE62B02CFCE3D270F3BEAA — status active
+- policy: 0 rule scroll(s) in the run from 2.2.2/7.1.1/1.1.1
+peers — homeland anchor 3.3.3/3.3.3/3.3.3
+
+Three-way handshake country: one cluster per registered peer,
+its record first and its armored public key beside it.
+
+no peers registered yet — qexo register <pubkey> adds one.
+personas — homeland anchor 4.4.4/4.4.4/4.4.4
+
+One cluster per persona: record, boot text as an adjacent
+scroll run, live state, and transcript.
+
+no personas yet — qexo host <persona> brings one home.
+plan — homeland anchor 5.5.5/5.5.5/5.5.5
+
+no plan emitted yet — bare qexo computes the first.
+history: 0 emitted plan(s) in the run from 5.5.5/3.1.1/1.1.1
+kind: receipt
+at: 2026-11-14 07:16 UTC
+action: config
+note: node born; state.phext initialized with the homeland map
+ledgers & receipts — homeland anchor 6.6.6/6.6.6/6.6.6
+
+The beast keeps the books: each kind its own run of entry
+scrolls, appended beside its kin.
+
+- receipts: 1 entr(ies) from 6.6.6/2.1.1/1.1.1
+- teleports: 0 entr(ies) from 6.6.6/3.1.1/1.1.1
+- instances: 0 entr(ies) from 6.6.6/4.1.1/1.1.1
+- emotion: 0 entr(ies) from 6.6.6/5.1.1/1.1.1
+- goal-activity: 0 entr(ies) from 6.6.6/6.1.1/1.1.1
+- sync-receipts: 0 entr(ies) from 6.6.6/7.1.1/1.1.1
+- releases: 0 entr(ies) from 6.6.6/8.1.1/1.1.1
+mailbox & sessions — homeland anchor 7.7.7/7.7.7/7.7.7
+
+hosted now: none.
+mailbox: 0 message scroll(s) in the run from 7.7.7/3.1.1/1.1.1
+telemetry & forecasts — homeland anchor 8.8.8/8.8.8/8.8.8
+
+Signals country: disk observations as a run of scrolls; the
+forecast gate reads the last two, as it always has.
+
+disk observations: 0
+kind: qexo config
+ollama endpoint: http://127.0.0.1:11434
+model: gemma4:e4b
+tasks source: 
+disk root: /home/wbic16/qexo-v141-fixture/state
+volume_lens: on
+disk_gate_free_amber_pct: 25
+disk_gate_free_red_pct: 10
+quota_lens: off
+quota_amber_gb: 95
+quota_red_gb: 102
+staging_root: /home/wbic16/qexo-v141-fixture/state
+file_amber: 1100000
+file_red: 1300000
+serve_bind: 127.0.0.1
+auto_update: off
+update_interval_hours: 24
+release_signer: 
+evolve: off
+config & wiring — homeland anchor 9.9.9/9.9.9/9.9.9
+
+The far corner is the machine room: qexo's own settings live
+in the config record here, as field lines — there is no config
+file anywhere else. The wiring registry (one scroll per module)
+follows it.
+
+config record: 9.9.9/2.1.1/1.1.1

@@ -1,3 +1,25 @@
+# qexo v1.4.1 (scratch line) — ship notes
+
+Status: v1.4.1 — the upgrade-path hotfix. v1.4.0's update
+post-check rolled back every state born under 1.3.0 (its
+doctor flags the missing lessons index, fixable, in check
+mode; the rollback removed the only binary that could fix
+it). v1.4.1: (1) homeland indexes top up on every state save,
+idempotently, on write paths only; (2) the post-check runs
+the new binary's `doctor --fix` and re-checks — fixable gaps
+become named repairs on the receipt, hard failures still
+roll back. The regression gate that was missing is standing:
+a real 1.3.0-born state fixture rides a signed two-node
+update end-to-end. Plus three field fixes: `list` URLs in
+the form that actually connects (fully-qualified tailnet
+names; the node's own serve URL on its self line; register
+records the DNS form), fingerprints printed in full
+everywhere, and intent-aware state resolution so `qexo
+learn` works as a standard user on a machine with a
+root-owned system state. See CHANGELOG 1.4.1.
+
+---
+
 # qexo v1.4.0 (scratch line) — ship notes
 
 Status: v1.4.0 BUILT AND GATED, 2026-11-14 — the install
