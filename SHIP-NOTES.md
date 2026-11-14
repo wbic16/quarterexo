@@ -1,3 +1,16 @@
+# qexo v1.4.2 (scratch line) — ship notes
+
+Status: v1.4.2 — one refinement on v1.4.1, caught by
+v1.4.1's own consumer proof: `qexo learn --status` with no
+per-user state yet errored "not born" on machines with a
+readable system state, where v1.4.0 answered. Now learn
+prefers an EXISTING per-user deck and otherwise falls
+through to the shipped order. Sessions stay
+write-intending. Everything else is v1.4.1, unchanged.
+See CHANGELOG 1.4.2.
+
+---
+
 # qexo v1.4.1 (scratch line) — ship notes
 
 Status: v1.4.1 — the upgrade-path hotfix. v1.4.0's update
