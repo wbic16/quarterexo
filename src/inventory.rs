@@ -143,6 +143,15 @@ const ROSTER: &[ProductSpec] = &[
         version: "live (HTTP 200, 2026-11-14)",
         evidence: "live probe of phext.io, 2026-11-14",
     },
+    ProductSpec {
+        name: "phccbox",
+        what: "a BusyBox replacement in one multicall binary, built end-to-end by phcc — GNU coreutils 9.12 plus the sed/grep/awk/dash/gzip/bzip2 families (104 of BusyBox's 403 applets)",
+        home: "github.com/wbic16/phcc (the phcc programme — phccbox has no repo or release of its own yet)",
+        install: "no public download yet — ranch-built only: on aletheia-core, take ~/phccbox/v1.1/phccbox AND ~/phccbox/v1.1/libstdbuf.so together into one directory (stdbuf needs its .so beside the binary) and invoke it under the exact name phccbox",
+        launch: "phccbox --list (122 entries); phccbox <applet> [args...]; phccbox --install <dir> lays an applet symlink farm",
+        version: "v1.1 (ranch build, 2026-11-07) — not published: no GitHub release, no registry package",
+        evidence: "binary verified live on aletheia-core, 2026-11-14: ~/phccbox/v1.1/phccbox, 5,136,620 B, sha256 a47222050482a12f55984c357ab49f557ce3fdc26ea39f673454644da932d1a2, --list = 122 entries; GitHub API the same day: wbic16/phcc has no releases and no wbic16/phccbox repo exists",
+    },
 ];
 
 /// One product's phext record text (field lines, lattice style).
@@ -270,7 +279,7 @@ mod tests {
     fn roster_renders_every_baked_product() {
         let out = render_roster();
         assert_eq!(products().len(), ROSTER.len());
-        assert_eq!(ROSTER.len(), 11, "the census baked 11 products");
+        assert_eq!(ROSTER.len(), 12, "the census baked 11 products; phccbox added by Will's direction, 2026-11-14");
         for p in ROSTER {
             assert!(out.contains(p.name), "roster render is missing {}", p.name);
         }
