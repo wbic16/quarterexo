@@ -53,7 +53,7 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "verbs-config",
         front: "What does `qexo config` do — and where does a per-user install keep its state?",
-        back: "Births the node: creates the state phext and sets up the node GPG key. The state path resolves as: QEXO_STATE when set, else /var/lib/qexo/state.phext when it exists and is readable, else ~/.qexo/state.phext. A normal user births a per-user node — no sudo anywhere.",
+        back: "Births the node: creates the state phext and sets up the node GPG key. The state path resolves as: QEXO_STATE when set; for a verb that writes, your per-user state whenever the system state is not writable by you; else /var/lib/qexo/state.phext when it exists and is readable; else ~/.qexo/state.phext. A normal user births a per-user node — no sudo anywhere.",
     },
     CardSpec {
         id: "verbs-register",
@@ -93,7 +93,7 @@ const DECK: &[CardSpec] = &[
     CardSpec {
         id: "verbs-update",
         front: "How does `qexo update` decide whether to swap the binary?",
-        back: "It polls registered peers for the trusted signer's release manifest, verifies the detached GPG signature over the manifest and the binary's size + sha256 BEFORE swapping, keeps qexo.prev, and rolls back if the swapped binary fails its post-check. --check reports only — downloads and changes nothing.",
+        back: "It polls registered peers for the trusted signer's release manifest, verifies the detached GPG signature over the manifest and the binary's size + sha256 BEFORE swapping, and keeps qexo.prev. The post-check runs the new binary's doctor: fixable state gaps (a homeland index the state predates) are repaired in place by the new binary and named in the receipt; hard failures roll back. --check reports only — downloads and changes nothing.",
     },
     CardSpec {
         id: "verbs-evolve",

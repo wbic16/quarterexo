@@ -1,5 +1,69 @@
 # qexo changelog — the scratch line
 
+## 1.4.1 (v1.4.1) — the upgrade-path hotfix, 2026-11-14
+
+**The defect, stated plainly:** v1.4.0's update post-check ran
+doctor in check mode against the state the node inherited.
+States born under 1.3.0 carry no lessons homeland (10.10.10),
+so the new doctor's only complaint was a missing homeland
+index — a finding doctor itself marks fixable. The post-check
+failed anyway, the rollback restored 1.3.0, and the rollback
+removed the only binary that could run the fix. The fleet
+refused 1.4.0 fleet-wide, cleanly, with receipts. The battery
+had never updated a predecessor-born state — every test state
+was 1.4.0-born.
+
+**The fix is two layers.** (1) State top-up on write: every
+`Lattice::save` first seeds any homeland index scroll the
+current Layer 2 layout defines that the document lacks — an
+upgraded state becomes whole by the running binary's own hand,
+idempotently, touching nothing that already exists. Read and
+--check paths never write, so their byte-inert guarantees
+stand. (2) Post-check repair distinction: when the swapped
+binary's doctor fails, the new binary's own `doctor --fix`
+runs, repairs only what doctor labels fixable, and the check
+runs again; repairs are named in the update receipt and in the
+console. Hard problems (an unparseable state, a missing
+keyring) still roll back. A reload-before-receipt step keeps
+the receipt save from clobbering repairs the new binary made.
+
+**The missing regression gate is now standing:** a real
+1.3.0-born state (tests/fixtures/state-1.3.0.phext, born by
+the published 1.3.0 binary's own `qexo config`, never
+hand-edited) rides a full signed two-node update in the
+battery — the offer must be accepted, the learn index present
+after, doctor clean, the repair on the receipt — and the same
+fixture is an in-crate test for every future version.
+
+**Three field defects from Will's v1.4.0 install, folded in.**
+(1) URLs from `qexo list` didn't connect from aletheia-core.
+Diagnosis on the node: a bare hostname resolves to the
+machine's LAN address (aletheia-core → 127.0.1.1, rock-mountain
+→ its 192.168 address), where serve does not listen — and the
+live fleet display printed `http://peer-768b2a06:8484`, a
+synthetic record name dressed as a hostname, which names
+nothing at all. Only the fully-qualified tailnet name
+(`*.pizzly-halfmoon.ts.net`, carried in resolv.conf's search
+line) resolved to where serve listens. Now: `list` prints the
+fully-qualified tailnet form where a hostname is known
+(host: from the key, else a real record name), the recorded
+endpoint verbatim where no hostname exists (a tailnet IP
+connects as printed), and the node's own serve URL on its
+self line; `register` records a bare tailnet-IP endpoint in
+its DNS form when the hostname is known. (2) Public keys are
+never shortened: fingerprints print in full — all 40 hex —
+everywhere a human reads them (list, status, register, update,
+evolve, receipts as printed, index scrolls). (3) `qexo learn`
+couldn't run as a standard user: resolution tested existence
+plus readability, which hands an unprivileged user the
+fleet's root-owned state — and the first save dies with
+Permission denied. Resolution is intent-aware now: a
+write-intending verb in unprivileged hands selects the
+per-user state whenever the system state is not writable by
+it (learn in both forms, config, register, plan, the apply
+modes, doctor --fix); read-only verbs keep the v1.4.0 order
+exactly, and root's fleet behavior is unchanged.
+
 ## 1.4.0 (v1.4.0) — built and gated, 2026-11-14
 
 **The install model changes: qexo no longer assumes root.**

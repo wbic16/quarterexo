@@ -93,18 +93,32 @@ being rewritten at its new full 9D home with a forwarding line left
 behind — the way a landscape actually evolves, as CYOA's history
 shows.
 
-## Where the file lives (v1.4.0)
+## Where the file lives (v1.4.1)
 
 The state file's PATH is resolved, in this order: QEXO_STATE when
-set; the system path /var/lib/qexo/state.phext when it exists and
-is readable; the per-user path ~/.qexo/state.phext (Windows: under
-the user profile) when a per-user state exists; the system path
-again when it exists unreadable with no per-user state (the honest
-error names the real file); and for a fresh birth, the system path
-for a privileged process, the per-user path otherwise — with a
-birth-time fallback to the per-user path when the system directory
-cannot be created by the user running `qexo config`. A node has
-ONE state; the resolution finds the first that exists, and
-`qexo status` names which path is live. System installs are
-unchanged: root's /var/lib/qexo remains canonical wherever it
-exists and is readable.
+set; then ONE intent-aware step (v1.4.1) — when the verb WRITES
+and the process is unprivileged and the system state exists but
+is not writable by this process, the per-user path answers,
+because adopting a state the verb's first save cannot write is
+a resolution error, whatever its readability; then the system
+path /var/lib/qexo/state.phext when it exists and is readable;
+the per-user path ~/.qexo/state.phext (Windows: under the user
+profile) when a per-user state exists; the system path again
+when it exists unreadable with no per-user state (the honest
+error names the real file); and for a fresh birth, the system
+path for a privileged process, the per-user path otherwise —
+with a birth-time fallback to the per-user path when the system
+directory cannot be created by the user running `qexo config`.
+A node has ONE state; the resolution finds the first that
+exists, and `qexo status` names which path is live. System
+installs are unchanged: root's /var/lib/qexo remains canonical
+wherever it exists and is readable, and privileged processes
+never divert.
+
+On write, the document is completed before it is stored: any
+homeland index scroll the current layout defines that the
+document lacks is seeded, byte-identical to what index
+regeneration would write, touching nothing that exists. That
+is how a state born under an earlier layout becomes whole
+under a newer binary — by the binary's own hand, on its first
+write, never by a migration.
