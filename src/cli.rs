@@ -16,7 +16,7 @@ pub enum Command {
     /// parse / explode / implode / seal / unseal / select / get,
     /// with their raw argument tails.
     FileOp(Vec<String>),
-    Config { auto_update: bool, evolve: bool },
+    Config { auto_update: bool, evolve: bool, release_signer: Option<String> },
     Doctor { fix: bool },
     List,
     Register(Vec<String>),
@@ -43,10 +43,23 @@ pub fn parse(args: &[String]) -> Command {
         "parse" | "explode" | "implode" | "seal" | "unseal" | "select" | "get" => {
             Command::FileOp(args.to_vec())
         }
-        "config" => Command::Config {
-            auto_update: args.iter().any(|a| a == "--auto-update"),
-            evolve: args.iter().any(|a| a == "--evolve"),
-        },
+        "config" => {
+            let mut release_signer: Option<String> = None;
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--release-signer" && i + 1 < args.len() {
+                    release_signer = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            Command::Config {
+                auto_update: args.iter().any(|a| a == "--auto-update"),
+                evolve: args.iter().any(|a| a == "--evolve"),
+                release_signer,
+            }
+        }
         "doctor" => Command::Doctor { fix: args.iter().any(|a| a == "--fix") },
         "list" => Command::List,
         "register" => Command::Register(args[1..].to_vec()),
@@ -84,7 +97,7 @@ pub fn parse(args: &[String]) -> Command {
 
 pub fn help_text() -> String {
     let mut s = String::new();
-    s.push_str("qexo v1.2.1 — the Exocortex coordinator (phext-native)\n");
+    s.push_str("qexo v1.3.0 — the Exocortex coordinator (phext-native)\n");
     s.push_str("All node state lives in one file: /var/lib/qexo/state.phext\n");
     s.push_str("(QEXO_STATE overrides the path for development and tests.)\n\n");
 
@@ -99,6 +112,7 @@ pub fn help_text() -> String {
     s.push_str("  qexo config               birth the node: create state.phext, set up the node GPG key\n");
     s.push_str("  qexo config --auto-update turn automatic updates on (config record) and install the systemd timer where possible\n");
     s.push_str("  qexo config --evolve      set evolve: on — the automatic timer's trigger becomes a full evolve pass\n");
+    s.push_str("  qexo config --release-signer <FP>\n                            set the trusted release signer fingerprint in the config record\n");
     s.push_str("                            instead of update alone (update is one stage of evolve; see below)\n");
     s.push_str("  qexo list                 the registered peers\n");
     s.push_str("  qexo register <pubkey> [--endpoint <url>]   register a peer's public key (armored text, a file path, or - for stdin);\n");
@@ -147,8 +161,9 @@ pub fn help_text() -> String {
     s.push_str("  qexo implode <file>       parse + re-serialize (canonical form check)\n");
     s.push_str("  qexo seal <file>          write <file>.xz (stored-form seal)\n");
     s.push_str("  qexo unseal <file.xz>     print the unsealed text\n");
-    s.push_str("  qexo select <file> <coord>   print one scroll\n");
-    s.push_str("  qexo get <file> <coord>      same as select\n");
+    s.push_str("  qexo select <file> <coord>   print one scroll from a phext file\n");
+    s.push_str("  qexo select <coord>          print one scroll from this node's state\n");
+    s.push_str("  qexo get ...                 same as select, both forms\n");
     s
 }
 
@@ -166,9 +181,10 @@ mod tests {
         assert_eq!(parse(&v(&["--help"])), Command::Help);
         assert_eq!(parse(&v(&["-h"])), Command::Help);
         assert_eq!(parse(&v(&["help"])), Command::Help);
-        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false, evolve: false });
-        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true, evolve: false });
-        assert_eq!(parse(&v(&["config", "--evolve"])), Command::Config { auto_update: false, evolve: true });
+        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false, evolve: false, release_signer: None });
+        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true, evolve: false, release_signer: None });
+        assert_eq!(parse(&v(&["config", "--evolve"])), Command::Config { auto_update: false, evolve: true, release_signer: None });
+        assert_eq!(parse(&v(&["config", "--release-signer", "A4E7277FB3EB0E589604BE5B506DBE3FC209E755"])), Command::Config { auto_update: false, evolve: false, release_signer: Some("A4E7277FB3EB0E589604BE5B506DBE3FC209E755".to_string()) });
         assert_eq!(parse(&v(&["release"])), Command::Release);
         assert_eq!(parse(&v(&["update"])), Command::Update { check: false });
         assert_eq!(parse(&v(&["update", "--check"])), Command::Update { check: true });

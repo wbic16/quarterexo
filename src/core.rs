@@ -235,7 +235,24 @@ fn evolve_enabled(lat: &Lattice) -> bool {
         .unwrap_or(false)
 }
 
-pub fn config(auto_update: bool, evolve: bool) -> i32 {
+/// `qexo config --release-signer <FP>`: the operator's act of
+/// trust as a command, instead of a hand edit of the config
+/// scroll (the gap Will hit on 2026-11-13, setting the signer
+/// from Phext Notepad because no setter existed). Writes the
+/// fingerprint into the config record's `release_signer` field
+/// line, via the lattice's field editor; the record itself is
+/// config's seeding, created before this runs when absent.
+fn apply_release_signer(lat: &mut Lattice, signer: &str) {
+    let mut text = lat
+        .px
+        .get(&lattice::CONFIG_RECORD)
+        .cloned()
+        .unwrap_or_else(|| "kind: qexo config\n".to_string());
+    text = lattice::set_field(&text, "release_signer", signer);
+    lat.px.insert(lattice::CONFIG_RECORD, text);
+}
+
+pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>) -> i32 {
     let dir = lattice::state_dir();
     let path = lattice::state_path();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -263,17 +280,29 @@ pub fn config(auto_update: bool, evolve: bool) -> i32 {
         let mut added = ensure_gate_config(&mut lat);
         added.extend(ensure_update_config(&mut lat));
         added.extend(ensure_evolve_config(&mut lat));
-        if !added.is_empty() {
+        let signer_set = match &release_signer {
+            Some(signer) => {
+                apply_release_signer(&mut lat, signer);
+                true
+            }
+            None => false,
+        };
+        if !added.is_empty() || signer_set {
             lattice::regen_indexes(&mut lat.px);
             if let Err(e) = lat.save() {
                 eprintln!("qexo config: cannot save state: {}", e);
                 return 1;
             }
-            println!("config defaults added: {}", added.join(", "));
+            if !added.is_empty() {
+                println!("config defaults added: {}", added.join(", "));
+            }
         }
         println!("already configured — this node was born {}", lattice::field(lat.px.get(&lattice::IDENTITY).map(|s| s.as_str()).unwrap_or(""), "born").unwrap_or_default());
         println!("state: {}", path.display());
         println!("node key fingerprint: {}", fp);
+        if let Some(signer) = &release_signer {
+            println!("release signer set: {}", signer);
+        }
         println!("home: {}", fmt_coord(&lattice::HOME));
         if evolve {
             let code = finish_evolve_flag();
@@ -324,7 +353,7 @@ pub fn config(auto_update: bool, evolve: bool) -> i32 {
             ("name", &name),
             ("node", &node),
             ("born", &stamp),
-            ("qexo", "v1.2.1"),
+            ("qexo", "v1.3.0"),
             ("state", &path.display().to_string()),
         ]),
     );
@@ -390,6 +419,9 @@ pub fn config(auto_update: bool, evolve: bool) -> i32 {
         }
     }
 
+    if let Some(signer) = &release_signer {
+        apply_release_signer(&mut lat, signer);
+    }
     let receipt = append_receipt(&mut lat.px, "config", &[("note", "node born; state.phext initialized with the homeland map")]);
     lattice::regen_indexes(&mut lat.px);
     if let Err(e) = lat.save() {
@@ -401,6 +433,9 @@ pub fn config(auto_update: bool, evolve: bool) -> i32 {
     println!("node key fingerprint: {}", fp);
     println!("home index: {}", fmt_coord(&lattice::HOME));
     println!("birth receipt: {}", fmt_coord(&receipt));
+    if let Some(signer) = &release_signer {
+        println!("release signer set: {}", signer);
+    }
     if evolve {
         let code = finish_evolve_flag();
         if code != 0 {
@@ -1346,7 +1381,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.2.1 — node status");
+    println!("qexo v1.3.0 — node status");
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,

@@ -1,6 +1,6 @@
 [package]
 name = "qexo"
-version = "1.2.1"
+version = "1.3.0"
 description = "qexo — the Exocortex coordinator, phext-native: all node state lives in /var/lib/qexo/state.phext (Layer 2 addressing over phext)"
 license = "MIT"
 edition = "2021"
@@ -14,6 +14,15 @@ include = [
     "Cargo.toml", "CHANGELOG.md", "SHIP-NOTES.md", "VERSION",
     "qexo-bake.toml", "docs/**", "README.md",
 ]
+
+[dependencies]
+# The phext reckoning is libphext-rs's (v1.3.0): the reference
+# implementation SQ and Phext Notepad share. Pinned at 0.6.0 —
+# the chains release (0x02 chain break, 0x03 chain close, $N:
+# universe addressing) — resolved from the crates.io registry.
+# qexo's src/phext.rs is only an adapter; it uses none of the
+# chain surface yet (chains are a separate slice, if ever).
+libphext = "0.6.0"
 
 [profile.release]
 opt-level = 2
