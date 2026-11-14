@@ -1,3 +1,17 @@
+# qexo v1.5.0 (scratch line) — ship notes
+
+Status: v1.5.0 — the Learn You a qexo! wizard: `qexo learn`
+on a terminal opens a chapter map with a lesson screen per
+chapter and due cards as practice; the SM-2-lite engine,
+the 22-card deck and the state records are unchanged.
+Progress header on every screen; single-key flow (space /
+1-2-3 / b / d / q); every line wrapped to terminal width,
+40 columns by default (phone-first); Unix cbreak via
+std-only termios, line mode where raw mode is unavailable;
+piped stdin keeps the status view. See CHANGELOG 1.5.0.
+
+---
+
 # qexo v1.4.2 (scratch line) — ship notes
 
 Status: v1.4.2 — one refinement on v1.4.1, caught by

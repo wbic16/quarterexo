@@ -1,5 +1,33 @@
 # qexo changelog — the scratch line
 
+## 1.5.0 (v1.5.0) — Learn You a qexo!, 2026-11-14
+
+**The learn wizard.** `qexo learn` on a terminal is now a
+guided wizard in the Learn You a Haskell spirit, built at
+Will's direction ("qexo learn needs to be a learnyouqexo
+wizard TUI"). The engine is untouched — same 22-card deck,
+same SM-2-lite scheduling, same records in state.phext —
+only the surface changed:
+
+- A chapter map of qexo's capabilities: seven chapters from
+  First steps to The whole shelf, each with its mastery and
+  due counts.
+- A short lesson screen per chapter, in a playful-but-plain
+  voice drawn only from the shipped CLI's actual behavior.
+- Practice interleaved with the lessons: a chapter's due
+  cards, or the whole due queue (stalest first, as before).
+- The progress header rides every screen: mastered, due,
+  session streak, next due.
+- Keyboard-first: space reveals, 1/2/3 grade (a/g/e too),
+  b returns to the map, d jumps to the due queue, q quits
+  from anywhere. Progress saves after every card, as before.
+- Phone-terminal-first: every line wraps to the terminal
+  width (40 columns when the size is unknown — the Termux
+  shape). Unix runs cbreak mode via std-only termios; where
+  raw mode is unavailable (Windows) the same screens run in
+  line mode. Piped stdin still gets the status view and
+  --status still never writes.
+
 ## 1.4.2 (v1.4.2) — the learn-resolution refinement, 2026-11-14
 
 **A regression v1.4.1 introduced, caught by its own
