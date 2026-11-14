@@ -16,8 +16,11 @@ Will's rulings this design answers to, in his words:
    or plain text rendered from scrolls.
 2. **One state file.** Everything the node owns and mutates — metadata,
    keys, grants, policy, peers, personas, plan, ledgers, mailbox, hosted
-   sessions — lives in `/var/lib/qexo/state.phext`. QEXO_STATE overrides
-   the path for development and tests only.
+   sessions — lives in one state.phext: the system path
+   `/var/lib/qexo/state.phext` where a system install exists, else the
+   per-user path `~/.qexo/state.phext` (v1.4.0's resolution order, stated
+   in docs/LAYER2.md). QEXO_STATE overrides the path for development and
+   tests only.
 3. **State is born, not converted.** There are no deployments; nothing
    exists to migrate. `qexo config` (or first run) creates the file and
    lays down the neighborhood map, empty. No import code exists.

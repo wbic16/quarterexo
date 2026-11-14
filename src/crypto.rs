@@ -137,6 +137,31 @@ impl Gpg {
         Err("no fingerprint in key material".to_string())
     }
 
+    /// The user ID carried by an armored public key (the `uid`
+    /// line of the same --with-colons listing fingerprint_of
+    /// reads). A qexo node key's uid is "qexo node <hostname>
+    /// (qexo node key)" — register derives the peer's `host:`
+    /// field from it, so displays can name machines instead of
+    /// surfacing bare addresses.
+    pub fn name_of(&self, armored: &str) -> Result<String, String> {
+        let (ok, out, err) = self.run(&["--show-keys", "--with-colons"], Some(armored.as_bytes()))?;
+        if !ok {
+            return Err(format!("gpg show-keys failed: {}", err.trim()));
+        }
+        let text = String::from_utf8_lossy(&out);
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split(':').collect();
+            if fields.first().copied() == Some("uid") {
+                if let Some(uid) = fields.get(9) {
+                    if !uid.is_empty() {
+                        return Ok(uid.to_string());
+                    }
+                }
+            }
+        }
+        Err("no user id in key material".to_string())
+    }
+
     pub fn import_public(&self, armored: &str) -> Result<String, String> {
         let (ok, out, err) = self.run(&["--import"], Some(armored.as_bytes()))?;
         let text = format!("{}{}", String::from_utf8_lossy(&out), err);

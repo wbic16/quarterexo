@@ -14,7 +14,9 @@ mod doctor;
 #[allow(dead_code)]
 mod hash;
 mod infer;
+mod inventory;
 mod lattice;
+mod learn;
 mod phext;
 mod plan;
 mod wiring;
@@ -35,7 +37,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.3.0 (Cargo 1.3.0)");
+            println!("qexo v1.4.0 (Cargo 1.4.0)");
             0
         }
         Command::WiringCheck(dir) => {
@@ -96,7 +98,9 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         }
         Command::Bare | Command::Plan => core::plan_cmd(),
         Command::Config { auto_update, evolve, release_signer } => core::config(auto_update, evolve, release_signer),
-        Command::List => core::list(),
+        Command::List { json } => core::list(json),
+        Command::Learn { status } => learn::learn(status),
+        Command::Inventory { name, install } => inventory::inventory(name, install),
         Command::Register(args) => core::register(&args),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),

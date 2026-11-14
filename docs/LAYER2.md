@@ -78,9 +78,33 @@ is a set of 9D addresses, never a partial address.
   at 8.8.8/7.7.7/1.1.1 in CYOA — signals country)
 - **9.9.9/9.9.9/9.9.9** — config & wiring (the far corner is the
   machine room)
+- **10.10.10/10.10.10/10.10.10** — lessons & learning (added in
+  v1.4.0: the tens — practice, repeated). The `qexo learn`
+  curriculum deck lives here: one cluster for the deck (cluster
+  2), one scroll per card in curriculum order, each card's
+  scheduling fields (due, interval_days, ease, reps, lapses) as
+  field lines updated in place. The pattern extends by one —
+  the ones-to-nines are the node's records of the world; the
+  tens are its record of the operator's practice.
 
 These are first placements, not a schema: if a family's life pulls
 it elsewhere, the index scroll is updated and the record moves by
 being rewritten at its new full 9D home with a forwarding line left
 behind — the way a landscape actually evolves, as CYOA's history
 shows.
+
+## Where the file lives (v1.4.0)
+
+The state file's PATH is resolved, in this order: QEXO_STATE when
+set; the system path /var/lib/qexo/state.phext when it exists and
+is readable; the per-user path ~/.qexo/state.phext (Windows: under
+the user profile) when a per-user state exists; the system path
+again when it exists unreadable with no per-user state (the honest
+error names the real file); and for a fresh birth, the system path
+for a privileged process, the per-user path otherwise — with a
+birth-time fallback to the per-user path when the system directory
+cannot be created by the user running `qexo config`. A node has
+ONE state; the resolution finds the first that exists, and
+`qexo status` names which path is live. System installs are
+unchanged: root's /var/lib/qexo remains canonical wherever it
+exists and is readable.

@@ -1,3 +1,25 @@
+# qexo v1.4.0 (scratch line) — ship notes
+
+Status: v1.4.0 BUILT AND GATED, 2026-11-14 — the install
+model release. State resolution generalizes the Android
+home fallback to every platform (QEXO_STATE, then the
+readable system state, then the per-user state ~/.qexo;
+per-user births need no sudo, proven in a mount namespace
+against an unreadable system state). `qexo list` renders
+the phextnet as a navigation tree; peers carry a host:
+field read from their key's user id, and displays name
+machines instead of surfacing bare IPs. Two new verbs:
+`qexo learn` (a 22-card spaced-repetition deck in the new
+10.10.10 homeland) and `qexo inventory` (the ecosystem
+roster from a 201-repo census — 11 verified products baked,
+each with its evidence). Gates: 71/71 unit tests, 42/42 CLI
+battery, interop against the published crates.io qexo
+1.3.0, conformance census identical to v1.3.0 (15/830/2),
+windows-gnu and aarch64-android links green. The parser
+layer is untouched. See CHANGELOG 1.4.0.
+
+---
+
 # qexo v1.3.0 (scratch line) — ship notes
 
 Status: v1.3.0 BUILT AND GATED, 2026-11-13 — the parser is
