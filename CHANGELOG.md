@@ -1,5 +1,95 @@
 # qexo changelog — the scratch line
 
+## 1.4.0 (v1.4.0) — built and gated, 2026-11-14
+
+**The install model changes: qexo no longer assumes root.**
+Through v1.3.0 the state path was /var/lib/qexo/state.phext,
+full stop — so the first person to `cargo install qexo` and
+run it as themselves met permission walls: read verbs wanted
+sudo, and a fresh `qexo config` needed root to birth. v1.4.0
+resolves the state path, in this order: QEXO_STATE when set;
+the system path /var/lib/qexo/state.phext when it exists and
+is readable; the per-user path ~/.qexo/state.phext (Windows:
+under the user profile) when a per-user state exists; the
+system path again when it exists unreadable with no per-user
+state (the honest error names the real file); and for a fresh
+birth, the system path for a privileged process, the per-user
+path otherwise — with a birth-time fallback to the per-user
+path, announced out loud, when the system directory cannot be
+created by the user running `qexo config`. Read-only verbs
+never require sudo and never fail on system-path permissions
+when a per-user state exists; a per-user node is whole — state
+and GPG keyring side by side under ~/.qexo. A node has ONE
+state: resolution finds the first that exists, `qexo status`
+names the live path, and there is no migration — no per-user
+deployments existed to migrate from. System installs are
+unchanged, byte-for-byte: root's /var/lib/qexo stays canonical
+wherever it exists and is readable (the fleet runs exactly
+that, untouched).
+
+**`qexo list` is a navigation tree now.** The phextnet renders
+rooted at the peers anchor 3.3.3/3.3.3/3.3.3: this node first
+and marked, each peer nested under its record address with its
+name, status (registered/discovered), and endpoint — Phext
+Notepad style, plain ASCII-safe branch marks. `list --json`
+keeps the flat machine shape (JSON is the interop gasket,
+unchanged); the serve route /v1/peers keeps the flat text form.
+
+**Peers have names: the host: field.** At register, the peer's
+host name is read from its key's user id ("qexo node <host>
+(qexo node key)") and recorded as the record's host: field;
+re-registering backfills it on records that predate it, and
+gossip carries it into discovered records. Displays — the list
+tree, status, update and evolve output — show hostnames, and
+an endpoint whose authority is a bare IPv4 address is shown
+by name instead; the recorded endpoint is never rewritten
+(polling dials what the operator registered) and a bare IP
+surfaces only when no name is known. Records that predate
+host: display by their record name with no rewrite — for the
+fleet those names ARE the tailnet hostnames. The fleet
+convention (name = tailnet hostname; register by hostname
+endpoint) is written into the register/config help text.
+
+**`qexo learn` — spaced repetition over qexo's own surface.**
+A 22-card curriculum deck lives in a new Layer 2 homeland —
+10.10.10/10.10.10/10.10.10, lessons & learning (the tens:
+practice, repeated) — one scroll per card at cluster 2, front
+and back as field lines, scheduling fields (due,
+interval_days, ease, reps, lapses) updated in place by
+practice. The deck ships with the binary and seeds into state
+on the first session, never overwriting a card already in
+state. Cards cover every verb, the trust model (signer, GPG,
+discovery-is-never-trust), the phextnet shape, and the state
+homelands, each checked against --help. SM-2-lite: again =
+lapse, interval 1d, ease −0.20 (floor 1.3), reps reset; good =
+1d then interval × ease; easy = 3d then interval × ease × 1.3,
+ease +0.15. Mastered = interval ≥ 21 days. Interactive
+sessions run due cards (Enter to reveal, grade 1/2/3, saved
+after every card); --status reports deck/due/mastered without
+writing; piped stdin prints the status view instead of
+hanging.
+
+**`qexo inventory` (alias `catalog`) — the ecosystem roster.**
+A baked, phext-native roster of the phext ecosystem: every
+product with what it is, its home, and its install/launch
+lines. The roster is a census, not a hand list — all 201
+wbic16 GitHub repos were enumerated and their outputs judged;
+only products with a verified published artifact are baked
+(crates.io / PyPI / npm packages, GitHub release assets, a
+live hosted product, or a documented library): 11 entries,
+each carrying its verification evidence and the census date
+(2026-11-14). `qexo inventory <name>` prints one full record;
+`--install <name>` is print-only — qexo never installs
+ecosystem products silently. Notable exclusions, all in the
+census record: phext-mcp (its README documents a cargo
+install command for a crate that does not exist on crates.io),
+md2phext and the Android port and exo-search (real tools, no
+published artifact yet), and three name-collision crates
+(weft, tersify, hello-phext) that are NOT Will's.
+
+The parser layer is untouched: the conformance census against
+the libphext 0.6.0 probe is unchanged from v1.3.0.
+
 ## 1.3.0 (v1.3.0) — built and gated, 2026-11-13
 
 **libphext-rs is the parser now.** qexo no longer reckons

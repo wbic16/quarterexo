@@ -4,8 +4,11 @@ qexo is the Exocortex coordinator: a single Rust binary that keeps
 a node's working state — identity, keys, peers, personas, plan,
 ledgers — and offers it to the operator and to peer nodes.
 
-This line (1.0) is phext-native from scratch. All node state lives
-in **one file, `/var/lib/qexo/state.phext`**, addressed in the
+This line is phext-native from scratch. All node state lives
+in **one phext file** — the system path `/var/lib/qexo/state.phext`
+for system installs, the per-user path `~/.qexo/state.phext` for a
+plain `cargo install qexo` (resolved in that order; see
+docs/LAYER2.md, "Where the file lives") — addressed in the
 Layer 2 scheme over phext's nine dimensions. qexo has no JSON
 state, no JSONL ledgers, and no JSON API: its HTTP surface serves
 scroll text, and machine readers use phext tooling (SQ/libphext).
