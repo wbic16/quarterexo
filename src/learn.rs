@@ -26,10 +26,11 @@
 //!           first success, else round(interval x ease x 1.3).
 //! A card is mastered when its interval reaches 21 days.
 //!
-//! Session discipline: `qexo learn` runs due cards only when
-//! stdin is a terminal (prompt, wait for Enter, reveal, grade
-//! 1/2/3, save after every card). With piped stdin it prints the
-//! --status view instead of hanging. `qexo learn --status`
+//! Session discipline: on a terminal, `qexo learn` opens the
+//! Learn You a qexo! wizard (v1.5.0) — a chapter map, a lesson
+//! screen per chapter, and due cards as practice, graded
+//! 1/2/3 and saved after every card. With piped stdin it prints
+//! the --status view instead of hanging. `qexo learn --status`
 //! never writes: on an unseeded deck it computes from the baked
 //! table.
 
@@ -356,61 +357,634 @@ fn read_line(stdin: &std::io::Stdin) -> Option<String> {
     }
 }
 
-fn run_session(lat: &mut Lattice, today: i64) -> i32 {
-    let due = due_cards(lat, today);
-    if due.is_empty() {
-        println!("nothing due — the deck is ahead of you.");
-        print_status(lat, today);
-        return 0;
-    }
-    let total = due.len();
-    let stdin = std::io::stdin();
-    let (mut again, mut good, mut easy) = (0usize, 0usize, 0usize);
-    let mut reviewed = 0usize;
-    'cards: for (i, (_, addr, text)) in due.iter().enumerate() {
-        println!("\n[{}/{}] {}", i + 1, total, lattice::field(text, "front").unwrap_or_default());
-        println!("(press Enter to reveal — Ctrl-D ends the session)");
-        if read_line(&stdin).is_none() {
-            break;
-        }
-        println!("{}", lattice::field(text, "back").unwrap_or_default());
-        let grade = loop {
-            print!("grade [1 again / 2 good / 3 easy]: ");
-            let _ = std::io::stdout().flush();
-            match read_line(&stdin) {
-                None => break 'cards,
-                Some(s) => match s.trim() {
-                    "1" | "again" => break Grade::Again,
-                    "2" | "good" => break Grade::Good,
-                    "3" | "easy" => break Grade::Easy,
-                    _ => {
-                        println!("grade with 1, 2 or 3");
-                        continue;
-                    }
-                },
+// ----------------------------------------------------------------
+// The wizard (v1.5.0) — Learn You a qexo!
+//
+// The engine above is unchanged: same deck, same SM-2-lite,
+// same records. What v1.5.0 adds is the guided surface Will
+// asked for: a chapter map of qexo's capabilities, a short
+// lesson screen per chapter, and the due-card queue interleaved
+// as practice — with the progress header (mastered, due,
+// streak, next due) on every screen.
+//
+// Keyboard-first: one key per action, from anywhere —
+//   space/enter  advance / reveal
+//   1 2 3        grade again / good / easy (a / g / e also work)
+//   b            back to the chapter map
+//   d            the due queue (from the map)
+//   q            quit — progress is saved after every card
+//
+// Phone-terminal-first: every rendered line is wrapped to the
+// terminal width, detected at start; an unknown width falls
+// back to 40 columns, the Termux shape. On Unix the wizard
+// runs in cbreak mode (termios, std-only — no new dependency)
+// so keys land one at a time. Where raw mode is unavailable
+// (Windows), the same screens run in line mode: Enter advances,
+// grades are typed. Non-TTY stdin never reaches the wizard at
+// all — it gets the status view, exactly as before.
+// ----------------------------------------------------------------
+
+struct Chapter {
+    title: &'static str,
+    lesson: &'static [&'static str],
+    cards: &'static [&'static str],
+}
+
+/// The curriculum as chapters. Every deck card stands in
+/// exactly one chapter (a test pins the partition).
+const CHAPTERS: &[Chapter] = &[
+    Chapter {
+        title: "First steps",
+        lesson: &[
+            "A node is born, not installed.",
+            "`qexo config` births your node: one state file, one GPG key of its own.",
+            "Trust is handed out on purpose — `qexo register` is how a peer earns it.",
+            "`qexo list` draws the phextnet as a tree, so you can see where everyone lives.",
+        ],
+        cards: &["verbs-config", "verbs-register", "verbs-list"],
+    },
+    Chapter {
+        title: "Personas",
+        lesson: &[
+            "A persona is a guest your node hosts in local inference.",
+            "Hosting loads it; unhosting ends the visit — its home in state stays put.",
+            "`qexo message` is one request, one response. Short and honest.",
+        ],
+        cards: &["verbs-host", "verbs-unhost", "verbs-message"],
+    },
+    Chapter {
+        title: "How is the node?",
+        lesson: &[
+            "`qexo status` is the glance: name, key, peers, personas, health.",
+            "`qexo doctor` checks the node and repairs what is safely repairable.",
+            "Bare `qexo` prints the plan — the work picture and the disk gate.",
+        ],
+        cards: &["verbs-status", "verbs-doctor", "verbs-plan"],
+    },
+    Chapter {
+        title: "The net provides",
+        lesson: &[
+            "Nodes serve and poll over the phextnet: plain HTTP, phext payloads.",
+            "A release is a signed scroll; an update is believed only after every check passes.",
+            "`qexo evolve` is one full convergence pass — and it writes a receipt for everything it did.",
+        ],
+        cards: &["verbs-serve", "verbs-release", "verbs-update", "verbs-evolve"],
+    },
+    Chapter {
+        title: "Trust is a signature",
+        lesson: &[
+            "Discovery is knowledge, never trust.",
+            "A fingerprint is a name you can verify; an endpoint is only a road.",
+            "The release signer starts EMPTY — trust is never a default.",
+        ],
+        cards: &["trust-signer", "trust-gpg", "trust-discovery"],
+    },
+    Chapter {
+        title: "One file to hold it all",
+        lesson: &[
+            "Everything qexo knows lives in one phext file: state.phext.",
+            "Its homelands are addresses chosen for meaning — 1.1.1 home, 3.3.3 peers, 10.10.10 lessons.",
+            "Records are truth; indexes are the map, rebuilt from the records.",
+        ],
+        cards: &["state-one-file", "state-homelands", "state-indexes"],
+    },
+    Chapter {
+        title: "The whole shelf",
+        lesson: &[
+            "`qexo inventory` is the ecosystem roster — every shipped phext tool, and how to install it.",
+            "On the wire it is scrolls all the way down: fetched by coordinate, never guessed.",
+            "And we name our addresses: hostnames on display, bare IPs only when no name is known.",
+        ],
+        cards: &["verbs-inventory", "net-shape", "net-names"],
+    },
+];
+
+fn chapter_of(id: &str) -> Option<usize> {
+    CHAPTERS.iter().position(|c| c.cards.contains(&id))
+}
+
+/// Greedy word wrap at `width` CHARACTERS (never bytes — the
+/// deck speaks UTF-8). A word longer than the line is split.
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(8);
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        let wlen = word.chars().count();
+        if wlen > width {
+            if !cur.is_empty() {
+                lines.push(std::mem::take(&mut cur));
             }
-        };
-        match grade {
-            Grade::Again => again += 1,
-            Grade::Good => good += 1,
-            Grade::Easy => easy += 1,
+            let mut rest: Vec<char> = word.chars().collect();
+            while rest.len() > width {
+                lines.push(rest.drain(..width).collect());
+            }
+            cur = rest.into_iter().collect();
+            continue;
         }
+        let clen = cur.chars().count();
+        if clen == 0 {
+            cur = word.to_string();
+        } else if clen + 1 + wlen <= width {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(std::mem::take(&mut cur));
+            cur = word.to_string();
+        }
+    }
+    if !cur.is_empty() || lines.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+/// Terminal width in columns: the live size when the OS will
+/// say, capped for readability, floored for sanity — and 40,
+/// the phone shape, when it won't say.
+fn term_width() -> usize {
+    #[cfg(unix)]
+    {
+        // TIOCGWINSZ on stdout; winsize is four u16s (row, col, ..).
+        extern "C" {
+            fn ioctl(fd: i32, request: i64, arg: *mut u16) -> i32;
+        }
+        let mut ws = [0u16; 4];
+        let rc = unsafe { ioctl(1, 0x5413, ws.as_mut_ptr()) };
+        if rc == 0 && ws[1] >= 20 {
+            return (ws[1] as usize).min(76);
+        }
+    }
+    40
+}
+
+// Cbreak mode on Unix, std-only: termios is reached through a
+// byte buffer because the flag word sits at the same offset
+// (12) in the Linux and Android termios layouts, which are the
+// layouts qexo ships for. ICANON/ECHO/ISIG are cleared so keys
+// arrive one at a time and Ctrl-C arrives as a byte the wizard
+// treats as quit; VMIN=1, VTIME=0. Restore happens on Drop, so
+// no exit path can strand the operator's terminal.
+#[cfg(unix)]
+struct RawMode {
+    saved: [u8; 128],
+}
+
+#[cfg(unix)]
+impl RawMode {
+    fn enter() -> Option<RawMode> {
+        extern "C" {
+            fn tcgetattr(fd: i32, termios: *mut u8) -> i32;
+            fn tcsetattr(fd: i32, action: i32, termios: *const u8) -> i32;
+        }
+        const ICANON: u32 = 0x0002;
+        const ECHO: u32 = 0x0008;
+        const ISIG: u32 = 0x0001;
+        let mut buf = [0u8; 128];
+        if unsafe { tcgetattr(0, buf.as_mut_ptr()) } != 0 {
+            return None;
+        }
+        let saved = buf;
+        let mut lflag = u32::from_ne_bytes(buf[12..16].try_into().unwrap());
+        lflag &= !(ICANON | ECHO | ISIG);
+        buf[12..16].copy_from_slice(&lflag.to_ne_bytes());
+        buf[17 + 6] = 1; // VMIN
+        buf[17 + 5] = 0; // VTIME
+        if unsafe { tcsetattr(0, 0, buf.as_ptr()) } != 0 {
+            return None;
+        }
+        Some(RawMode { saved })
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        extern "C" {
+            fn tcsetattr(fd: i32, action: i32, termios: *const u8) -> i32;
+        }
+        unsafe {
+            tcsetattr(0, 0, self.saved.as_ptr());
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Input {
+    Advance,
+    Key(u8),
+    Eof,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Flow {
+    Running,
+    /// Render the final screen once, then exit (quit / EOF).
+    ShowFinal,
+    /// A key landed on the final screen: just exit.
+    ExitNow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Screen {
+    Map,
+    Lesson(usize),
+    Card,
+    Done,
+}
+
+struct Wizard {
+    screen: Screen,
+    queue: Vec<(u32, Coord, String)>,
+    queue_chapter: Option<usize>,
+    pos: usize,
+    revealed: bool,
+    note: Option<String>,
+    reviewed: usize,
+    again: usize,
+    good: usize,
+    easy: usize,
+    streak: usize,
+    best_streak: usize,
+}
+
+impl Wizard {
+    fn new() -> Wizard {
+        Wizard {
+            screen: Screen::Map,
+            queue: Vec::new(),
+            queue_chapter: None,
+            pos: 0,
+            revealed: false,
+            note: None,
+            reviewed: 0,
+            again: 0,
+            good: 0,
+            easy: 0,
+            streak: 0,
+            best_streak: 0,
+        }
+    }
+
+    fn start_queue(&mut self, queue: Vec<(u32, Coord, String)>, chapter: Option<usize>) {
+        self.queue = queue;
+        self.queue_chapter = chapter;
+        self.pos = 0;
+        self.revealed = false;
+        self.screen = Screen::Card;
+    }
+
+    fn grade(
+        &mut self,
+        lat: &mut Lattice,
+        today: i64,
+        grade: Grade,
+    ) -> Result<Flow, String> {
+        let (_, addr, text) = &self.queue[self.pos];
         let updated = apply_grade(text, grade, today);
         lat.px.insert(*addr, updated);
-        if let Err(e) = lat.save() {
-            eprintln!("qexo learn: cannot save state: {}", e);
-            return 1;
+        lat.save().map_err(|e| e.to_string())?;
+        match grade {
+            Grade::Again => {
+                self.again += 1;
+                self.streak = 0;
+            }
+            Grade::Good => {
+                self.good += 1;
+                self.streak += 1;
+            }
+            Grade::Easy => {
+                self.easy += 1;
+                self.streak += 1;
+            }
         }
-        reviewed += 1;
+        self.best_streak = self.best_streak.max(self.streak);
+        self.reviewed += 1;
+        self.pos += 1;
+        self.revealed = false;
+        self.note = None;
+        if self.pos >= self.queue.len() {
+            self.screen = Screen::Done;
+        }
+        Ok(Flow::Running)
     }
-    let st = deck_stats(lat, today);
-    println!(
-        "\nsession: {} reviewed — {} again, {} good, {} easy; {} still due",
-        reviewed, again, good, easy, st.due_now
-    );
-    if let Some((day, n)) = st.next_due {
-        let (y, m, d) = core::civil_from_days(day);
-        println!("next due: {:04}-{:02}-{:02} ({} card(s))", y, m, d, n);
+
+    fn handle(&mut self, input: Input, lat: &mut Lattice, today: i64) -> Result<Flow, String> {
+        if input == Input::Eof {
+            self.screen = Screen::Done;
+            return Ok(Flow::ShowFinal);
+        }
+        if let Input::Key(b'q') = input {
+            self.screen = Screen::Done;
+            return Ok(Flow::ShowFinal);
+        }
+        self.note = None;
+        match self.screen {
+            Screen::Done => Ok(Flow::ExitNow),
+            Screen::Map => {
+                match input {
+                    Input::Key(b'd') => {
+                        let due = due_cards(lat, today);
+                        if due.is_empty() {
+                            self.note =
+                                Some("nothing due — the deck is ahead of you.".to_string());
+                        } else {
+                            self.start_queue(due, None);
+                        }
+                    }
+                    Input::Key(k) if (b'1'..=b'9').contains(&k) => {
+                        let idx = (k - b'1') as usize;
+                        if idx < CHAPTERS.len() {
+                            self.screen = Screen::Lesson(idx);
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(Flow::Running)
+            }
+            Screen::Lesson(ch) => {
+                match input {
+                    Input::Advance => {
+                        let queue: Vec<(u32, Coord, String)> = due_cards(lat, today)
+                            .into_iter()
+                            .filter(|(_, _, t)| {
+                                lattice::field(t, "id").and_then(|id| chapter_of(&id)) == Some(ch)
+                            })
+                            .collect();
+                        if queue.is_empty() {
+                            self.note =
+                                Some("nothing due in this chapter — the queue remembers.".to_string());
+                        } else {
+                            self.start_queue(queue, Some(ch));
+                        }
+                    }
+                    Input::Key(b'b') | Input::Key(b'm') => self.screen = Screen::Map,
+                    _ => {}
+                }
+                Ok(Flow::Running)
+            }
+            Screen::Card => {
+                if !self.revealed {
+                    match input {
+                        Input::Advance => self.revealed = true,
+                        Input::Key(b'b') | Input::Key(b'm') => self.screen = Screen::Map,
+                        Input::Key(_) => {
+                            self.note = Some("reveal the back first (space).".to_string())
+                        }
+                        Input::Eof => unreachable!(),
+                    }
+                    return Ok(Flow::Running);
+                }
+                match input {
+                    Input::Key(b'1') | Input::Key(b'a') => self.grade(lat, today, Grade::Again),
+                    Input::Key(b'2') | Input::Key(b'g') => self.grade(lat, today, Grade::Good),
+                    Input::Key(b'3') | Input::Key(b'e') => self.grade(lat, today, Grade::Easy),
+                    Input::Key(b'b') | Input::Key(b'm') => {
+                        self.screen = Screen::Map;
+                        Ok(Flow::Running)
+                    }
+                    Input::Advance => {
+                        self.note = Some("grade it: 1 again, 2 good, 3 easy.".to_string());
+                        Ok(Flow::Running)
+                    }
+                    _ => Ok(Flow::Running),
+                }
+            }
+        }
+    }
+
+    // -- rendering: every line wrapped to `width` -------------
+
+    fn header(&self, lat: &Lattice, today: i64) -> Vec<String> {
+        let st = deck_stats(lat, today);
+        let mut out = vec![
+            "Learn You a qexo!".to_string(),
+            format!(
+                "mastered {}/{} | due {} | streak {}",
+                st.mastered, st.total, st.due_now, self.streak
+            ),
+        ];
+        if let Some((day, n)) = st.next_due {
+            let (y, m, d) = core::civil_from_days(day);
+            out.push(format!("next due: {:04}-{:02}-{:02} ({} card(s))", y, m, d, n));
+        }
+        out
+    }
+
+    fn chapter_counts(lat: &Lattice, today: i64, ch: usize) -> (usize, usize, usize) {
+        let ids = CHAPTERS[ch].cards;
+        let cards = state_cards(&lat.px);
+        if cards.is_empty() {
+            return (ids.len(), ids.len(), 0);
+        }
+        let (mut due, mut mastered) = (0usize, 0usize);
+        for (_, _, t) in &cards {
+            let id = lattice::field(t, "id").unwrap_or_default();
+            if chapter_of(&id) != Some(ch) {
+                continue;
+            }
+            if field_i64(t, "due") <= today {
+                due += 1;
+            }
+            if field_i64(t, "interval_days") >= MASTERY_INTERVAL_DAYS {
+                mastered += 1;
+            }
+        }
+        (ids.len(), due, mastered)
+    }
+
+    fn render(&self, lat: &Lattice, today: i64, width: usize) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let push = |lines: &mut Vec<String>, text: &str| {
+            for l in wrap(text, width) {
+                lines.push(l);
+            }
+        };
+        for l in self.header(lat, today) {
+            push(&mut lines, &l);
+        }
+        lines.push(String::new());
+        match self.screen {
+            Screen::Map => {
+                push(&mut lines, "Chapters — pick a number:");
+                for (i, ch) in CHAPTERS.iter().enumerate() {
+                    let (total, due, mastered) = Wizard::chapter_counts(lat, today, i);
+                    push(
+                        &mut lines,
+                        &format!(
+                            "{}) {} — {}/{} mastered, {} due",
+                            i + 1,
+                            ch.title,
+                            mastered,
+                            total,
+                            due
+                        ),
+                    );
+                }
+                let st = deck_stats(lat, today);
+                push(&mut lines, &format!("d) Due queue — {} due", st.due_now));
+                push(&mut lines, "q) quit");
+            }
+            Screen::Lesson(ch) => {
+                let chapter = &CHAPTERS[ch];
+                push(&mut lines, &format!("Chapter {} — {}", ch + 1, chapter.title));
+                lines.push(String::new());
+                for l in chapter.lesson {
+                    push(&mut lines, l);
+                }
+                let (total, due, _) = Wizard::chapter_counts(lat, today, ch);
+                lines.push(String::new());
+                push(
+                    &mut lines,
+                    &format!("Cards here: {} ({} due).", total, due),
+                );
+                push(&mut lines, "[space] practice · [b] map · [q] quit");
+            }
+            Screen::Card => {
+                let (_, _, text) = &self.queue[self.pos];
+                let ctx = match self.queue_chapter {
+                    Some(ch) => format!(
+                        "Chapter {} — {} · card {}/{}",
+                        ch + 1,
+                        CHAPTERS[ch].title,
+                        self.pos + 1,
+                        self.queue.len()
+                    ),
+                    None => format!("Due queue · card {}/{}", self.pos + 1, self.queue.len()),
+                };
+                push(&mut lines, &ctx);
+                lines.push(String::new());
+                push(&mut lines, "Q:");
+                for l in wrap(&lattice::field(text, "front").unwrap_or_default(), width - 2) {
+                    lines.push(format!("  {}", l));
+                }
+                if self.revealed {
+                    lines.push(String::new());
+                    push(&mut lines, "A:");
+                    for l in wrap(&lattice::field(text, "back").unwrap_or_default(), width - 2) {
+                        lines.push(format!("  {}", l));
+                    }
+                    lines.push(String::new());
+                    push(&mut lines, "grade: [1] again [2] good [3] easy");
+                    push(&mut lines, "[b] map · [q] quit");
+                } else {
+                    lines.push(String::new());
+                    push(&mut lines, "[space] reveal · [b] map · [q] quit");
+                }
+            }
+            Screen::Done => {
+                let st = deck_stats(lat, today);
+                push(
+                    &mut lines,
+                    &format!(
+                        "session: {} reviewed — {} again, {} good, {} easy; {} still due",
+                        self.reviewed, self.again, self.good, self.easy, st.due_now
+                    ),
+                );
+                push(&mut lines, &format!("best streak: {}", self.best_streak));
+                push(
+                    &mut lines,
+                    &format!("mastered now: {}/{}", st.mastered, st.total),
+                );
+                lines.push(String::new());
+                push(&mut lines, "the deck remembers. (any key to leave)");
+            }
+        }
+        if let Some(note) = &self.note {
+            lines.push(String::new());
+            push(&mut lines, &format!("! {}", note));
+        }
+        lines.join("\n")
+    }
+}
+
+/// One key from a raw terminal: a byte at a time. Enter and
+/// space both advance; Esc and Ctrl-C quit; Ctrl-D is EOF.
+#[cfg(unix)]
+fn read_key_raw() -> Input {
+    use std::io::Read as _;
+    let mut b = [0u8; 1];
+    match std::io::stdin().read(&mut b) {
+        Ok(0) => Input::Eof,
+        Ok(_) => match b[0] {
+            b'\n' | b'\r' | b' ' => Input::Advance,
+            0x1b | 0x03 => Input::Key(b'q'),
+            0x04 => Input::Eof,
+            k => Input::Key(k),
+        },
+        Err(_) => Input::Eof,
+    }
+}
+
+/// One key in line mode (Windows, or raw mode unavailable):
+/// a typed line — Enter advances; words work too (again /
+/// good / easy / map / due / quit); anything else offers its
+/// first character as the key.
+fn read_key_line(stdin: &std::io::Stdin) -> Input {
+    match read_line(stdin) {
+        None => Input::Eof,
+        Some(s) => {
+            let w = s.trim().to_lowercase();
+            match w.as_str() {
+                "" => Input::Advance,
+                "again" => Input::Key(b'a'),
+                "good" => Input::Key(b'g'),
+                "easy" => Input::Key(b'e'),
+                "quit" => Input::Key(b'q'),
+                "map" | "back" => Input::Key(b'b'),
+                "due" => Input::Key(b'd'),
+                _ => Input::Key(w.as_bytes()[0]),
+            }
+        }
+    }
+}
+
+fn run_wizard(lat: &mut Lattice, today: i64) -> i32 {
+    let width = term_width();
+    #[cfg(unix)]
+    let raw = RawMode::enter();
+    #[cfg(not(unix))]
+    let raw: Option<()> = None;
+    let stdin = std::io::stdin();
+    let mut wiz = Wizard::new();
+    loop {
+        if raw.is_some() {
+            print!("\x1b[2J\x1b[H");
+        }
+        println!("{}", wiz.render(lat, today, width));
+        if raw.is_none() {
+            print!("> ");
+            let _ = std::io::stdout().flush();
+        }
+        let input = {
+            #[cfg(unix)]
+            {
+                if raw.is_some() {
+                    read_key_raw()
+                } else {
+                    read_key_line(&stdin)
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                read_key_line(&stdin)
+            }
+        };
+        match wiz.handle(input, lat, today) {
+            Ok(Flow::Running) => continue,
+            Ok(Flow::ShowFinal) => {
+                if raw.is_some() {
+                    print!("\x1b[2J\x1b[H");
+                }
+                println!("{}", wiz.render(lat, today, width));
+                break;
+            }
+            Ok(Flow::ExitNow) => break,
+            Err(e) => {
+                eprintln!("qexo learn: cannot save state: {}", e);
+                return 1;
+            }
+        }
     }
     0
 }
@@ -441,7 +1015,7 @@ pub fn learn(status_only: bool) -> i32 {
             return 1;
         }
     }
-    run_session(&mut lat, today)
+    run_wizard(&mut lat, today)
 }
 
 #[cfg(test)]
@@ -565,5 +1139,159 @@ mod tests {
         for c in DECK {
             assert!(!c.front.is_empty() && !c.back.is_empty(), "card {} is blank", c.id);
         }
+    }
+}
+
+#[cfg(test)]
+mod wizard_tests {
+    use super::*;
+
+    fn born_seeded() -> (Lattice, i64) {
+        let mut lat = Lattice::born(std::path::PathBuf::from("/tmp/qexo-wizard-test/state.phext"));
+        let today = 20000;
+        seed_deck(&mut lat, today);
+        lattice::regen_indexes(&mut lat.px);
+        (lat, today)
+    }
+
+    #[test]
+    fn chapters_partition_the_deck_exactly_once() {
+        let mut seen: Vec<&str> = Vec::new();
+        for ch in CHAPTERS {
+            for id in ch.cards {
+                assert!(!seen.contains(id), "card {} stands in two chapters", id);
+                seen.push(id);
+            }
+        }
+        assert_eq!(seen.len(), DECK.len(), "every card has a chapter");
+        for spec in DECK {
+            assert!(seen.contains(&spec.id), "card {} has no chapter", spec.id);
+            assert_eq!(chapter_of(spec.id).map(|i| CHAPTERS[i].cards.contains(&spec.id)), Some(true));
+        }
+        assert_eq!(CHAPTERS.len(), 7);
+        for ch in CHAPTERS {
+            assert!(!ch.lesson.is_empty(), "chapter {} has no lesson", ch.title);
+        }
+    }
+
+    #[test]
+    fn wrap_respects_width_and_splits_long_words() {
+        for w in [24usize, 40, 76] {
+            for spec in DECK {
+                for line in wrap(spec.back, w) {
+                    assert!(line.chars().count() <= w, "width {} line too long: {}", w, line);
+                }
+            }
+            let lines = wrap("supercalifragilisticexpialidocious", 10);
+            assert!(lines.iter().all(|l| l.chars().count() <= 10));
+            assert_eq!(lines.concat(), "supercalifragilisticexpialidocious");
+        }
+        assert_eq!(wrap("a b c", 40), vec!["a b c".to_string()]);
+        assert_eq!(wrap("", 40), vec!["".to_string()]);
+    }
+
+    #[test]
+    fn every_screen_fits_a_phone_width() {
+        let (mut lat, today) = born_seeded();
+        let mut wiz = Wizard::new();
+        for screen in [
+            wiz.render(&lat, today, 40),
+            {
+                wiz.handle(Input::Key(b'1'), &mut lat, today).unwrap();
+                wiz.render(&lat, today, 40)
+            },
+            {
+                wiz.handle(Input::Advance, &mut lat, today).unwrap();
+                wiz.render(&lat, today, 40)
+            },
+            {
+                wiz.handle(Input::Advance, &mut lat, today).unwrap();
+                wiz.render(&lat, today, 40)
+            },
+        ] {
+            for line in screen.lines() {
+                assert!(line.chars().count() <= 40, "line over 40 cols: {:?}", line);
+            }
+        }
+    }
+
+    #[test]
+    fn wizard_grades_cards_and_tracks_the_streak() {
+        let (mut lat, today) = born_seeded();
+        let mut wiz = Wizard::new();
+        // map -> due queue -> first card, unrevealed
+        assert_eq!(wiz.handle(Input::Key(b'd'), &mut lat, today).unwrap(), Flow::Running);
+        assert_eq!(wiz.screen, Screen::Card);
+        assert!(!wiz.revealed);
+        // grading before reveal is a note, not a grade
+        wiz.handle(Input::Key(b'2'), &mut lat, today).unwrap();
+        assert_eq!(wiz.reviewed, 0);
+        assert!(wiz.note.is_some());
+        // reveal, grade good: saved to state, streak 1
+        wiz.handle(Input::Advance, &mut lat, today).unwrap();
+        assert!(wiz.revealed);
+        wiz.handle(Input::Key(b'2'), &mut lat, today).unwrap();
+        assert_eq!(wiz.reviewed, 1);
+        assert_eq!(wiz.streak, 1);
+        let cards = state_cards(&lat.px);
+        let graded = cards.iter().filter(|(_, _, t)| field_i64(t, "reps") > 0).count();
+        assert_eq!(graded, 1, "the grade landed in state");
+        // second card: again resets the streak
+        wiz.handle(Input::Advance, &mut lat, today).unwrap();
+        wiz.handle(Input::Key(b'1'), &mut lat, today).unwrap();
+        assert_eq!(wiz.streak, 0);
+        assert_eq!(wiz.again, 1);
+        assert_eq!(wiz.best_streak, 1);
+    }
+
+    #[test]
+    fn quit_from_a_card_lands_on_the_summary() {
+        let (mut lat, today) = born_seeded();
+        let mut wiz = Wizard::new();
+        wiz.handle(Input::Key(b'd'), &mut lat, today).unwrap();
+        assert_eq!(wiz.screen, Screen::Card);
+        let flow = wiz.handle(Input::Key(b'q'), &mut lat, today).unwrap();
+        assert_eq!(flow, Flow::ShowFinal);
+        assert_eq!(wiz.screen, Screen::Done);
+        let out = wiz.render(&lat, today, 40);
+        assert!(out.contains("session: 0 reviewed"));
+    }
+
+    #[test]
+    fn a_chapter_with_nothing_due_says_so() {
+        let (mut lat, today) = born_seeded();
+        // grade every chapter-1 card into the future
+        for (_, addr, text) in state_cards(&lat.px) {
+            let id = lattice::field(&text, "id").unwrap_or_default();
+            if CHAPTERS[0].cards.contains(&id.as_str()) {
+                lat.px.insert(addr, apply_grade(&text, Grade::Easy, today));
+            }
+        }
+        let mut wiz = Wizard::new();
+        wiz.handle(Input::Key(b'1'), &mut lat, today).unwrap();
+        assert_eq!(wiz.screen, Screen::Lesson(0));
+        wiz.handle(Input::Advance, &mut lat, today).unwrap();
+        assert_eq!(wiz.screen, Screen::Lesson(0), "no practice to start");
+        assert!(wiz.note.is_some());
+    }
+
+    #[test]
+    fn finishing_the_queue_lands_on_done() {
+        let (mut lat, today) = born_seeded();
+        let mut wiz = Wizard::new();
+        // lesson for chapter 2 (3 cards), practice them all easy
+        wiz.handle(Input::Key(b'2'), &mut lat, today).unwrap();
+        wiz.handle(Input::Advance, &mut lat, today).unwrap();
+        assert_eq!(wiz.screen, Screen::Card);
+        assert_eq!(wiz.queue.len(), 3);
+        for _ in 0..3 {
+            wiz.handle(Input::Advance, &mut lat, today).unwrap();
+            wiz.handle(Input::Key(b'3'), &mut lat, today).unwrap();
+        }
+        assert_eq!(wiz.screen, Screen::Done);
+        assert_eq!(wiz.reviewed, 3);
+        assert_eq!(wiz.best_streak, 3);
+        // a key on the done screen exits
+        assert_eq!(wiz.handle(Input::Advance, &mut lat, today).unwrap(), Flow::ExitNow);
     }
 }

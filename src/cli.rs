@@ -129,7 +129,9 @@ pub fn help_text() -> String {
     s.push_str("  qexo plan                 the same, explicitly\n");
     s.push_str("  qexo status               node, version, state path, key, peers, hosted, doctor headline\n");
     s.push_str("  qexo doctor [--fix]       health report; --fix repairs what is safely repairable\n");
-    s.push_str("  qexo learn                spaced repetition over qexo's own surface: due cards, interactively\n");
+    s.push_str("  qexo learn                Learn You a qexo! — the wizard: chapter map, lessons, due cards\n");
+    s.push_str("                            as practice. keys: space reveal, 1/2/3 grade (again/good/easy),\n");
+    s.push_str("                            b chapter map, d due queue, q quit (progress saves per card)\n");
     s.push_str("  qexo learn --status       deck size, due count, mastered count — no session\n");
     s.push_str("  qexo --help               this text\n\n");
 
