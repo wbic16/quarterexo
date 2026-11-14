@@ -17,9 +17,12 @@ include = [
 
 [dependencies]
 # The phext reckoning is libphext-rs's (v1.3.0): the reference
-# implementation SQ and Phext Notepad share, pinned the way
-# phext-lattice pins it. qexo's src/phext.rs is only an adapter.
-libphext = "0.5.0"
+# implementation SQ and Phext Notepad share. Pinned at 0.6.0 —
+# the chains release (0x02 chain break, 0x03 chain close, $N:
+# universe addressing) — resolved from the crates.io registry.
+# qexo's src/phext.rs is only an adapter; it uses none of the
+# chain surface yet (chains are a separate slice, if ever).
+libphext = "0.6.0"
 
 [profile.release]
 opt-level = 2

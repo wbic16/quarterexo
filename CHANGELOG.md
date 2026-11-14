@@ -4,10 +4,33 @@
 
 **libphext-rs is the parser now.** qexo no longer reckons
 phext itself: `src/phext.rs` is a thin adapter over the
-`libphext` crate (pinned `0.5.0`, the version phext-lattice —
-the reference editor stack — builds against), and address
+`libphext` crate (pinned `0.6.0` from the crates.io registry;
+the slice was first built against 0.5.0 and re-gated on
+0.6.0 — the chains release: 0x02 chain break, 0x03 chain
+close, $N: universe addressing — before merge), and address
 computation, delimiter emission, and duplicate-address
-behavior are the library's, full stop.
+behavior are the library's, full stop. The adapter's used
+surface (`explode` / `implode` / `Coordinate`) is unchanged
+in 0.6.0, so the bump is the pin alone; qexo builds no chain
+features in this slice.
+
+Under 0.6.0 the old-state verdict sharpens: a state written
+by the hand-rolled serializer is, to a chain-aware reader, a
+chain — its 0x02 library breaks are chain separators — and
+`parse_chains` recovers each old library whole as its own
+universe, every record at its exact universe-relative
+address (the universe index carries the old Library number;
+measured on aletheia-core's fleet state: 9 members, 106
+scrolls, config record at $9:1.9.9/2.1.1/1.1.1 with its
+signer intact — see the build record). The chain reads as
+unclosed (the old serializer never wrote a 0x03), which the
+format flags as possibly truncated; the nine complete
+homelands say otherwise for these files. qexo's own reader
+stays the single-phext `explode`, under which old states
+still parse to drifted addresses and remain unusable as
+state; the fleet wipe and rebirth stands. The chain reading
+matters as archaeology: nothing in an old state is lost to
+a reader willing to read it as a chain.
 
 Why, in one paragraph: through v1.2.0 qexo carried a
 hand-rolled parser whose delimiter table diverged from

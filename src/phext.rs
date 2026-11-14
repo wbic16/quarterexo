@@ -287,8 +287,10 @@ mod tests {
         let px = Phext::parse(EDITOR_APPEND_FIXTURE);
         // Where the reference reckoning puts the appended
         // signer scroll in this document — measured identically
-        // by SQ (libphext 0.3.3, `sq select`) and by libphext
-        // 0.5.0 explode/fetch before this test was written.
+        // by SQ (libphext 0.3.3, `sq select`), by libphext
+        // 0.5.0 explode/fetch before this test was written,
+        // and re-verified under libphext 0.6.0 (the pin this
+        // build ships) on the conformance corpus.
         assert_eq!(
             px.get(&[11, 9, 9, 2, 1, 1, 1, 1, 1]).map(|s| s.trim()),
             Some("release_signer: A4E7277FB3EB0E589604BE5B506DBE3FC209E755")
