@@ -2300,6 +2300,11 @@ struct Manifest {
     size_bytes: u64,
     signer: String,
     binary: String,
+    /// The platform the announced binary was built for
+    /// ("linux-x86_64", "windows-x86_64", "android-aarch64", ...),
+    /// stamped by `qexo release` since v1.6.2. None for a
+    /// pre-v1.6.2 announcement, which carries no stamp.
+    platform: Option<String>,
 }
 
 fn parse_manifest(text: &str) -> Result<Manifest, String> {
@@ -2310,14 +2315,39 @@ fn parse_manifest(text: &str) -> Result<Manifest, String> {
         .ok_or("manifest has no usable size_bytes field")?;
     let signer = lattice::field(text, "signer").filter(|s| !s.is_empty()).ok_or("manifest has no signer field")?;
     let binary = lattice::field(text, "binary").unwrap_or_else(|| format!("qexo-{}", version));
-    Ok(Manifest { version, sha256, size_bytes, signer, binary })
+    let platform = lattice::field(text, "platform").filter(|s| !s.is_empty());
+    Ok(Manifest { version, sha256, size_bytes, signer, binary, platform })
+}
+
+/// This binary's own platform, in the manifest's stamp shape:
+/// "<os>-<arch>" from the target the binary was built for
+/// (std::env::consts) — linux-x86_64, windows-x86_64,
+/// android-aarch64, macos-aarch64, ...
+fn local_platform() -> String {
+    format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH)
+}
+
+/// The platform judgment (v1.6.2), pure: may an offer stamped
+/// `offered` run on a node whose platform is `local`? A stamped
+/// offer runs only on its own platform. An UNSTAMPED offer (a
+/// pre-v1.6.2 announcement — every release the phextnet carried
+/// before tonight) proceeds: the stamp did not exist when the
+/// signer announced it, and refusing the fleet's standing
+/// announcements would strand every node whose signer has not
+/// re-announced yet. Unstamped offers are still judged by
+/// signature, version, and sha256 exactly as before.
+fn platform_matches(offered: Option<&str>, local: &str) -> bool {
+    match offered {
+        Some(p) => p == local,
+        None => true,
+    }
 }
 
 /// Compose the manifest record text for a release. This exact
 /// text — every byte, trailing newline included — is what the
 /// signer signs and what verifiers check the signature against:
 /// the scroll IS the canonical form.
-fn compose_manifest(version: &str, sha256: &str, size_bytes: u64, built_from: &str, signer: &str, stamp: &str, binary: &str, sig_coord: &str) -> String {
+fn compose_manifest(version: &str, sha256: &str, size_bytes: u64, built_from: &str, signer: &str, platform: &str, stamp: &str, binary: &str, sig_coord: &str) -> String {
     lattice::record(&[
         ("kind", "release announcement"),
         ("version", version),
@@ -2325,6 +2355,7 @@ fn compose_manifest(version: &str, sha256: &str, size_bytes: u64, built_from: &s
         ("size_bytes", &size_bytes.to_string()),
         ("built_from", built_from),
         ("signer", signer),
+        ("platform", platform),
         ("announced", stamp),
         ("binary", binary),
         ("signature", sig_coord),
@@ -2482,7 +2513,7 @@ pub fn release() -> i32 {
     let maddr = lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RELEASES, 1, book, 1, 1, 1]);
     let saddr = lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RELEASES, 1, book, 1, 1, 2]);
     let (_, stamp) = now_stamp();
-    let manifest = compose_manifest(version, &sha, size, built_from, &fp, &stamp, &binary_name, &fmt_coord(&saddr));
+    let manifest = compose_manifest(version, &sha, size, built_from, &fp, &local_platform(), &stamp, &binary_name, &fmt_coord(&saddr));
     let gpg = Gpg::open_in(&lattice::state_dir());
     let signature = match gpg.sign_detached(&fp, manifest.as_bytes()) {
         Ok(s) => s,
@@ -2511,6 +2542,7 @@ pub fn release() -> i32 {
     println!("release announced: qexo {}", version);
     println!("manifest: {} (signature beside it, {})", fmt_coord(&maddr), fmt_coord(&saddr));
     println!("signer: {}", fp);
+    println!("platform: {}", local_platform());
     println!("sha256: {}", sha);
     println!("binary: {} ({} bytes, served at /release/{})", dir.join(&binary_name).display(), size, binary_name);
     println!("receipt: {}", fmt_coord(&receipt));
@@ -2542,6 +2574,12 @@ enum UpdateOutcome {
     Available { from: String, to: String, via: String },
     NoOffer,
     IgnoredOffers,
+    /// The trusted signer's newest offer is stamped for a
+    /// different platform: judged, skipped before any download,
+    /// nothing applied. A routine state in a mixed fleet (the
+    /// signer announces one manifest; not every announcement is
+    /// for every node), so — like NoOffer — it writes no receipt.
+    WrongPlatform { offered: String, platform: String },
     Refused(String),
     NoSigner,
     SignerUnregistered,
@@ -2561,6 +2599,7 @@ pub fn update(check_only: bool) -> i32 {
             | UpdateOutcome::AlreadyCurrent { .. }
             | UpdateOutcome::Available { .. }
             | UpdateOutcome::NoOffer
+            | UpdateOutcome::WrongPlatform { .. }
             | UpdateOutcome::IgnoredOffers => 0,
             _ => 1,
         },
@@ -2609,6 +2648,7 @@ fn update_inner(mode: UpdateMode) -> Result<UpdateOutcome, i32> {
     let gpg = Gpg::open_in(&lattice::state_dir());
     let mut saw_offer = false;
     let mut current_offer: Option<String> = None;
+    let mut platform_skip: Option<(String, String)> = None;
 
     for (_, _, text) in &peers {
         // Human output names the peer and shows its endpoint by
@@ -2716,6 +2756,35 @@ fn update_inner(mode: UpdateMode) -> Result<UpdateOutcome, i32> {
             &manifest.version,
             &current,
         );
+        // The platform gate (v1.6.2) sits AFTER the trust rule
+        // and BEFORE any download: a trusted offer stamped for
+        // another platform is not an attack and not an update —
+        // it is the signer's announcement for some other part of
+        // a mixed fleet (Linux nodes, a Windows laptop, an
+        // Android phone poll the same signer). Skip it here,
+        // where skipping still costs nothing; before tonight,
+        // the version rule was the only guard (useless when a
+        // fleet-wide rollout offers every node the same version)
+        // and the swap's rollback was the last one — after the
+        // wrong platform's bytes had already been downloaded.
+        // A signature Refuse above is untouched: the gate never
+        // masks a trust failure.
+        if matches!(verdict, Assess::Accept | Assess::AlreadyCurrent)
+            && !platform_matches(manifest.platform.as_deref(), &local_platform())
+        {
+            let offered_platform = manifest.platform.clone().unwrap_or_default();
+            if loud {
+                println!(
+                    "peer {} offers qexo {} for platform {} — this node is {}; skipped, nothing downloaded",
+                    dname,
+                    manifest.version,
+                    offered_platform,
+                    local_platform()
+                );
+            }
+            platform_skip = Some((manifest.version.clone(), offered_platform));
+            continue;
+        }
         match verdict {
             Assess::NotOurSigner => unreachable!("signer equality checked above"),
             Assess::Refuse(why) => {
@@ -2738,6 +2807,12 @@ fn update_inner(mode: UpdateMode) -> Result<UpdateOutcome, i32> {
                 current_offer = Some(manifest.version.clone());
             }
             Assess::Accept => {
+                if loud && manifest.platform.is_none() {
+                    println!(
+                        "note: the trusted signer's qexo {} manifest carries no platform stamp (a pre-v1.6.2 announcement) — judged by signature, version, and sha256, as before",
+                        manifest.version
+                    );
+                }
                 if mode != UpdateMode::Apply {
                     if mode == UpdateMode::Check {
                         println!(
@@ -2762,6 +2837,16 @@ fn update_inner(mode: UpdateMode) -> Result<UpdateOutcome, i32> {
             println!("already current — this node runs qexo {}; the trusted signer offers {}", current, offered);
         }
         Ok(UpdateOutcome::AlreadyCurrent { offered })
+    } else if let Some((offered, platform)) = platform_skip {
+        if loud {
+            println!(
+                "qexo update: the trusted signer offers qexo {} for platform {} — this node is {}; nothing applied",
+                offered,
+                platform,
+                local_platform()
+            );
+        }
+        Ok(UpdateOutcome::WrongPlatform { offered, platform })
     } else if saw_offer {
         if loud {
             println!("qexo update: offers were seen, none from this node's release signer — nothing applied");
@@ -3384,6 +3469,7 @@ fn set_binary_outcome(report: &mut EvolveReport, outcome: &UpdateOutcome) {
         UpdateOutcome::AlreadyCurrent { offered } => format!("already current (the signer offers {})", offered),
         UpdateOutcome::Available { from, to, via } => format!("update available: {} → {} via {} (not applied — check only)", from, to, via),
         UpdateOutcome::NoOffer => "no release offered by any trusted peer".to_string(),
+        UpdateOutcome::WrongPlatform { offered, platform } => format!("the signer offers {} for platform {} — not this node's; binary stage skipped it before any download", offered, platform),
         UpdateOutcome::IgnoredOffers => "offers seen, none from the trusted signer — nothing applied".to_string(),
         UpdateOutcome::Refused(why) => format!("REFUSED — {}", why),
         UpdateOutcome::NoSigner => "no release signer configured — binary stage had nothing to trust".to_string(),
@@ -3669,9 +3755,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let gpg = Gpg::open_in(&dir);
         let fp = gpg.generate("qexo test signer", "qexo test").expect("test key generation");
-        let text = compose_manifest("1.1.0", &hash::sha256_hex(b"fake-binary"), 11, "deadbeef", &fp, "2026-11-12 00:00 UTC", "qexo-1.1.0", "6.6.6/8.1.1/1.1.2");
+        let text = compose_manifest("1.1.0", &hash::sha256_hex(b"fake-binary"), 11, "deadbeef", &fp, "linux-x86_64", "2026-11-12 00:00 UTC", "qexo-1.1.0", "6.6.6/8.1.1/1.1.2");
         let m = parse_manifest(&text).expect("manifest parses");
         assert_eq!(m.version, "1.1.0");
+        assert_eq!(m.platform.as_deref(), Some("linux-x86_64"));
         assert_eq!(m.signer, fp);
         assert_eq!(m.size_bytes, 11);
         assert_eq!(m.binary, "qexo-1.1.0");
@@ -3687,6 +3774,42 @@ mod tests {
         let gpg2_dir = dir.join("other");
         let gpg2 = Gpg::open_in(&gpg2_dir);
         assert!(gpg2.verify_detached(&sig, text.as_bytes()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn platform_stamp_gates_foreign_platforms_and_spares_legacy() {
+        // a stamped offer runs only on its own platform
+        assert!(platform_matches(Some("linux-x86_64"), "linux-x86_64"));
+        assert!(!platform_matches(Some("linux-x86_64"), "android-aarch64"));
+        assert!(!platform_matches(Some("windows-x86_64"), "linux-x86_64"));
+        assert!(!platform_matches(Some("android-aarch64"), "windows-x86_64"));
+        // an unstamped offer (every pre-v1.6.2 announcement)
+        // proceeds on any platform — judged by the older rules
+        assert!(platform_matches(None, "linux-x86_64"));
+        assert!(platform_matches(None, "android-aarch64"));
+        // the local stamp has the manifest's shape: <os>-<arch>
+        let lp = local_platform();
+        let (os, arch) = lp.split_once('-').expect("platform stamp carries a dash");
+        assert_eq!(os, std::env::consts::OS);
+        assert_eq!(arch, std::env::consts::ARCH);
+        assert!(platform_matches(Some(&lp), &lp));
+    }
+
+    #[test]
+    fn manifest_without_platform_line_parses_as_legacy() {
+        // a pre-v1.6.2 announcement: the same record with the
+        // platform line absent — it must still parse, as None,
+        // never as an error and never as an invented platform.
+        let dir = std::env::temp_dir().join(format!("qexo-legacy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let gpg = Gpg::open_in(&dir);
+        let fp = gpg.generate("qexo legacy signer", "qexo test").expect("test key generation");
+        let stamped = compose_manifest("1.3.0", &hash::sha256_hex(b"old-binary"), 10, "cafe", &fp, "linux-x86_64", "2026-11-13 00:00 UTC", "qexo-1.3.0", "6.6.6/8.1.1/1.1.2");
+        let legacy: String = stamped.lines().filter(|l| !l.starts_with("platform:")).collect::<Vec<_>>().join("\n") + "\n";
+        let m = parse_manifest(&legacy).expect("legacy manifest parses");
+        assert_eq!(m.version, "1.3.0");
+        assert_eq!(m.platform, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

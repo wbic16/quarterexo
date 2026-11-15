@@ -3,6 +3,195 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-15 — nightly evaluation of 2026-11-14 (ships v1.7.1)
+
+- **Disk:** GREEN on both halves, but the file count is now
+  within one ordinary day of AMBER. disk-watch history:
+  85.72 GB / 1,082,344 files (2026-11-13) → 86.65 GB /
+  1,092,138 files (2026-11-14) — +0.93 GB, +9,794 files.
+  The count sits 7,862 files under the 1.1 M file-AMBER line:
+  at the last interval's rate that is ~0.8 days, at the
+  slowest recent rate (+5,372/day) ~1.5 days. Bytes are calm
+  by comparison (8.35 GB to byte-AMBER at +0.93 GB/day ≈
+  9 days). Tonight's live df reads 89 GB used of 150 GB
+  (59%), ahead of the state file as usual. Largest consumers
+  unchanged in shape for a seventh night: wavefront 31.73 GB
+  (the lossless A/B intermediates, ~9 GB together, still
+  staged on the VM), goals 19.27 GB, phext 10.62 GB. The
+  next crossing the planner meets is a count crossing, and
+  it is close.
+- **CPU:** placement held. The day's heavy work ran where it
+  belongs: the qexo v1.6.1 fleet rollout and builds on ranch
+  nodes, phext-lattice deploys on awsbox, MOAT registry
+  proofs on the ranch. The VM's 1.5 shared CPUs carried
+  coordination plus the standing tick/watchdog load (task
+  ticks 1771→1914 across the day). Tonight's snapshots:
+  VM load 4.35 at a harness-busy moment (uptime 55 min —
+  freshly replaced again), aletheia-core load 0.61,
+  Tctl 37.8 °C before tonight's build.
+- **RAM:** 6 GB shared limit. No heavy local resident was
+  recorded on 2026-11-14; placement held and RAM held with
+  it, for a seventh night. Tonight's snapshot reads
+  ~2.17 GB MemAvailable with ~400 MB swap used — a higher
+  available figure than recent nights, on a 55-minute-old
+  VM, so it is a snapshot, not a trend.
+- **Inference:** the well-spent bulk was real: the qexo line
+  ran 1.4.1 → 1.5.0 → 1.6.0 → 1.6.1 in one day, ending in a
+  19-node fleet rollout whose internal-PGP signing was
+  verified in production; teixml-to-mutable shipped its
+  three stages in order (0.1 → 0.3.0); phext-lattice
+  PR #67 (https://github.com/wbic16/phext-lattice/pull/67)
+  and PR #68 merged and deployed with a screen test; MOAT
+  took Papers 018–022 and Study S011 (registry at 808);
+  Assay was designed and jobs.phext created with Job 1
+  auto-scheduled under the new tracker rule; Iam advanced
+  v0.3 → v0.5 with cohort admission. The waste was again
+  specific: (1) the tick loop's ~143 runs re-derived
+  unchanged verdicts all day — PR #25 "still OPEN" was
+  API-checked tick after tick into the night (ticks 1903,
+  1913, 1914 carry the identical verdict), the standing
+  poll-and-diff candidate named every night since
+  2026-11-10 and still unshipped in the tick machinery;
+  (2) the ascii-map instructions scroll was first built in
+  the per-cell format and superseded within the hour by
+  PR #67's one-scroll-per-layer fix — inference spent
+  building the wrong model of a scroll, corrected the same
+  day by the lesson it produced (a scroll is a page, not a
+  cell).
+- **Counterfactual:** the strongest case examined is last
+  night's own ship, stranded. v1.6.2 (the platform stamp)
+  shipped on 2026-11-14 as PR #25
+  (https://github.com/wbic16/quarterexo/pull/25), branched
+  from exo v1.6.1 (5f092646). It sat unmerged all day while
+  the day's slices also branched from v1.6.1, and at
+  02:09 CST on 2026-11-15 Will merged PR #26
+  (https://github.com/wbic16/quarterexo/pull/26, v1.7.0
+  distributed-builds) from that same base — so exo reached
+  v1.7.0 WITHOUT the platform guard, the heterogeneous
+  fleet (Linux nodes, a Windows laptop, an Android phone)
+  still judges offers by version alone, and PR #25 now
+  conflicts on every version-stamp file. A planner that
+  sequenced the nightly PR into the morning — merged or
+  rebased before the daytime slices branched — would have
+  carried the guard into v1.7.0's base at zero porting
+  cost. Tonight pays that cost instead: v1.7.1 is the
+  v1.6.2 change ported onto v1.7.0 (see CHANGELOG).
+  Secondary case, recorded and not shipped (one change per
+  night): the stale version literals PR #25's body already
+  named — `qexo status` (src/core.rs) and the CLI banner
+  (src/cli.rs) still print "v1.4.0" on a v1.7.x binary, on
+  a day when fleet verification leaned on version stamps
+  all day. The fix (derive every banner from the one
+  version constant) is the standing candidate for a future
+  night.
+- **Tonight's change:** v1.7.1 — the platform-stamped
+  release manifest ported onto exo v1.7.0 (fresh HEAD
+  5e8fa235), worked from a fresh clone on aletheia-core
+  (~/qexo-nightly-2026-11-15/); the local
+  ~/workspace/orchestrator/ mirror still sits at v3.2 and
+  was again not used as a source. PR #25 remains open; if
+  Will merges v1.7.1's PR, PR #25 is superseded and should
+  be closed, not merged. The wbic16/qexo twin sync is a
+  separate tracked debt, as before.
+
+
+[Carried forward by the v1.7.1 port, 2026-11-15: this section shipped only in PR #25's tree (https://github.com/wbic16/quarterexo/pull/25) and never reached exo while that PR sat unmerged.]
+
+## 2026-11-14 — nightly evaluation of 2026-11-13 (ships v1.6.2)
+
+- **Disk:** file growth re-accelerated while bytes stayed calm.
+  disk-watch history: 84.16 GB / 1,029,881 files (2026-11-12) →
+  85.72 GB / 1,082,344 files (2026-11-13) — +1.56 GB but
+  +52,463 files (+5.1%), against +7,064 files the day before.
+  The count now sits 17,656 files under the old 1.1 M file-AMBER
+  line; at this single interval's rate that line is ~8 hours
+  away, at the v1.2.1 median rate (~33k/day) ~13 hours — either
+  way the next crossing the planner meets is a count crossing,
+  not a byte crossing. Tonight's live check: 87 GB used of
+  150 GB (58%). The day's heavy disk work was ranch-side by
+  design: the ChatGPT export deposit and its era phexts were
+  built locally in a task-specific folder and hash-verified
+  copies pushed to aletheia-core; the Volumen anchor chain
+  (six zero-ized spines) published to wbic16/human@exo.
+- **CPU:** placement held all day. The T9 film rendered
+  node-resident on aletheia-core from the start (13,020 frames,
+  build complete 01:12 CST, thermal-gated) — the T8 lesson
+  applied without being re-taught. The phext v0.6 rollout
+  (libphext 0.6.0, sq 0.6.1, phext-shell 0.6.0, phext-lattice
+  1.2.0 builds, tests, publishes) ran on the ranch; the qexo
+  fleet wipe/rebirth/evolve sequence fired at 23:29 CST on
+  Will's merge of PR #16 (https://github.com/wbic16/quarterexo/pull/16)
+  and ran node-side. The VM's 1.5 shared CPUs carried
+  coordination plus the standing tick/watchdog load (task
+  ticks 1629→1658+ across the day and night, each a frontier
+  run — see Inference). Tonight's snapshot: load 2.90 at a
+  harness-busy moment, aletheia-core load 0.04, Tctl 31.4 °C.
+- **RAM:** 6 GB shared limit, same envelope — tonight
+  ~680 MB available, ~396 MB swap used. No heavy local
+  resident was recorded on 2026-11-13; the day's renders,
+  builds, and registry proofs all lived on ranch nodes.
+  Placement held, and RAM held with it, for a sixth night.
+- **Inference:** the well-spent bulk was real: the phext v0.6
+  rollout closed end to end (four crates published and
+  verified live on crates.io); qexo 1.3.0 published to
+  crates.io, closing the publish wait that dated to the 0.3.0
+  era; PR #17 (https://github.com/wbic16/quarterexo/pull/17,
+  v1.2.1 forecast median) and PR #16 (the libphext 0.6 parser
+  repair) both merged, and the staged fleet wipe/rebirth/
+  evolve fired on the second merge; T9 was built, served,
+  and posted by Will; MOAT took Paper 017 and Studies
+  S009/S010 with registry proofs on the ranch; life.phext
+  backfilled 1,772 #life messages holographically. The waste
+  was, again, self-inflicted and specific: (1) the Hull
+  aggregate table — regex counts over ~21,000 messages that
+  had not been read, with conversation branches stirred
+  together — was retracted in the same session and the work
+  redone read-first on kept branches: inference spent, then
+  spent again correcting, because the first pass never met
+  material it had not itself produced; (2) the tick loop's
+  ~10-minute register reconciliations re-derived the same
+  unchanged verdicts all day, the standing candidate named
+  every night since 2026-11-10; (3) the libphext parser
+  repair chain itself — Nov 9's hand-rolled parser coming
+  due, at the cost of a root-cause analysis, a fleet wipe,
+  and a rebirth.
+- **Counterfactual:** the strongest case examined is the
+  release manifest's missing platform field, and it is not
+  close. On 2026-11-13 the phextnet became heterogeneous in
+  fact: the Android port (wbic16/qexo PR #1, an arm64 binary
+  for Will's phone) opened that morning, Will's Windows
+  laptop was already a live node, and at 23:29 the
+  wipe/rebirth/evolve sequence re-announced releases to the
+  whole fleet — while a release manifest still carried only
+  version, sha256, and size. The gap was even recorded the
+  same day (task 34.8.11/8.7.11/7.7.9) and left
+  undispatched. In a fleet-wide rollout every node is
+  offered the SAME version, so the version rule — the only
+  pre-download guard — is exactly useless in the case that
+  matters most; a phone or laptop polling a linux-x86_64
+  announcement would download and stage the wrong binary
+  and be saved only by the swap's rollback. A planner that
+  had stamped the platform into the signed manifest when
+  the second platform landed (the Android port, ~01:00
+  CST) would have made wrong-platform offers fail at
+  judgment time, before a single byte moved. v1.6.2 ships
+  exactly that (see CHANGELOG). Secondary case, recorded
+  and not shipped (one change per night): the disk file
+  count's re-acceleration (+52k after +7k) is precisely the
+  whipsaw the median forecast was built to absorb — the
+  planner's warnings held up; no change argued.
+- **Tonight's change:** platform-stamped release manifests
+  (v1.6.2, see CHANGELOG). One process note: exo advanced
+  past the nightly line during 2026-11-13/14 on Will-directed
+  slices (v1.3.0 → v1.6.1, PRs #16–#24), so tonight's version
+  increments from the fresh exo HEAD 5f092646 (v1.6.1) —
+  worked, as last night, from a fresh clone on aletheia-core;
+  the local ~/workspace/orchestrator/ mirror still sits at
+  v3.2 and was again not used as a source. The wbic16/qexo
+  twin carries the same update code; its sync is a separate
+  tracked debt (the v1.6.1 twin pattern), not silently
+  folded into this change.
+
 ## 2026-11-13 — nightly evaluation of 2026-11-12 (ships v1.2.1)
 
 - **Disk:** GREEN, slow growth, same shape. disk-watch history:
