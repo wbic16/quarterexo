@@ -1,5 +1,57 @@
 # qexo changelog — the scratch line
 
+## v1.7.1 — 2026-11-15 (the platform stamp, ported onto v1.7.0)
+
+Motivating finding — the 2026-11-15 evaluation of 2026-11-14
+(EVALUATIONS.md, 2026-11-15 section): last night's ship, v1.6.2
+(platform-stamped release manifests, PR #25 —
+https://github.com/wbic16/quarterexo/pull/25), branched from
+exo v1.6.1 and sat unmerged all day. The day's slices branched
+from the same base, and PR #26 (v1.7.0, distributed-builds)
+merged from it on 2026-11-15 — so exo reached v1.7.0 without
+the platform guard, and PR #25 now conflicts on every
+version-stamp file. The guard's case has not weakened: the
+fleet is heterogeneous in fact (Linux nodes, a Windows laptop,
+an Android phone), and in a fleet-wide rollout every node is
+offered the SAME version, so the version rule — the only
+pre-download guard — is useless in exactly the case that
+matters; a wrong-platform node is saved only by the swap's
+rollback, after the wrong bytes have downloaded.
+
+What v1.7.1 does (one change: the v1.6.2 platform stamp,
+ported onto the v1.7.0 tree — no behavior beyond it):
+
+- `qexo release` stamps `platform: <os>-<arch>` (std::env::consts
+  of the built target) into the manifest record — inside the
+  signed text — and prints it.
+- `qexo update` / `evolve` judge the stamp after the trust rule
+  and before any download: a trusted offer stamped for another
+  platform is skipped with the reason printed, concluding as
+  the outcome `WrongPlatform` (exit 0, no receipt — a routine
+  state in a mixed fleet; a timer poll must not spam the
+  ledger). Signature refusals still hard-stop exactly as
+  before; the gate never masks a trust failure.
+- Unstamped manifests (every pre-v1.6.2 announcement) parse as
+  platform None and proceed under the old rules, with a
+  printed note — refusing the standing announcements would
+  strand nodes whose signer has not re-announced.
+- The port itself: v1.6.2's src/core.rs change applied cleanly
+  onto v1.7.0 (the manifest/update code had not moved); only
+  the version-stamp files conflicted and were resolved to
+  1.7.1. Version: Cargo 1.7.0 → 1.7.1; VERSION v1.7.1; the
+  plan payload reports `plan_version: v1.7.1`.
+- PR #25 is superseded by this port when this ships: close
+  it, do not merge it.
+
+Known gap carried from PR #25, unchanged: the mismatch leg is
+unit-tested, not live-proven — no second-platform binary
+exists on the ranch to sign a foreign-stamped manifest. Also
+named in PR #25 and still open: `qexo status` and the CLI
+banner print a stale literal "qexo v1.4.0" (src/core.rs,
+src/cli.rs) — recorded in tonight's evaluation as the
+standing candidate for a future night.
+
+
 ## 1.7.0 (v1.7.0) — distributed builds join the surface, 2026-11-15
 
 **A node upgrades itself into the compile cluster.** The fleet's
