@@ -21,6 +21,7 @@ pub enum Command {
     List { json: bool },
     Learn { status: bool, app: bool },
     Inventory { name: Option<String>, install: Option<String> },
+    DistributedBuilds { scheduler: bool, status: bool, branch: Option<String> },
     Register(Vec<String>),
     Release,
     Update { check: bool },
@@ -84,6 +85,23 @@ pub fn parse(args: &[String]) -> Command {
                 }
             }
             Command::Inventory { name, install }
+        }
+        "distributed-builds" => {
+            let mut branch: Option<String> = None;
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--branch" && i + 1 < args.len() {
+                    branch = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            Command::DistributedBuilds {
+                scheduler: args.iter().any(|a| a == "--scheduler"),
+                status: args.iter().any(|a| a == "--status"),
+                branch,
+            }
         }
         "register" => Command::Register(args[1..].to_vec()),
         "release" => Command::Release,
@@ -200,6 +218,19 @@ pub fn help_text() -> String {
     s.push_str("  qexo message <persona> <text...>   one request/response exchange with a hosted persona\n\n");
 
     s.push_str("System:\n");
+    s.push_str("  qexo distributed-builds   upgrade this node into the fleet's distributed build cluster:\n");
+    s.push_str("                            sccache in front (fleet-shared cache), icecream behind it\n");
+    s.push_str("                            (compiles spread across the fleet). Idempotent; the recipes\n");
+    s.push_str("                            live in the exocortical tree (/source/exocortical), this\n");
+    s.push_str("                            command fetches that tree current and runs them\n");
+    s.push_str("  qexo distributed-builds --status\n");
+    s.push_str("                            report only: sccache, iceccd, scheduler — probed, not remembered\n");
+    s.push_str("  qexo distributed-builds --scheduler\n");
+    s.push_str("                            also run the scheduler recipe (the fleet's one scheduler host;\n");
+    s.push_str("                            implied on aletheia-core itself)\n");
+    s.push_str("  qexo distributed-builds --branch <name>\n");
+    s.push_str("                            take the recipes from a branch of the exocortical tree\n");
+    s.push_str("                            (the rollout rides the feature branch until it merges to exo)\n");
     s.push_str("  qexo serve [port]         the phext HTTP API (payloads are scroll text)\n");
     s.push_str("  qexo wiring-check [dir]   every src/*.rs declared as a module, every declaration filed\n");
     s.push_str("  qexo --version            version\n\n");
@@ -271,11 +302,21 @@ mod tests {
     }
 
     #[test]
+    fn distributed_builds_parses() {
+        assert_eq!(parse(&v(&["distributed-builds"])),
+            Command::DistributedBuilds { scheduler: false, status: false, branch: None });
+        assert_eq!(parse(&v(&["distributed-builds", "--status"])),
+            Command::DistributedBuilds { scheduler: false, status: true, branch: None });
+        assert_eq!(parse(&v(&["distributed-builds", "--scheduler", "--branch", "emise/distributed-builds"])),
+            Command::DistributedBuilds { scheduler: true, status: false, branch: Some("emise/distributed-builds".into()) });
+    }
+
+    #[test]
     fn help_lists_every_command() {
         let h = help_text();
         for word in [
             "config", "doctor", "list", "register", "release", "update", "evolve", "host", "unhost", "message", "status",
-            "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal",
+            "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal", "distributed-builds",
             "select", "get", "--help", "/var/lib/qexo/state.phext", "learn", "inventory", "~/.qexo/state.phext",
         ] {
             assert!(h.contains(word), "help is missing {}", word);

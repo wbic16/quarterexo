@@ -3,13 +3,15 @@
 //! One binary; modules by concern: the format (phext), the seal
 //! (xz), the hash, GPG mechanics (crypto), the inference edge
 //! (infer), the plan's pure core (plan), doctor's two layers
-//! (doctor), the state lattice and its Layer 2 addressing
+//! (doctor), the distributed-builds upgrade (distbuilds),
+//! the state lattice and its Layer 2 addressing
 //! (lattice), the state commands (core), the wiring gate
 //! (wiring), and this CLI.
 
 mod cli;
 mod core;
 mod crypto;
+mod distbuilds;
 mod doctor;
 #[allow(dead_code)]
 mod hash;
@@ -70,7 +72,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             0
         }
         Command::Version => {
-            println!("qexo v1.6.1 (Cargo 1.6.1)");
+            println!("qexo v1.7.0 (Cargo 1.7.0)");
             0
         }
         Command::WiringCheck(dir) => {
@@ -140,6 +142,9 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             }
         }
         Command::Inventory { name, install } => inventory::inventory(name, install),
+        Command::DistributedBuilds { scheduler, status, branch } => {
+            distbuilds::distributed_builds(scheduler, status, branch)
+        }
         Command::Register(args) => core::register(&args),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),

@@ -1,5 +1,31 @@
 # qexo changelog — the scratch line
 
+## 1.7.0 (v1.7.0) — distributed builds join the surface, 2026-11-15
+
+**A node upgrades itself into the compile cluster.** The fleet's
+compiles now run through sccache in front (the fleet-shared cache
+on the orchid-flow NFS share) and icecream behind it (C/C++
+compiles spread across every node's iceccd, scheduled from the
+one scheduler on aletheia-core). The recipes live where node
+recipes have always lived — the exocortical source tree
+(sccache-setup.sh, icecream-node.sh, icecream-scheduler.sh,
+enable-distributed-builds.sh; setup.sh Phase 12) — and
+`qexo distributed-builds` is the upgrade command that applies
+them: it fetches /source/exocortical current (cloning it when
+absent), runs the tree's idempotent scripts, and verifies the
+result by probing, not by remembering. `--status` is the
+verification alone; `--scheduler` adds the scheduler recipe
+(implied on aletheia-core itself); `--branch <name>` takes the
+recipes from a branch of the tree, which is how the rollout
+rides the exocortical feature branch until it merges to exo.
+The command never touches the node's qexo state — the cluster's
+state is its daemons and its cache, not the lattice — so it is
+not a write-intending verb. New module distbuilds.rs (std-only);
+no phext is parsed. Gates: cargo test (incl. new parse tests and
+the help-surface test), wiring check, release build, and a live
+`qexo distributed-builds` run plus `--status` on aletheia-core
+against the Stage 1 cluster built by hand from the same recipes.
+
 ## 1.6.1 (v1.6.1) — Learn You a qexo! gets an app protocol, 2026-11-14
 
 **The learn wizard learns to be driven.** `qexo learn --app`
