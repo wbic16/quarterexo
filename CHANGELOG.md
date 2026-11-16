@@ -1,5 +1,50 @@
 # qexo changelog — the scratch line
 
+## v1.7.2 — 2026-11-16 (the self-report derives from the build)
+
+Motivating finding — the 2026-11-16 evaluation of 2026-11-15
+(EVALUATIONS.md, 2026-11-16 section): self-report drift, the
+same failure shape at two scales. The watchdog found the
+delivered duty governor was not the file live on aletheia-core,
+and qexo's own help banner and `qexo status` still printed
+"qexo v1.4.0" on a v1.7.1 binary — three releases behind — on
+a day when Will's merge of v1.7.1, the release task queued off
+that merge, and repeated watchdog verifications all leaned on
+version truth, and the tool's own self-report was the one
+source nobody could use. The stale literals were named as the
+standing candidate on both prior nights; tonight pays it.
+
+What v1.7.2 does (one change: no user-facing version stamp is
+a hand-written literal — every one derives from the build):
+
+- `src/plan.rs`: new `pub const VERSION: &str =
+  env!("CARGO_PKG_VERSION")`, and `PLAN_VERSION` is now
+  `concat!("v", env!("CARGO_PKG_VERSION"))` instead of a
+  hand-stamped literal — the plan record's "plan version"
+  field (src/core.rs) rides the same constant, so it can no
+  longer be left behind by a release bump.
+- `src/cli.rs`: the help banner prints `qexo {PLAN_VERSION}`
+  instead of the literal "qexo v1.4.0".
+- `src/core.rs`: `qexo status` prints `qexo {PLAN_VERSION} —
+  node status` instead of the literal "qexo v1.4.0".
+- `src/inventory.rs`: the `--install` print-only note prints
+  the build version via `env!("CARGO_PKG_VERSION")`, the
+  idiom the roster header in the same file already used.
+- `src/main.rs`: `--version` prints `qexo {PLAN_VERSION}
+  (Cargo {VERSION})` instead of the hand-stamped
+  "qexo v1.7.1 (Cargo 1.7.1)" — future releases no longer
+  stamp main.rs or plan.rs at all; Cargo.toml (and its lock
+  entry) and VERSION are the only stamps left.
+- Historical mentions of v1.4.0 in comments and docs are
+  untouched: they describe the release they name, and only
+  runtime prints were lying.
+- Tests: `version_stamps_derive_from_the_build` (plan.rs —
+  fails if PLAN_VERSION is ever re-hardcoded out of sync
+  with the manifest) and `help_banner_names_the_build_version`
+  (cli.rs — the banner's first line names the current
+  PLAN_VERSION). Version: Cargo 1.7.1 → 1.7.2; VERSION
+  v1.7.2. No other behavior changes.
+
 ## v1.7.1 — 2026-11-15 (the platform stamp, ported onto v1.7.0)
 
 Motivating finding — the 2026-11-15 evaluation of 2026-11-14

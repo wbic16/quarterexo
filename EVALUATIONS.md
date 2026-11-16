@@ -3,6 +3,106 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-16 — nightly evaluation of 2026-11-15 (ships v1.7.2)
+
+- **Disk:** the file count crossed the line the last three
+  nights were forecasting. disk-watch history: 86.65 GB /
+  1,092,138 files (2026-11-14) → 88.13 GB / 1,103,268 files
+  (2026-11-15) — +1.48 GB, +11,130 files. The count now sits
+  3,268 files PAST the 1.1 M file-AMBER line qexo's gate
+  reads, while disk-watch's own level still reports GREEN
+  (its level is byte/quota-anchored) — the two instruments
+  disagree, and qexo's file lens is the one telling the
+  truth. At the last interval's rate: byte-AMBER (95 GB)
+  ~4.6 days out, file-RED (1.3 M) ~17.7 days out. Tonight's
+  live df reads 90 GB used of 150 GB (60%). Largest
+  consumers unchanged in shape for an eighth night:
+  wavefront 31.73 GB (the lossless A/B intermediates, ~9 GB
+  together, still staged on the VM), goals 19.29 GB, phext
+  10.63 GB.
+- **CPU:** placement held. The day's heavy work ran
+  node-resident on aletheia-core under duty governance:
+  NetHack Stages 3 and 4 closed and Stages 5–8 ran the
+  same day (Stage 4's cap-honest re-baseline: 100,200,109
+  steps, wall 3,984.8 s, duty fraction 0.7547, Tctl median
+  66.25 °C / max 77.0 °C instantaneous). The LDAP fleet
+  rollout and the libphext ports builds were ranch-side;
+  the register service and md.phext.io work ran on awsbox
+  and the ranch. The VM's 1.5 shared CPUs carried
+  coordination plus the standing tick/watchdog load (task
+  ticks 1915→2058 across the day, ~144 runs). Tonight's
+  snapshots: VM load 1.50; aletheia-core load 0.10, Tctl
+  31.6 °C before tonight's build.
+- **RAM:** 6 GB shared limit, same envelope. No heavy local
+  resident was recorded on 2026-11-15; placement held and
+  RAM held with it, for an eighth night. Tonight's snapshot
+  reads ~875 MB MemAvailable with ~423 MB swap used.
+- **Inference:** the well-spent bulk was real: Will merged
+  PR #27 (https://github.com/wbic16/quarterexo/pull/27,
+  v1.7.1) in the morning, closing the nightly line's own
+  loop, and PR #25 was closed as superseded; NetHack Stage
+  3's close found the solver's real binding constraint and
+  Stage 4 fixed it and re-baselined (see Counterfactual);
+  the libphext ports → v0.6 program completed; the LDAP
+  fleet rollout completed; the register service v2 went
+  live with LDAP + passkey verified in Edge and took its
+  first real closures (#9, #10, by Will's ruling); the
+  historian journal was founded; the day's speedup meter
+  read 554.2× (net 4,130,567 lines total — code 34,636 ·
+  phext 4,095,931 — 127 commits, 5.0 active hours). The
+  waste was again specific: (1) the tick loop's ~144 runs
+  re-derived unchanged verdicts all day — PR #25 "still
+  OPEN" was API-checked tick after tick (ticks 1962–1971)
+  until Will's merge of PR #27 settled it from outside the
+  loop; the poll-and-diff candidate is now six nights old;
+  (2) the duty-governor update's first report carried
+  intermediate file hashes that did not match the deployed
+  files and had to be re-hashed from the main chat —
+  verification against the worker's own output, again;
+  (3) the markdown-wizard outputs build failed to land at
+  23:06 CST and a recovery had to be dispatched late-night.
+- **Counterfactual:** the strongest case examined is the
+  NetHack episode cap, and it is not close. Stages 2 and 3
+  ran their campaigns under NLE's internal
+  `_max_episode_steps = 5000` while the harness believed
+  its own 100,000-step TimeLimit governed — Stage 3's Leg A
+  alone ran 100,410,406 steps in that regime, and its
+  "terminals" were 6,536 truncations against 90 real
+  deaths, with live heroes inscribed as dead. Every Stage
+  2/3 verdict was conditioned on a regime nobody chose.
+  Stage 4's first leg pinned the mechanism
+  (`gymnasium.make()` consumes `max_episode_steps` for the
+  wrapper spec and never forwards it to the env creator)
+  and the cap-honest re-baseline cost another 100,200,109
+  steps and 3,984.8 s of wall. A planner that probes
+  effective parameters before committing a campaign — one
+  hero stepped 5,001 times at Stage 2 dispatch, seconds of
+  work — would have caught it before Stage 2, not after
+  Stage 3. The fix landed where it belongs, in the solver
+  (`nh_harness.make_env`, proven by the same bisection),
+  not in qexo; the planning lesson is recorded here:
+  verify the instrument, not the intent. Secondary case,
+  and tonight's change: self-report drift, the same shape
+  in miniature. The watchdog found the delivered duty
+  governor was not the file live on aletheia-core (the live
+  leg ran the Stage 2 governor; Tctl max 81.625 °C), and
+  qexo itself still prints "qexo v1.4.0" in its help banner
+  and `qexo status` on a v1.7.1 binary — on a day when a
+  merge, a queued release task, and repeated watchdog
+  checks all leaned on version truth, and the tool's own
+  self-report was the one source nobody could use. v1.7.2
+  derives every user-facing version stamp from the build's
+  own manifest version (the inventory roster already did),
+  with a drift test, so the banner cannot fall behind
+  again (see CHANGELOG).
+- **Tonight's change:** v1.7.2 — version self-report
+  derived from the build, worked from a fresh clone of exo
+  HEAD 609bab65 (the v1.7.1 merge) on aletheia-core
+  (~/qexo-nightly-2026-11-16/); the local
+  ~/workspace/orchestrator/ mirror still sits at v3.2 and
+  was again not used as a source. The wbic16/qexo twin sync
+  remains a separate tracked debt, as before.
+
 ## 2026-11-15 — nightly evaluation of 2026-11-14 (ships v1.7.1)
 
 - **Disk:** GREEN on both halves, but the file count is now

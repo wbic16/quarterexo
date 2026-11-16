@@ -138,7 +138,8 @@ pub fn parse(args: &[String]) -> Command {
 
 pub fn help_text() -> String {
     let mut s = String::new();
-    s.push_str("qexo v1.4.0 — the Exocortex coordinator (phext-native)\n");
+    s.push_str(&format!("qexo {} — the Exocortex coordinator (phext-native)
+", crate::plan::PLAN_VERSION));
     s.push_str("All node state lives in one phext file, found by resolution:\n");
     s.push_str("QEXO_STATE when set; else the system state /var/lib/qexo/state.phext when it\n");
     s.push_str("exists and is readable; else the per-user state ~/.qexo/state.phext (Windows:\n");
@@ -309,6 +310,15 @@ mod tests {
             Command::DistributedBuilds { scheduler: false, status: true, branch: None });
         assert_eq!(parse(&v(&["distributed-builds", "--scheduler", "--branch", "emise/distributed-builds"])),
             Command::DistributedBuilds { scheduler: true, status: false, branch: Some("emise/distributed-builds".into()) });
+    }
+
+    #[test]
+    fn help_banner_names_the_build_version() {
+        // v1.7.2: the banner derives from the build, not a literal —
+        // its first line names the current PLAN_VERSION.
+        let h = help_text();
+        let first = h.lines().next().unwrap_or_default();
+        assert_eq!(first, format!("qexo {} — the Exocortex coordinator (phext-native)", crate::plan::PLAN_VERSION));
     }
 
     #[test]
