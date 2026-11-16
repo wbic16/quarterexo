@@ -347,6 +347,7 @@ pub fn check_lattice(lat: &Lattice) -> Report {
         (lattice::HL_TELEMETRY, "telemetry index"),
         (lattice::HL_CONFIG, "config & wiring index"),
         (lattice::HL_LEARN, "lessons & learning index"),
+        (lattice::HL_DISPATCH, "dispatch & queue index"),
     ] {
         let addr = lattice::index_addr(h);
         findings.push(Finding {
@@ -415,6 +416,7 @@ pub fn fix_lattice(lat: &mut Lattice) -> Vec<String> {
         (lattice::index_addr(lattice::HL_TELEMETRY), "telemetry index"),
         (lattice::index_addr(lattice::HL_CONFIG), "config & wiring index"),
         (lattice::index_addr(lattice::HL_LEARN), "lessons & learning index"),
+        (lattice::index_addr(lattice::HL_DISPATCH), "dispatch & queue index"),
     ];
     let before: Vec<Option<String>> = watched.iter().map(|(a, _)| lat.px.get(a).cloned()).collect();
     lattice::regen_indexes(&mut lat.px);

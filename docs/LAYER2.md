@@ -86,6 +86,18 @@ is a set of 9D addresses, never a partial address.
   field lines updated in place. The pattern extends by one —
   the ones-to-nines are the node's records of the world; the
   tens are its record of the operator's practice.
+- **11.11.11/11.11.11/11.11.11** — dispatch & queue (added by
+  the dispatch core, slice 1: the elevens — send-off country).
+  The pattern extends by one again: the elevens are the node's
+  record of work in flight. Queue items live in cluster 2 —
+  one Book per item in arrival sequence, the item record at
+  Scroll 1, its brief at Scroll 2, dependency and context
+  citations after; assignments (cluster 3), schedules
+  (cluster 4), bridges (cluster 5), and the register link
+  (cluster 6) take their clusters as their slices land. The
+  state file itself is a chain: universe 1 is the state these
+  homelands describe, and dispatch attempts live in later
+  universes at the same addresses.
 
 These are first placements, not a schema: if a family's life pulls
 it elsewhere, the index scroll is updated and the record moves by

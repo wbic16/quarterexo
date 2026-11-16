@@ -26,6 +26,9 @@ pub enum Command {
     Release,
     Update { check: bool },
     Evolve { check: bool },
+    Enqueue(Vec<String>),
+    Queue { all: bool, node: Option<String> },
+    Show(String),
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
     Message { persona: String, text: String },
@@ -104,6 +107,21 @@ pub fn parse(args: &[String]) -> Command {
             }
         }
         "register" => Command::Register(args[1..].to_vec()),
+        "enqueue" => Command::Enqueue(args[1..].to_vec()),
+        "queue" => {
+            let mut node: Option<String> = None;
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--node" && i + 1 < args.len() {
+                    node = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            Command::Queue { all: args.iter().any(|a| a == "--all"), node }
+        }
+        "show" => Command::Show(w(1).to_string()),
         "release" => Command::Release,
         "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
         "evolve" => Command::Evolve { check: args.iter().any(|a| a == "--check") },
@@ -209,6 +227,22 @@ pub fn help_text() -> String {
     s.push_str("                            (update is one stage of evolve: with evolve: on in the config record,\n");
     s.push_str("                            the automatic timer fires `qexo evolve` instead of `qexo update`)\n\n");
 
+    s.push_str("Dispatch (local — the dispatch core's foundation):\n");
+    s.push_str("  qexo enqueue <brief-file> [--title <t>] [--coordinate <task-coordinate>] [--register <n>]\n");
+    s.push_str("                            [--value <1-9>] [--cost <1-9>] [--goal <text>] [--after <item-address>]\n");
+    s.push_str("                            [--exit <text>] [--origin <origin>]\n");
+    s.push_str("                            file a queue item in the dispatch homeland (11.11.11/11.11.11/11.11.11,\n");
+    s.push_str("                            cluster 2): the item record at Scroll 1, the brief at Scroll 2.\n");
+    s.push_str("                            Prints the item's full address only after the record is durable\n");
+    s.push_str("                            in state (write-before-ack). `qexo enqueue -` reads the brief\n");
+    s.push_str("                            from stdin\n");
+    s.push_str("  qexo queue [--all] [--node <name>]\n");
+    s.push_str("                            the queue: items in arrival order — state, title, ROI, enqueued\n");
+    s.push_str("                            time. --all includes terminal items (done, cancelled)\n");
+    s.push_str("  qexo show <address>       render one record from this node's state; the address may carry\n");
+    s.push_str("                            a universe prefix — $2:11.11.11/2.1.1/1.1.1 reads universe 2 of\n");
+    s.push_str("                            the state chain (a bare address is universe 1)\n\n");
+
     s.push_str("Personas & inference:\n");
     s.push_str("  qexo host <persona>       load a persona into local inference (--boot <path> for a boot text file;\n");
     s.push_str("                            --boot against an existing, unhosted home with different text is a local\n");
@@ -282,6 +316,13 @@ mod tests {
         assert_eq!(parse(&v(&["inventory", "sq"])), Command::Inventory { name: Some("sq".into()), install: None });
         assert_eq!(parse(&v(&["inventory", "--install", "sq"])), Command::Inventory { name: None, install: Some("sq".into()) });
         assert_eq!(parse(&v(&["register", "keyfile.asc"])), Command::Register(v(&["keyfile.asc"])));
+        assert_eq!(parse(&v(&["enqueue", "brief.md", "--title", "T"])), Command::Enqueue(v(&["brief.md", "--title", "T"])));
+        assert_eq!(parse(&v(&["enqueue", "-"])), Command::Enqueue(v(&["-"])));
+        assert_eq!(parse(&v(&["queue"])), Command::Queue { all: false, node: None });
+        assert_eq!(parse(&v(&["queue", "--all"])), Command::Queue { all: true, node: None });
+        assert_eq!(parse(&v(&["queue", "--node", "aletheia-core"])), Command::Queue { all: false, node: Some("aletheia-core".into()) });
+        assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1"])), Command::Show("11.11.11/2.1.4/1.1.1".into()));
+        assert_eq!(parse(&v(&["show", "$2:11.11.11/2.1.4/1.1.1"])), Command::Show("$2:11.11.11/2.1.4/1.1.1".into()));
         assert_eq!(parse(&v(&["host"])), Command::Host { persona: None, boot: None });
         assert_eq!(
             parse(&v(&["host", "Emise", "--boot", "emise.phext"])),
@@ -318,6 +359,7 @@ mod tests {
             "config", "doctor", "list", "register", "release", "update", "evolve", "host", "unhost", "message", "status",
             "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal", "distributed-builds",
             "select", "get", "--help", "/var/lib/qexo/state.phext", "learn", "inventory", "~/.qexo/state.phext",
+            "enqueue", "queue", "show", "11.11.11/11.11.11/11.11.11",
         ] {
             assert!(h.contains(word), "help is missing {}", word);
         }
