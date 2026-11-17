@@ -1,3 +1,69 @@
+## v1.7.3 — 2026-11-17 (the fair draw)
+
+Motivating finding — the 2026-11-17 evaluation of 2026-11-16
+(EVALUATIONS.md, 2026-11-17 section): on 2026-11-16 at 20:30
+CST Will ruled fair dispatch — "you need a round-robin
+scheduler - don't always focus on using aletheia-core" /
+"use qexo to dispatch fairly - random selection per round."
+The dispatch-core SPEC absorbed the ruling the same evening
+(its §6 rewritten around a random draw per round from the
+eligible set, every draw receipted, an empty eligible set a
+named outcome — never a silent fallback to aletheia-core).
+But the shipped planner still carried the superseded
+2026-11-05 default in code: `Class::execution()` named
+"ranch:aletheia-core" for every BUILD task and every VIDEO
+task, unconditionally. The ruling existed everywhere except
+in the binary that emits the plan.
+
+What v1.7.3 does (one change: heavy placements are drawn
+from the eligible roster, never defaulted):
+
+- `src/plan.rs`: `Class::execution()` is gone. `GateInputs`
+  gains `roster: Vec<String>` (the eligible ranch nodes, a
+  value like every other plan input) and `draw_seed: u64`
+  (the per-plan seed). In `compute`, each heavy placement
+  that the disk gate does not hold draws the next value of
+  a splitmix64 stream seeded from `draw_seed` and lands on
+  `roster[draw % len]` — VIDEO keeps its "(video — never on
+  VM)" suffix on the drawn node; LIGHT rows are untouched;
+  a RED gate still HELDs heavy rows and consumes no draw.
+- The draw is receipted: `PlanData` carries `draw_seed`,
+  `roster`, and `draw_picks` (the node picked for each
+  heavy row, in row order); `render` prints a `fair draw:`
+  line naming the seed and the roster; the plan record in
+  state.phext gains a `fair draw` field (seed, roster,
+  picks). A plan's picks are reproducible from its receipt
+  — that is what makes the draw auditable rather than a
+  claim.
+- Empty roster is a named outcome, per the ruling: heavy
+  rows read `ranch:QUEUED (fair draw — roster empty, no
+  eligible node)`, the render line says so, and no code
+  path falls back to aletheia-core. Eligibility itself
+  (reachability, load/temperature gates, resident agents,
+  data locality) is the caller's to judge, exactly as the
+  SPEC's §6 has it; the plan draws over the roster it is
+  given and receipts what it was given.
+- `src/core.rs` (`plan_cmd`): the roster is read from the
+  node's config record, key `ranch_roster` (comma-separated
+  names), parsed by the new pure `plan::parse_roster`
+  (trims, drops empties and duplicates); the draw seed is
+  the wall clock in nanoseconds at plan time.
+- Tests: draw picks only roster nodes and covers all of
+  them across seeds; picks reproduce exactly from the
+  receipt (same seed + roster, same plan); empty roster
+  queues heavy rows and the render names it; a RED gate
+  precedes the draw and consumes none; roster parsing
+  trims/dedups/tolerates absence. The one pre-existing
+  exact-string assertion on the old hub default now asserts
+  roster membership plus the video suffix. Version: Cargo
+  1.7.2 → 1.7.3; VERSION v1.7.3 (PLAN_VERSION derives, per
+  v1.7.2 — no hand stamps touched).
+- Stacking note: this release branches from the v1.7.2
+  branch (PR #28, still open) because exo has not moved
+  since the v1.7.1 merge; when PR #28 merges, this PR
+  reduces to its own commit. PR #29 (dispatch core slice 1)
+  branched from exo and is untouched by this change.
+
 # qexo changelog — the scratch line
 
 ## v1.7.2 — 2026-11-16 (the self-report derives from the build)

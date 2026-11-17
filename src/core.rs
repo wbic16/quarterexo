@@ -2022,6 +2022,15 @@ pub fn plan_cmd() -> i32 {
         volume: probe.volume.clone(),
         files_root: staging_root_s.clone(),
         config: gate_cfg,
+        // v1.7.3 fair draw: the roster is the node's configured
+        // eligible set (config key `ranch_roster`); the seed is
+        // this plan's wall-clock draw seed, receipted in the
+        // plan record below.
+        roster: plan::parse_roster(lattice::field(&cfg, "ranch_roster")),
+        draw_seed: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
     };
     let (day, stamp) = now_stamp();
     let (y, m, d) = civil_from_days(day);
@@ -2084,6 +2093,11 @@ pub fn plan_cmd() -> i32 {
     let mut data = plan::compute(&tasks, &current, &history, host, &gate_inputs);
     data.disk_date = format!("{:04}-{:02}-{:02}", y, m, d);
     let rendered = plan::render(&data);
+    let draw_receipt = if data.roster.is_empty() {
+        "roster empty — heavy placements QUEUED".to_string()
+    } else {
+        format!("seed {} over [{}]; picks: {}", data.draw_seed, data.roster.join(", "), data.draw_picks.join(", "))
+    };
 
     // The plan is a record: fields scroll + rendering beside it,
     // and the same pair appended to the history run.
@@ -2092,6 +2106,7 @@ pub fn plan_cmd() -> i32 {
         ("plan version", plan::PLAN_VERSION),
         ("emitted", &stamp),
         ("disk gate", &data.disk_gate),
+        ("fair draw", &draw_receipt),
         ("gate reason", &data.gate_reason),
         ("open tasks", &data.open_tasks().to_string()),
         ("tasks source", if tasks_source.is_empty() { "(none configured)" } else { &tasks_source }),

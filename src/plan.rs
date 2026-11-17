@@ -15,6 +15,20 @@
 //! every ranch node — the second plan read "FORECAST AMBER,
 //! byte AMBER projected in 0.0 days" over a GREEN gate.
 //!
+//! From v1.7.3 the plan's heavy placements are drawn, not
+//! defaulted. Will's fair-dispatch ruling (2026-11-16) ended
+//! the hub default the old line carried in code: every BUILD
+//! and VIDEO placement named the same ranch node,
+//! unconditionally. The eligible roster and the draw seed now
+//! arrive as values in GateInputs (the caller reads the
+//! roster from the node's config record, key `ranch_roster`);
+//! each heavy placement the disk gate does not hold draws the
+//! next value of a splitmix64 stream seeded per plan, and the
+//! plan receipts the seed, the roster, and every pick, so a
+//! plan's placements are reproducible from its receipt. An
+//! empty roster queues heavy placements by name — never a
+//! silent fallback to the hub.
+//
 //! From-scratch shape: this module is the pure core. It computes
 //! from VALUES — a current disk observation, a history of
 //! observations, task rows, a host snapshot — and renders. Where
@@ -57,13 +71,6 @@ impl Class {
             Class::Video => "video",
             Class::Build => "build",
             Class::Light => "light",
-        }
-    }
-    pub fn execution(&self) -> &'static str {
-        match self {
-            Class::Video => "ranch:aletheia-core (video — never on VM)",
-            Class::Build => "ranch:aletheia-core",
-            Class::Light => "vm:light-coordination",
         }
     }
 }
@@ -240,6 +247,20 @@ pub struct GateInputs {
     pub volume: Option<Volume>,
     pub files_root: String,
     pub config: GateConfig,
+    /// The eligible ranch roster for heavy placements
+    /// (v1.7.3): node names the caller read from its config
+    /// record (key `ranch_roster`). Eligibility — reachability,
+    /// load/temperature gates, resident agents, data locality —
+    /// is the caller's to judge (SPEC §6); the plan draws over
+    /// the roster it is given and receipts what it was given.
+    /// Empty means no eligible node: heavy placements queue
+    /// by name, never default to a hub.
+    pub roster: Vec<String>,
+    /// Seed for this plan's fair draw (v1.7.3). The caller
+    /// supplies a per-plan seed (wall-clock nanos); tests
+    /// supply fixed seeds, so a plan is reproducible from
+    /// its receipt.
+    pub draw_seed: u64,
 }
 
 /// The gate's verdict, with its reasons kept as text: which lens
@@ -622,12 +643,49 @@ pub struct PlanData {
     pub load1: f64,
     pub counts: (usize, usize, usize), // video, build, light
     pub rows: Vec<PlanRow>,
+    /// Fair draw receipt (v1.7.3): the seed the plan drew
+    /// from, the eligible roster it drew over, and the node
+    /// picked for each placed heavy row, in row order. An
+    /// empty roster means no picks — heavy rows QUEUED.
+    pub draw_seed: u64,
+    pub roster: Vec<String>,
+    pub draw_picks: Vec<String>,
 }
 
 impl PlanData {
     pub fn open_tasks(&self) -> usize {
         self.rows.len()
     }
+}
+
+/// splitmix64 — the fair draw's stream (v1.7.3). Small,
+/// exact, dependency-free; a plan's picks are reproducible
+/// from its receipted seed, which is what makes the draw
+/// auditable rather than a claim.
+fn draw_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Parse the config record's `ranch_roster` value (v1.7.3):
+/// comma-separated node names, whitespace-trimmed, empties
+/// and duplicates dropped, order preserved (order carries
+/// no preference — the draw is uniform over the roster —
+/// it is kept only so the receipt reads as configured).
+pub fn parse_roster(v: Option<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(v) = v {
+        for part in v.split(',') {
+            let name = part.trim().to_string();
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
+            }
+        }
+    }
+    out
 }
 
 /// Compute the plan:
@@ -668,6 +726,8 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
 
     let (mut nv, mut nb, mut nl) = (0usize, 0usize, 0usize);
     let mut rows: Vec<PlanRow> = Vec::new();
+    let mut draw_state = gate.draw_seed;
+    let mut draw_picks: Vec<String> = Vec::new();
     for t in tasks {
         let class = classify(&t.title, &t.request);
         match class {
@@ -676,17 +736,28 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
             Class::Light => nl += 1,
         }
         let execution = if disk_gate == "RED" && class != Class::Light {
-            "HELD (disk gate RED)"
+            "HELD (disk gate RED)".to_string()
         } else if disk_gate == "AMBER" && class == Class::Light {
-            "vm:light-coordination (no staging)"
+            "vm:light-coordination (no staging)".to_string()
+        } else if class == Class::Light {
+            "vm:light-coordination".to_string()
+        } else if gate.roster.is_empty() {
+            // The ruling's named outcome: no eligible node is a
+            // QUEUED placement, never a silent hub fallback.
+            "ranch:QUEUED (fair draw — roster empty, no eligible node)".to_string()
         } else {
-            class.execution()
+            let pick = gate.roster[(draw_next(&mut draw_state) % gate.roster.len() as u64) as usize].clone();
+            draw_picks.push(pick.clone());
+            match class {
+                Class::Video => format!("ranch:{} (video — never on VM)", pick),
+                _ => format!("ranch:{}", pick),
+            }
         };
         rows.push(PlanRow {
             coordinate: t.coordinate.clone(),
             title: t.title.clone(),
             class,
-            execution: execution.to_string(),
+            execution,
         });
     }
 
@@ -712,6 +783,9 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         load1: host.1,
         counts: (nv, nb, nl),
         rows,
+        draw_seed: gate.draw_seed,
+        roster: gate.roster.clone(),
+        draw_picks,
     }
 }
 
@@ -791,6 +865,15 @@ pub fn render(plan: &PlanData) -> String {
         plan.ram_available_mb, plan.load1
     ));
     out.push_str(&format!("  inference: Emise carries all {} open tasks\n", plan.open_tasks()));
+    if plan.roster.is_empty() {
+        out.push_str("  fair draw: roster empty — heavy placements QUEUED, no silent hub fallback\n");
+    } else {
+        out.push_str(&format!(
+            "  fair draw: seed {} over roster [{}] — no node holds a default\n",
+            plan.draw_seed,
+            plan.roster.join(", ")
+        ));
+    }
     out.push_str("\nplacements (inference → Emise for every task):\n");
     if plan.disk_gate == "RED" {
         out.push_str("  ** DISK GATE RED: every heavy placement below is HELD — do not dispatch until the gate clears. **\n");
@@ -822,7 +905,7 @@ mod tests {
     /// lens only (no volume supplied in most unit fixtures), file
     /// lens at the standard counts.
     fn gin() -> GateInputs {
-        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default() }
+        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42 }
     }
     /// The old world's configuration: the quota lens on at the
     /// VM's 95/102 GB ceiling. Every pre-v1.0.2 gate expectation is
@@ -830,7 +913,7 @@ mod tests {
     fn gin_quota() -> GateInputs {
         let mut config = GateConfig::default();
         config.quota_on = true;
-        GateInputs { volume: None, files_root: "/staging".to_string(), config }
+        GateInputs { volume: None, files_root: "/staging".to_string(), config, roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42 }
     }
     fn vol(root: &str, total: u64, used: u64, free: u64) -> Volume {
         Volume { root: root.to_string(), total_bytes: total, used_bytes: used, free_bytes: free }
@@ -857,7 +940,11 @@ mod tests {
         let gate = |o: DiskObs| compute(&tasks, &o, &[], (0.0, 0.0), &gin_quota());
         let p = gate(obs(1, 71.0, "GREEN", 1));
         assert_eq!(p.disk_gate, "GREEN");
-        assert_eq!(p.rows[0].execution, "ranch:aletheia-core (video — never on VM)");
+        // v1.7.3: the video placement is a roster draw now, not
+        // the old hub default — membership + suffix, not a name.
+        assert!(p.rows[0].execution.starts_with("ranch:"), "{}", p.rows[0].execution);
+        assert!(p.rows[0].execution.ends_with("(video — never on VM)"), "{}", p.rows[0].execution);
+        assert!(["aletheia-core", "rock-mountain", "scroll-central"].iter().any(|n| p.rows[0].execution.contains(n)), "{}", p.rows[0].execution);
         assert_eq!(p.rows[1].execution, "vm:light-coordination");
         let p = gate(obs(1, 96.0, "GREEN", 1));
         assert_eq!(p.disk_gate, "AMBER");
@@ -884,7 +971,7 @@ mod tests {
         // same numbers are what they are: a healthy volume.
         let gib = 1_073_741_824u64;
         let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default() };
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
         let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &obs(1, 808.96, "GREEN", 6), &[], (0.0, 0.0), &g);
         assert_eq!(p.byte_gate, "GREEN");
         assert_eq!(p.disk_gate, "GREEN");
@@ -1009,7 +1096,7 @@ mod tests {
         // horizon, so no crossing at all.
         let gib = 1_073_741_824u64;
         let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default() };
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
         let hist = vec![obs(1, 809.07, "GREEN", 6), obs(2, 809.13, "GREEN", 6)];
         let cur = obs(2, 809.13, "GREEN", 6);
         let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &g);
@@ -1033,7 +1120,7 @@ mod tests {
         let gib = 1_073_741_824u64;
         let total = 100 * gib;
         let v = vol("/data", total, 88 * gib, 12 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default() };
+        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
         let hist = vec![obs(1, 85.0, "AMBER", 10), obs(2, 90.0, "AMBER", 10)];
         let f = forecast_gate(&hist, &g.config, Some(total));
         assert!(f.available);
@@ -1138,6 +1225,91 @@ mod tests {
         // re-hardcoded a stamp.
         assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
         assert_eq!(PLAN_VERSION, format!("v{}", env!("CARGO_PKG_VERSION")));
+    }
+
+    #[test]
+    fn fair_draw_picks_only_roster_nodes_and_covers_them() {
+        // v1.7.3: heavy placements draw from the roster — every
+        // pick is a roster node, and across seeds every roster
+        // node is picked (no hidden default, no starved node).
+        let tasks = vec![task("1.1.1/1.1.1/1.1.1", "cargo build the thing")];
+        let cur = obs(100, 10.0, "GREEN", 100);
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..300u64 {
+            let mut g = gin();
+            g.draw_seed = seed;
+            let p = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+            let exec = &p.rows[0].execution;
+            assert!(exec.starts_with("ranch:"), "unexpected execution: {}", exec);
+            let node = exec.trim_start_matches("ranch:");
+            assert!(g.roster.iter().any(|n| n == node), "pick {} not in roster", node);
+            assert_eq!(p.draw_picks, vec![node.to_string()]);
+            seen.insert(node.to_string());
+        }
+        assert_eq!(seen.len(), 3, "draw never picked some roster node: {:?}", seen);
+    }
+
+    #[test]
+    fn fair_draw_is_reproducible_from_its_receipt() {
+        // The receipt (seed + roster) must regenerate the
+        // plan's picks exactly — that is what makes the draw
+        // auditable rather than a claim.
+        let tasks = vec![
+            task("1.1.1/1.1.1/1.1.1", "render the film"),
+            task("1.1.1/1.1.1/1.1.2", "cargo test the suite"),
+        ];
+        let cur = obs(100, 10.0, "GREEN", 100);
+        let g = gin();
+        let a = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+        let b = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+        assert_eq!(a.draw_picks, b.draw_picks);
+        assert_eq!(a.draw_seed, 42);
+        assert_eq!(a.roster.len(), 3);
+        assert_eq!(a.draw_picks.len(), 2);
+        assert!(a.rows[0].execution.contains(&a.draw_picks[0]));
+        assert!(a.rows[1].execution.contains(&a.draw_picks[1]));
+    }
+
+    #[test]
+    fn empty_roster_queues_heavy_and_names_it() {
+        // v1.7.3: an empty roster is a named QUEUED outcome —
+        // never a silent fallback to the old hub default.
+        let tasks = vec![
+            task("1.1.1/1.1.1/1.1.1", "render the film"),
+            task("1.1.1/1.1.1/1.1.2", "cargo build the thing"),
+            task("1.1.1/1.1.1/1.1.3", "answer a question"),
+        ];
+        let cur = obs(100, 10.0, "GREEN", 100);
+        let mut g = gin();
+        g.roster = Vec::new();
+        let p = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+        assert!(p.rows[0].execution.starts_with("ranch:QUEUED"), "{}", p.rows[0].execution);
+        assert!(p.rows[1].execution.starts_with("ranch:QUEUED"), "{}", p.rows[1].execution);
+        assert_eq!(p.rows[2].execution, "vm:light-coordination");
+        assert!(p.draw_picks.is_empty());
+        let out = render(&p);
+        assert!(out.contains("roster empty"), "render must name the empty roster:\n{}", out);
+    }
+
+    #[test]
+    fn held_gate_precedes_the_draw() {
+        // RED gate: heavy rows are HELD and consume no draw,
+        // whatever the roster says.
+        let tasks = vec![task("1.1.1/1.1.1/1.1.1", "cargo build the thing")];
+        let cur = obs(100, 103.0, "RED", 100);
+        let p = compute(&tasks, &cur, &[], (1024.0, 0.5), &gin_quota());
+        assert_eq!(p.rows[0].execution, "HELD (disk gate RED)");
+        assert!(p.draw_picks.is_empty());
+    }
+
+    #[test]
+    fn roster_parsing_trims_dedups_and_tolerates_absence() {
+        assert!(parse_roster(None).is_empty());
+        assert!(parse_roster(Some("".to_string())).is_empty());
+        assert_eq!(
+            parse_roster(Some(" rock-mountain, aletheia-core ,rock-mountain,,".to_string())),
+            vec!["rock-mountain".to_string(), "aletheia-core".to_string()]
+        );
     }
 
     #[test]

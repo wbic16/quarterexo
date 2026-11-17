@@ -3,6 +3,131 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-17 — nightly evaluation of 2026-11-16 (ships v1.7.3)
+
+- **Disk:** the file count kept climbing past AMBER while bytes
+  stayed calm — the count crossing is now the standing
+  condition, not an approaching event. disk-watch history:
+  88.13 GB / 1,103,268 files (2026-11-15) → 89.53 GB /
+  1,119,598 files (2026-11-16) — +1.40 GB, +16,330 files.
+  The count sits 19,598 files past the 1.1 M file-AMBER line;
+  at the last interval's rate byte-AMBER (95 GB) is ~3.9
+  days out and file-RED (1.3 M) ~11.0 days out. disk-watch's
+  own level still reports GREEN (byte/quota-anchored) — the
+  two instruments still disagree, and qexo's file lens is
+  still the one telling the truth. Tonight's live df reads
+  91 GB used of 150 GB (61%). Largest consumers: wavefront
+  31.73 GB for a ninth straight night (the lossless A/B
+  intermediates, ~9 GB together, still staged on the VM),
+  goals 19.30 GB, phext 10.64 GB; desktop-sso (3.06 GB) and
+  astryx-study (2.75 GB) are new in the top ranks.
+- **CPU:** placement held, with one ruling that changes what
+  "held" means. The day's heavy work ran ranch-side:
+  NetHack Stage 9's search on aletheia-core, the
+  games-mechanism computation (tic-tac-toe / checkers /
+  chess) entirely on aletheia-core, qexo's own builds and
+  test batteries on the hub, the Computronium scrollbuild
+  on aletheia-core (single-writer registry — data locality,
+  named as the exception it is). At 20:30 CST Will ruled
+  fair dispatch: qexo draws execution targets randomly per
+  round from the eligible set, and aletheia-core is one
+  peer among equals — the hub-default era ended by ruling
+  the same evening the SMOL round's node was chosen by a
+  fair draw (rock-mountain, measured load 0.18, over
+  scroll-central 0.02 and plain-view 0.53; quacked-hill
+  excluded for its resident agent). The VM's 1.5 shared
+  CPUs carried coordination plus the standing tick load
+  (ticks 2059→2202 across the day, ~144 runs). Tonight's
+  snapshots: VM load 1.65 on a 1:39-old VM (replaced
+  again); aletheia-core load 0.26, Tctl 32.9 °C before
+  tonight's build.
+- **RAM:** 6 GB shared limit, same envelope. No heavy local
+  resident was recorded on 2026-11-16; placement held and
+  RAM held with it, for a ninth night. Tonight's snapshot
+  reads ~386 MB MemAvailable with ~440 MB swap used — the
+  tight end of the usual band, on a freshly replaced VM.
+- **Inference:** the well-spent bulk was real: the
+  dispatch-core SPEC was drafted, ratified OBO the same
+  night (all six §15 questions answered; Q2 widened by
+  Will against the draft's recommendation), amended the
+  same evening for fair dispatch, and slice 1 was built
+  and shipped as PR #29
+  (https://github.com/wbic16/quarterexo/pull/29); the
+  v1.7.1 release was staged-and-held exactly as re-scoped
+  (tags v1.7.0/v1.7.1 remote-verified, 94/94 gates on the
+  tagged tree, binaries built and hashed, publish and
+  rollout held for the register integration); md.phext.io
+  closed its QC loop on the final tree (80/80 tests, e2e
+  OK, parity 10/10, keep-private proven in 45 probe legs);
+  the games-mechanism task closed with published figures
+  reproduced exactly; SMOL was coined, drafted, and its
+  first training round directed and runner-built in one
+  evening. The day's speedup meter read 185.6× (80,628 net
+  lines, 50 commits, 1.0 active hour). The waste was again
+  specific: (1) the tick loop's ~144 runs re-derived
+  unchanged verdicts all day — register item #181's
+  republish has been "deferred" since tick 2108 and #163's
+  mirror wording drift has been re-flagged tick after tick
+  without either closing; the poll-and-diff candidate is
+  now seven nights old; (2) two waits (Shen Weiyang, the
+  md.phext.io restart) were never registered at all and
+  surfaced only when Will asked "Why do you keep dropping
+  tasks?" — inference spent re-finding what the register
+  exists to hold; (3) the Chromium growth job was
+  dispatched against a depth-1 shallow clone and stopped
+  at its own gate having produced no measurement (see
+  Counterfactual, secondary case).
+- **Counterfactual:** the strongest case examined is
+  NetHack Stage 9's first coordinator, and it is a
+  recurrence, not a novelty. The coordinator ended without
+  a final report — the VM-mortality cut-off pattern —
+  leaving real groundwork on disk (22:10–22:51 CST,
+  2026-11-15) but no stage9-results.md and a task record
+  still reading open with empty results. The breakage was
+  found by inventory, not by the plan; the resume-first
+  restart cost a second coordinator a full re-inventory of
+  two machines before work resumed. The 2026-11-13
+  evaluation of 2026-11-12 named this exact fix — a
+  planner that surfaces a task whose coordinator has died
+  as broken, not paused — and recorded it as "a future
+  candidate, larger than one night's change." Three nights
+  later it happened again, unchanged. A planner carrying
+  that one check would have resumed Stage 9 within one
+  tick of the coordinator's death instead of on discovery
+  hours later. It remains larger than tonight's single
+  change and is named here for the second time, on the
+  record, rather than silently carried. Secondary case:
+  the Chromium month-by-month growth job was briefed
+  against a clone that is depth-1 shallow
+  (`git rev-list --count HEAD` = 1) — its method was
+  impossible from the first minute, and one probe command
+  at dispatch (`git rev-parse --is-shallow-repository`)
+  would have rerouted it before a worker spent its run
+  discovering the gate. Probe the instrument before the
+  campaign: the same lesson as the NetHack episode cap,
+  one level up. Tonight's change is the day's other
+  headline: at 20:30 Will ruled fair dispatch, and the
+  SPEC absorbed it the same evening — but the shipped
+  planner still defaults every BUILD placement to
+  aletheia-core, the superseded 2026-11-05 default, in
+  code. v1.7.3 closes that gap in the binary (see
+  CHANGELOG).
+- **Tonight's change:** v1.7.3 — fair placement in the
+  plan: heavy placements draw randomly per plan from the
+  eligible ranch roster instead of defaulting to
+  aletheia-core, every draw receipted in plan.json, and an
+  empty roster yields a named QUEUED outcome rather than
+  a silent hub fallback. Stacked on the v1.7.2 branch
+  (PR #28, https://github.com/wbic16/quarterexo/pull/28,
+  still open) because exo has not moved since the v1.7.1
+  merge (609bab65) — branching from exo would strand the
+  derived-version change a second time; when PR #28
+  merges, tonight's PR reduces to its own commit. The
+  local ~/workspace/orchestrator/ mirror still sits at
+  v3.2 and was again not used as a source. The
+  wbic16/qexo twin sync remains a separate tracked debt,
+  as before.
+
 ## 2026-11-16 — nightly evaluation of 2026-11-15 (ships v1.7.2)
 
 - **Disk:** the file count crossed the line the last three
