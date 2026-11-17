@@ -65,6 +65,9 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Evolve { check: false }
             | Command::Doctor { fix: true }
             | Command::Enqueue(_)
+            | Command::Pause(_)
+            | Command::Resume(_)
+            | Command::Cancel(_)
     );
     if write_intent {
         lattice::set_write_intent();
@@ -126,6 +129,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             let mut report = doctor::check(&dir, &file);
             if let Ok(Some(lat)) = lattice::Lattice::load() {
                 report.findings.extend(doctor::check_lattice(&lat).findings);
+                report.findings.extend(doctor::check_queue(&lat).findings);
             }
             print!("{}", report.render());
             if report.ok() { 0 } else { 1 }
@@ -150,7 +154,11 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         }
         Command::Register(args) => core::register(&args),
         Command::Enqueue(args) => dispatch::enqueue(&args),
-        Command::Queue { all, node } => dispatch::queue(all, node),
+        Command::Queue { all, node, explain } => dispatch::queue(all, node, explain),
+        Command::Pause(args) => dispatch::pause(&args),
+        Command::Resume(args) => dispatch::resume(&args),
+        Command::Cancel(args) => dispatch::cancel(&args),
+        Command::Audit(args) => dispatch::audit(&args),
         Command::Show(addr) => dispatch::show(&addr),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),

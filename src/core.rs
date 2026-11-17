@@ -61,6 +61,51 @@ pub(crate) fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+/// Parse a record timestamp to epoch minutes. Two shapes are
+/// accepted: the house stamp `now_stamp` writes
+/// ("YYYY-MM-DD HH:MM UTC") and the spec's ISO form
+/// ("YYYY-MM-DDTHH:MM:SS±HH:MM", or trailing Z). Anything else
+/// is None — a foreign timestamp qexo cannot reckon is data it
+/// reports, never a value it invents.
+pub(crate) fn stamp_minutes(s: &str) -> Option<i64> {
+    let s = s.trim();
+    let (date, time, offset): (&str, &str, i64) = if let Some(rest) = s.strip_suffix(" UTC") {
+        let (d, t) = rest.split_once(' ')?;
+        (d, t, 0)
+    } else if let Some((d, rest)) = s.split_once('T') {
+        if let Some(t) = rest.strip_suffix('Z') {
+            (d, t, 0)
+        } else if let Some(idx) = rest.rfind(['+', '-']) {
+            let (t, off) = rest.split_at(idx);
+            let sign: i64 = if rest.as_bytes()[idx] == b'-' { -1 } else { 1 };
+            let (oh, om) = off[1..].split_once(':')?;
+            (d, t, sign * (oh.parse::<i64>().ok()? * 60 + om.parse::<i64>().ok()?))
+        } else {
+            (d, rest, 0)
+        }
+    } else {
+        return None;
+    };
+    let mut dp = date.split('-');
+    let y: i64 = dp.next()?.parse().ok()?;
+    let m: i64 = dp.next()?.parse().ok()?;
+    let d: i64 = dp.next()?.parse().ok()?;
+    let mut tp = time.split(':');
+    let hh: i64 = tp.next()?.parse().ok()?;
+    let mm: i64 = tp.next()?.parse().ok()?;
+    Some(crate::plan::days_from_civil(y, m, d) * 1440 + hh * 60 + mm - offset)
+}
+
+/// Epoch minutes right now (the same reckoning stamp_minutes
+/// parses back).
+pub(crate) fn now_minutes() -> i64 {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    secs.div_euclid(60)
+}
+
 pub(crate) fn require_born() -> Result<Lattice, i32> {
     match Lattice::load() {
         Ok(Some(lat)) => Ok(lat),
@@ -80,8 +125,11 @@ pub(crate) fn require_born() -> Result<Lattice, i32> {
 
 /// Append a receipt scroll to the receipts run (6.6.6/6.6.6/6.6.6 homeland, cluster 2)
 /// and return its coordinate. Receipts cite what they record by
-/// coordinate, in prose, per Layer 2.
-fn append_receipt(px: &mut Phext, action: &str, extra: &[(&str, &str)]) -> crate::phext::Coord {
+/// coordinate, in prose, per Layer 2. Crate-visible since the
+/// dispatch core (slice 2): a queue transition and its receipt
+/// are one write (spec §4.2), and the transition engine lives
+/// in dispatch.rs.
+pub(crate) fn append_receipt(px: &mut Phext, action: &str, extra: &[(&str, &str)]) -> crate::phext::Coord {
     let b = lattice::next_free_book(px, [6, 6, 6, lattice::LEDGER_RECEIPTS, 1], 1);
     let addr = lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RECEIPTS, 1, b, 1, 1, 1]);
     let (_, stamp) = now_stamp();
@@ -1801,7 +1849,8 @@ pub fn status() -> i32 {
     println!("hosted: {}", if hosted.is_empty() { "none".to_string() } else { hosted.join(", ") });
     let fs_report = doctor::check(&lattice::state_dir(), &path);
     let lat_report = doctor::check_lattice(&lat);
-    let problems = fs_report.problems() + lat_report.problems();
+    let queue_report = doctor::check_queue(&lat);
+    let problems = fs_report.problems() + lat_report.problems() + queue_report.problems();
     println!("doctor: {}", if problems == 0 { "ok".to_string() } else { format!("{} problem(s)", problems) });
     0
 }
@@ -2223,6 +2272,7 @@ fn route(path: &str) -> (String, &'static str, Vec<u8>) {
         "/v1/doctor" => {
             let mut report = doctor::check(&lattice::state_dir(), &lattice::state_path());
             report.findings.extend(doctor::check_lattice(&lat).findings);
+            report.findings.extend(doctor::check_queue(&lat).findings);
             text_route("200 OK", report.render())
         }
         "/v1/plan" => text_route(

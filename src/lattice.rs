@@ -131,6 +131,13 @@ pub const LEDGER_SYNC: u32 = 7;
 /// what travels and what gets verified; the binary bytes ride
 /// the wire beside the state file, never inside it.
 pub const LEDGER_RELEASES: u32 = 8;
+/// Audits (dispatch core slice 2, spec §7.1): one Book per
+/// audit — the record of what was checked and why an act was
+/// allowed to happen quietly (non-ping closures, re-orders,
+/// auto-pauses, register closes, verifications). Collections
+/// 2–8 are the shipped ledger kinds; 9 is next, assigned by
+/// the spec.
+pub const LEDGER_AUDITS: u32 = 9;
 
 pub fn ledger_kind_name(cluster: u32) -> Option<&'static str> {
     match cluster {
@@ -141,6 +148,7 @@ pub fn ledger_kind_name(cluster: u32) -> Option<&'static str> {
         LEDGER_GOAL_ACTIVITY => Some("goal-activity"),
         LEDGER_SYNC => Some("sync-receipts"),
         LEDGER_RELEASES => Some("releases"),
+        LEDGER_AUDITS => Some("audits"),
         _ => None,
     }
 }
@@ -469,7 +477,7 @@ pub fn regen_indexes(px: &mut Phext) {
     // ---- ledgers index ----
     let mut led = String::new();
     led.push_str("ledgers & receipts — homeland anchor 6.6.6/6.6.6/6.6.6\n\nThe beast keeps the books: each kind its own run of entry\nscrolls, appended beside its kin.\n\n");
-    for c in [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC, LEDGER_RELEASES] {
+    for c in [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC, LEDGER_RELEASES, LEDGER_AUDITS] {
         led.push_str(&format!(
             "- {}: {} entr(ies) from {}\n",
             ledger_kind_name(c).unwrap_or("?"),
@@ -616,7 +624,7 @@ pub fn regen_indexes(px: &mut Phext) {
         crate::phext::fmt_coord(&index_addr(HL_PLAN)),
         if px.get(&PLAN_CURRENT).is_some() { "current plan present" } else { "no plan yet" }
     ));
-    let ledger_total: usize = [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC, LEDGER_RELEASES]
+    let ledger_total: usize = [LEDGER_RECEIPTS, LEDGER_TELEPORTS, LEDGER_INSTANCES, LEDGER_EMOTION, LEDGER_GOAL_ACTIVITY, LEDGER_SYNC, LEDGER_RELEASES, LEDGER_AUDITS]
         .iter()
         .map(|c| count_cluster_books(px, [6, 6, 6, *c, 1]))
         .sum();

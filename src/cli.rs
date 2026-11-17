@@ -27,7 +27,11 @@ pub enum Command {
     Update { check: bool },
     Evolve { check: bool },
     Enqueue(Vec<String>),
-    Queue { all: bool, node: Option<String> },
+    Queue { all: bool, node: Option<String>, explain: Option<String> },
+    Pause(Vec<String>),
+    Resume(Vec<String>),
+    Cancel(Vec<String>),
+    Audit(Vec<String>),
     Show(String),
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
@@ -110,17 +114,25 @@ pub fn parse(args: &[String]) -> Command {
         "enqueue" => Command::Enqueue(args[1..].to_vec()),
         "queue" => {
             let mut node: Option<String> = None;
+            let mut explain: Option<String> = None;
             let mut i = 1;
             while i < args.len() {
                 if args[i] == "--node" && i + 1 < args.len() {
                     node = Some(args[i + 1].clone());
                     i += 2;
+                } else if args[i] == "--explain" && i + 1 < args.len() {
+                    explain = Some(args[i + 1].clone());
+                    i += 2;
                 } else {
                     i += 1;
                 }
             }
-            Command::Queue { all: args.iter().any(|a| a == "--all"), node }
+            Command::Queue { all: args.iter().any(|a| a == "--all"), node, explain }
         }
+        "pause" => Command::Pause(args[1..].to_vec()),
+        "resume" => Command::Resume(args[1..].to_vec()),
+        "cancel" => Command::Cancel(args[1..].to_vec()),
+        "audit" => Command::Audit(args[1..].to_vec()),
         "show" => Command::Show(w(1).to_string()),
         "release" => Command::Release,
         "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
@@ -238,8 +250,28 @@ pub fn help_text() -> String {
     s.push_str("                            in state (write-before-ack). `qexo enqueue -` reads the brief\n");
     s.push_str("                            from stdin\n");
     s.push_str("  qexo queue [--all] [--node <name>]\n");
-    s.push_str("                            the queue: items in arrival order — state, title, ROI, enqueued\n");
-    s.push_str("                            time. --all includes terminal items (done, cancelled)\n");
+    s.push_str("                            the queue in its calculated order (spec §5: daily-goal class,\n");
+    s.push_str("                            then ROI ratio, then age — calculated at every read, never\n");
+    s.push_str("                            stored): state, title, sort keys, age, failures. Paused-auto\n");
+    s.push_str("                            items pin to the head, flagged. --all includes terminal items\n");
+    s.push_str("                            (done, cancelled)\n");
+    s.push_str("  qexo queue --explain <item-address>\n");
+    s.push_str("                            one item's sort keys, its calculated position, and its\n");
+    s.push_str("                            re-order audit trail\n");
+    s.push_str("  qexo pause <item-address> [--note <text>]\n");
+    s.push_str("                            manual pause: the item leaves the dispatchable queue until\n");
+    s.push_str("                            resumed. The transition and its receipt are one write\n");
+    s.push_str("  qexo resume <item-address>\n");
+    s.push_str("                            return a paused item to queued; also the manual override of\n");
+    s.push_str("                            an auto-pause (resets the consecutive-failure counter, and\n");
+    s.push_str("                            writes the audit that says who overrode)\n");
+    s.push_str("  qexo cancel <item-address> --note <text>\n");
+    s.push_str("                            terminal, Will/Emise only, note required — the note is the\n");
+    s.push_str("                            receipt's evidence\n");
+    s.push_str("  qexo audit [--item <address>] [--kind <kind>] [--since <date>]\n");
+    s.push_str("                            the audit view (ledgers, cluster 9): what was checked and why\n");
+    s.push_str("                            an act was allowed to happen quietly — newest last.\n");
+    s.push_str("                            `qexo audit show <address>` renders one audit in full\n");
     s.push_str("  qexo show <address>       render one record from this node's state; the address may carry\n");
     s.push_str("                            a universe prefix — $2:11.11.11/2.1.1/1.1.1 reads universe 2 of\n");
     s.push_str("                            the state chain (a bare address is universe 1)\n\n");
@@ -319,9 +351,19 @@ mod tests {
         assert_eq!(parse(&v(&["register", "keyfile.asc"])), Command::Register(v(&["keyfile.asc"])));
         assert_eq!(parse(&v(&["enqueue", "brief.md", "--title", "T"])), Command::Enqueue(v(&["brief.md", "--title", "T"])));
         assert_eq!(parse(&v(&["enqueue", "-"])), Command::Enqueue(v(&["-"])));
-        assert_eq!(parse(&v(&["queue"])), Command::Queue { all: false, node: None });
-        assert_eq!(parse(&v(&["queue", "--all"])), Command::Queue { all: true, node: None });
-        assert_eq!(parse(&v(&["queue", "--node", "aletheia-core"])), Command::Queue { all: false, node: Some("aletheia-core".into()) });
+        assert_eq!(parse(&v(&["queue"])), Command::Queue { all: false, node: None, explain: None });
+        assert_eq!(parse(&v(&["queue", "--all"])), Command::Queue { all: true, node: None, explain: None });
+        assert_eq!(parse(&v(&["queue", "--node", "aletheia-core"])), Command::Queue { all: false, node: Some("aletheia-core".into()), explain: None });
+        assert_eq!(
+            parse(&v(&["queue", "--explain", "11.11.11/2.1.4/1.1.1"])),
+            Command::Queue { all: false, node: None, explain: Some("11.11.11/2.1.4/1.1.1".into()) }
+        );
+        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1"])), Command::Pause(v(&["11.11.11/2.1.4/1.1.1"])));
+        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1", "--note", "later"])), Command::Pause(v(&["11.11.11/2.1.4/1.1.1", "--note", "later"])));
+        assert_eq!(parse(&v(&["resume", "11.11.11/2.1.4/1.1.1"])), Command::Resume(v(&["11.11.11/2.1.4/1.1.1"])));
+        assert_eq!(parse(&v(&["cancel", "11.11.11/2.1.4/1.1.1", "--note", "moot"])), Command::Cancel(v(&["11.11.11/2.1.4/1.1.1", "--note", "moot"])));
+        assert_eq!(parse(&v(&["audit"])), Command::Audit(v(&[])));
+        assert_eq!(parse(&v(&["audit", "show", "6.6.6/9.1.1/1.1.1"])), Command::Audit(v(&["show", "6.6.6/9.1.1/1.1.1"])));
         assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1"])), Command::Show("11.11.11/2.1.4/1.1.1".into()));
         assert_eq!(parse(&v(&["show", "$2:11.11.11/2.1.4/1.1.1"])), Command::Show("$2:11.11.11/2.1.4/1.1.1".into()));
         assert_eq!(parse(&v(&["host"])), Command::Host { persona: None, boot: None });
@@ -370,6 +412,7 @@ mod tests {
             "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal", "distributed-builds",
             "select", "get", "--help", "/var/lib/qexo/state.phext", "learn", "inventory", "~/.qexo/state.phext",
             "enqueue", "queue", "show", "11.11.11/11.11.11/11.11.11",
+            "pause", "resume", "cancel", "audit", "--explain",
         ] {
             assert!(h.contains(word), "help is missing {}", word);
         }
