@@ -6,8 +6,8 @@
 //! (doctor), the distributed-builds upgrade (distbuilds),
 //! the state lattice and its Layer 2 addressing
 //! (lattice), the state commands (core), the dispatch
-//! queue's local verbs (dispatch), the wiring gate
-//! (wiring), and this CLI.
+//! queue's local verbs (dispatch), the register link
+//! (register), the wiring gate (wiring), and this CLI.
 
 mod cli;
 mod core;
@@ -23,6 +23,7 @@ mod lattice;
 mod learn;
 mod phext;
 mod plan;
+mod register;
 mod wiring;
 mod xz;
 
@@ -68,6 +69,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Pause(_)
             | Command::Resume(_)
             | Command::Cancel(_)
+            | Command::Drain { check: false, .. }
     );
     if write_intent {
         lattice::set_write_intent();
@@ -158,6 +160,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         Command::Pause(args) => dispatch::pause(&args),
         Command::Resume(args) => dispatch::resume(&args),
         Command::Cancel(args) => dispatch::cancel(&args),
+        Command::Drain { check, url } => register::drain(check, url),
         Command::Audit(args) => dispatch::audit(&args),
         Command::Show(addr) => dispatch::show(&addr),
         Command::Release => core::release(),

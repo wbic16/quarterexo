@@ -442,7 +442,13 @@ use crate::dispatch::{self, ItemState};
 /// heartbeat is stale (counted here — the F5 path that acts
 /// on them arrives in slice 5); an audit record for every
 /// non-ping closure (a closure without one is a finding,
-/// §7.2). The §4.6 illegal combinations are checked one by
+/// §7.2 — a register-close audit satisfies it for a
+/// register-driven closure, §10.3). Slice 3 adds the
+/// register link's integrity: a register-born item with
+/// no register-seq, a register-seq carried by two items,
+/// and the pending write-back count (visible, never a
+/// failure — the drain's sweep retries them, §10.4). The
+/// §4.6 illegal combinations are checked one by
 /// one, each in its own words. No queue finding is fixable
 /// by doctor: the repair is a transition or Will's hand,
 /// never an invention — a nonzero must-be-0 count is a
@@ -510,6 +516,19 @@ pub fn check_queue(lat: &Lattice) -> Report {
         {
             findings.push(bad(format!(
                 "{}: waiting with no register number cited (illegal combination 5, §4.6)",
+                addr_s
+            )));
+        }
+        // Slice 3 (§10.3): a register-born item carries the
+        // entry seq it was drained at — that seq is the
+        // drain's dedup key. Origin `register` without one
+        // means the record was filed by something that did
+        // not drain it.
+        if item.origin == "register"
+            && item.register_seq.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)
+        {
+            findings.push(bad(format!(
+                "{}: register-born item with no register-seq — the drain files the seq it drained at (§10.3)",
                 addr_s
             )));
         }
@@ -618,9 +637,13 @@ pub fn check_queue(lat: &Lattice) -> Report {
                 }
             }
             if state == ItemState::Done {
-                let has_audit = audits
-                    .iter()
-                    .any(|a| a.kind == "non-ping-close" && a.item.as_deref() == Some(addr_s.as_str()));
+                // §7.2's closure audits: the coordinator's
+                // non-ping-close, and (slice 3) the register's
+                // register-close (§10.3).
+                let has_audit = audits.iter().any(|a| {
+                    (a.kind == "non-ping-close" || a.kind == "register-close")
+                        && a.item.as_deref() == Some(addr_s.as_str())
+                });
                 if !has_audit {
                     findings.push(bad(format!(
                         "{}: done with no audit record — a non-ping closure without one is a finding (§4.5, §7.2)",
@@ -661,6 +684,57 @@ pub fn check_queue(lat: &Lattice) -> Report {
                 });
             }
         }
+    }
+
+    // Slice 3 (§10.3): register-seq is the drain's dedup
+    // key — two live items carrying one seq means a drain
+    // filed the same entry atom twice, which the drain's
+    // construction forbids; the record is corrupt.
+    {
+        let mut by_seq: std::collections::HashMap<&str, Vec<String>> = std::collections::HashMap::new();
+        for item in &items {
+            if let Some(seq) = &item.register_seq {
+                by_seq.entry(seq.as_str()).or_default().push(crate::phext::fmt_coord(&item.addr));
+            }
+        }
+        let mut seqs: Vec<&str> = by_seq.keys().cloned().collect();
+        seqs.sort();
+        for seq in seqs {
+            let holders = &by_seq[seq];
+            if holders.len() > 1 {
+                findings.push(Finding {
+                    item: "queue integrity".into(),
+                    ok: false,
+                    detail: format!(
+                        "register-seq {} is carried by {} items ({}) — a drain files each entry atom once (§10.3)",
+                        seq,
+                        holders.len(),
+                        holders.join(", ")
+                    ),
+                    fixable: false,
+                });
+            }
+        }
+    }
+
+    // Slice 3 (§10.4): write-backs still owed to the
+    // register — a count, visible; the drain's sweep
+    // retries them. A pending write-back is a state, not a
+    // corruption, so it never fails the doctor.
+    let wb_pending = items
+        .iter()
+        .filter(|i| i.register_writeback.as_deref() == Some("pending"))
+        .count();
+    if wb_pending > 0 {
+        findings.push(Finding {
+            item: "register write-back".into(),
+            ok: true,
+            detail: format!(
+                "{} item(s) closed locally with the register resolution not yet recorded — the next drain retries them (§10.4)",
+                wb_pending
+            ),
+            fixable: false,
+        });
     }
 
     // Assignments: counted, with stale heartbeats named as
@@ -928,6 +1002,42 @@ mod tests {
         let mut px = queue_px();
         px.insert(crate::dispatch::item_addr(1), item_text("sideways", 0, &[]));
         assert!(flagged(&check_queue(&queue_lat(px)), "is not a queue state"));
+    }
+
+    #[test]
+    fn queue_reconciliation_checks_the_register_link() {
+        // Slice 3 (§10.3): a register-born item with no
+        // register-seq is a finding; with one, it is healthy.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[("origin", "register")]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "no register-seq"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[("origin", "register"), ("register-seq", "7")]));
+        assert!(check_queue(&queue_lat(px)).ok());
+
+        // A register-seq carried by two items: the drain
+        // files each entry atom once, so this is corruption.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[("origin", "register"), ("register-seq", "7")]));
+        px.insert(crate::dispatch::item_addr(2), item_text("queued", 0, &[("origin", "register"), ("register-seq", "7")]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "register-seq 7 is carried by 2 items"));
+
+        // A done item whose closure audit is a
+        // register-close satisfies §7.2's twin check.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("done", 0, &[("origin", "register"), ("register-seq", "7"), ("register", "42")]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "queued", "done", "test-node TESTFP", "checked: register resolution seq 4; showed: x; verdict: closed-settled");
+        crate::dispatch::append_audit(&mut px, "register-close", "11.11.11/2.1.1/1.1.1", "register resolution seq 4", "x", "closed-settled", "test-node TESTFP");
+        assert!(check_queue(&queue_lat(px)).ok());
+
+        // A pending write-back is reported as a count and
+        // never fails the doctor (§10.4).
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("cancelled", 0, &[("register", "42"), ("register-writeback", "pending")]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "queued", "cancelled", "test-node TESTFP", "moot");
+        let report = check_queue(&queue_lat(px));
+        assert!(report.ok(), "{:?}", report.findings.iter().map(|f| &f.detail).collect::<Vec<_>>());
+        assert!(report.findings.iter().any(|f| f.ok && f.item == "register write-back" && f.detail.contains("1 item(s)")));
     }
 
     #[test]

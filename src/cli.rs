@@ -32,6 +32,7 @@ pub enum Command {
     Resume(Vec<String>),
     Cancel(Vec<String>),
     Audit(Vec<String>),
+    Drain { check: bool, url: Option<String> },
     Show(String),
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
@@ -133,6 +134,19 @@ pub fn parse(args: &[String]) -> Command {
         "resume" => Command::Resume(args[1..].to_vec()),
         "cancel" => Command::Cancel(args[1..].to_vec()),
         "audit" => Command::Audit(args[1..].to_vec()),
+        "drain" => {
+            let mut url: Option<String> = None;
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--url" && i + 1 < args.len() {
+                    url = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            Command::Drain { check: args.iter().any(|a| a == "--check"), url }
+        }
         "show" => Command::Show(w(1).to_string()),
         "release" => Command::Release,
         "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
@@ -268,6 +282,18 @@ pub fn help_text() -> String {
     s.push_str("  qexo cancel <item-address> --note <text>\n");
     s.push_str("                            terminal, Will/Emise only, note required — the note is the\n");
     s.push_str("                            receipt's evidence\n");
+    s.push_str("  qexo drain [--check] [--url <register-url>]\n");
+    s.push_str("                            the register drain (spec §10): pull the pending entries\n");
+    s.push_str("                            and resolutions of Will's scope from the register, file\n");
+    s.push_str("                            entries as queue items, close the items resolutions name\n");
+    s.push_str("                            (register-close audits), retry pending write-backs, and\n");
+    s.push_str("                            advance the watermarks — items and audits land before\n");
+    s.push_str("                            watermarks move (write-before-ack), so a re-drain is a\n");
+    s.push_str("                            no-op. --check reports what a drain would do; writes\n");
+    s.push_str("                            nothing. --url names the register once; it is kept in\n");
+    s.push_str("                            the drain record (11.11.11/6.1.1/1.1.1). Credentials live\n");
+    s.push_str("                            in /var/lib/qexo/qexo.env (QEXO_ENV overrides the path),\n");
+    s.push_str("                            never in state\n");
     s.push_str("  qexo audit [--item <address>] [--kind <kind>] [--since <date>]\n");
     s.push_str("                            the audit view (ledgers, cluster 9): what was checked and why\n");
     s.push_str("                            an act was allowed to happen quietly — newest last.\n");
@@ -362,6 +388,16 @@ mod tests {
         assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1", "--note", "later"])), Command::Pause(v(&["11.11.11/2.1.4/1.1.1", "--note", "later"])));
         assert_eq!(parse(&v(&["resume", "11.11.11/2.1.4/1.1.1"])), Command::Resume(v(&["11.11.11/2.1.4/1.1.1"])));
         assert_eq!(parse(&v(&["cancel", "11.11.11/2.1.4/1.1.1", "--note", "moot"])), Command::Cancel(v(&["11.11.11/2.1.4/1.1.1", "--note", "moot"])));
+        assert_eq!(parse(&v(&["drain"])), Command::Drain { check: false, url: None });
+        assert_eq!(parse(&v(&["drain", "--check"])), Command::Drain { check: true, url: None });
+        assert_eq!(
+            parse(&v(&["drain", "--url", "https://register.phext.io"])),
+            Command::Drain { check: false, url: Some("https://register.phext.io".into()) }
+        );
+        assert_eq!(
+            parse(&v(&["drain", "--check", "--url", "http://127.0.0.1:8791"])),
+            Command::Drain { check: true, url: Some("http://127.0.0.1:8791".into()) }
+        );
         assert_eq!(parse(&v(&["audit"])), Command::Audit(v(&[])));
         assert_eq!(parse(&v(&["audit", "show", "6.6.6/9.1.1/1.1.1"])), Command::Audit(v(&["show", "6.6.6/9.1.1/1.1.1"])));
         assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1"])), Command::Show("11.11.11/2.1.4/1.1.1".into()));
@@ -412,7 +448,7 @@ mod tests {
             "plan", "serve", "wiring-check", "parse", "explode", "implode", "seal", "unseal", "distributed-builds",
             "select", "get", "--help", "/var/lib/qexo/state.phext", "learn", "inventory", "~/.qexo/state.phext",
             "enqueue", "queue", "show", "11.11.11/11.11.11/11.11.11",
-            "pause", "resume", "cancel", "audit", "--explain",
+            "pause", "resume", "cancel", "audit", "--explain", "drain", "11.11.11/6.1.1/1.1.1", "qexo.env",
         ] {
             assert!(h.contains(word), "help is missing {}", word);
         }
