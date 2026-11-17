@@ -31,6 +31,19 @@
 //! qexo's model keeps only scrolls that hold text. The
 //! addresses and texts of real scrolls are the library's,
 //! unchanged.
+//!
+//! Chains (dispatch core, slice 1): state.phext is a chain
+//! file in libphext 0.6's sense — an ordered series of whole
+//! phexts (universes) joined by the chain break \x02 and
+//! optionally closed by \x03. Universe 1 is the state every
+//! shipped verb knows; later universes hold dispatch attempt
+//! copies at the same addresses (SPEC §3.3). The adapter's
+//! chain surface is `parse_universes` / `serialize_universes`
+//! over the library's parse_chains / serialize_chains, and
+//! `$N:` addressing (`parse_universe_addr`). A file with one
+//! universe serializes byte-identically to the pre-chain
+//! form — chains appear on disk only when a second universe
+//! does.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -59,6 +72,23 @@ pub fn fmt_coord(c: &Coord) -> String {
         "{}.{}.{}/{}.{}.{}/{}.{}.{}",
         c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8]
     )
+}
+
+/// Parse an address as the CLI verbs take it: a bare 9D
+/// coordinate means universe 1; a `$N:` prefix (libphext 0.6's
+/// multiverse addressing) names universe N of a chain. Returns
+/// (universe, coordinate); universe numbers start at 1.
+pub fn parse_universe_addr(s: &str) -> Option<(usize, Coord)> {
+    if let Some(rest) = s.strip_prefix('$') {
+        let (n, addr) = rest.split_once(':')?;
+        let n: usize = n.parse().ok()?;
+        if n < 1 {
+            return None;
+        }
+        Some((n, parse_coord(addr)?))
+    } else {
+        Some((1, parse_coord(s)?))
+    }
 }
 
 impl fmt::Display for CoordFmt {
@@ -143,6 +173,48 @@ impl Phext {
         }
         px
     }
+
+    /// Parse a CHAIN file (libphext 0.6: members joined by the
+    /// chain break \x02, the chain optionally closed by \x03)
+    /// into its universes — one Phext per member, in chain
+    /// order — plus the chain's closed flag. A plain
+    /// single-phext file is a chain of one universe, and reads
+    /// exactly as `parse` reads it when the file carries no
+    /// chain bytes as content. (A stream holding several
+    /// chains is flattened in order: qexo state is one chain,
+    /// and flattening never loses a member on a load→save
+    /// round trip.)
+    pub fn parse_universes(text: &str) -> (Vec<Phext>, bool) {
+        let chains = lp::parse_chains(text);
+        let mut universes = Vec::new();
+        let mut closed = false;
+        for chain in &chains {
+            closed = chain.closed;
+            for member in &chain.members {
+                universes.push(Phext::parse(member));
+            }
+        }
+        if universes.is_empty() {
+            universes.push(Phext::new());
+        }
+        (universes, closed)
+    }
+
+    /// Serialize universes back into a chain file. A single
+    /// universe serializes EXACTLY as `serialize` does — no
+    /// chain bytes are added — so every state file written
+    /// before chains existed round-trips byte-for-byte, and a
+    /// chain only appears on disk once a second universe does.
+    pub fn serialize_universes(universes: &[Phext], closed: bool) -> String {
+        if universes.len() <= 1 {
+            return universes.first().map(|u| u.serialize()).unwrap_or_default();
+        }
+        let chain = lp::Chain {
+            members: universes.iter().map(|u| u.serialize()).collect(),
+            closed,
+        };
+        lp::serialize_chains(&[chain])
+    }
 }
 
 #[cfg(test)]
@@ -191,6 +263,57 @@ mod tests {
         let s = px.serialize();
         let back = Phext::parse(&s);
         assert_eq!(back.scrolls, px.scrolls);
+    }
+
+    #[test]
+    fn universe_addr_parsing() {
+        // bare = universe 1; $N: names universe N (1-based)
+        assert_eq!(parse_universe_addr("11.11.11/2.1.4/1.1.1"), Some((1, [11, 11, 11, 2, 1, 4, 1, 1, 1])));
+        assert_eq!(parse_universe_addr("$2:11.11.11/2.1.4/1.1.1"), Some((2, [11, 11, 11, 2, 1, 4, 1, 1, 1])));
+        assert_eq!(parse_universe_addr("$1:1.1.1/1.1.1/1.1.1"), Some((1, [1, 1, 1, 1, 1, 1, 1, 1, 1])));
+        assert_eq!(parse_universe_addr("$0:1.1.1/1.1.1/1.1.1"), None); // universes start at 1
+        assert_eq!(parse_universe_addr("$x:1.1.1/1.1.1/1.1.1"), None);
+        assert_eq!(parse_universe_addr("$2:1.1.1/1.1.1"), None); // partial addresses never parse
+        assert_eq!(parse_universe_addr("1.1.1/1.1.1/1.1.1"), Some((1, [1, 1, 1, 1, 1, 1, 1, 1, 1])));
+    }
+
+    #[test]
+    fn chain_universes_roundtrip_at_the_same_addresses() {
+        // Two universes holding DIFFERENT text at the SAME
+        // address — the attempt-copy shape of dispatch §3.3.
+        let mut u1 = Phext::new();
+        u1.insert([11, 11, 11, 2, 1, 4, 1, 1, 1], "the item record".into());
+        u1.insert([1, 1, 1, 1, 1, 1, 1, 1, 1], "home".into());
+        let mut u2 = Phext::new();
+        u2.insert([11, 11, 11, 2, 1, 4, 1, 1, 1], "attempt 1's working copy".into());
+        let bytes = Phext::serialize_universes(&[u1.clone(), u2.clone()], true);
+        assert!(bytes.contains('\u{2}'), "a two-universe file carries the chain break");
+        assert!(bytes.ends_with('\u{3}'), "closed flag is carried");
+        let (back, closed) = Phext::parse_universes(&bytes);
+        assert!(closed);
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[0].scrolls, u1.scrolls);
+        assert_eq!(back[1].scrolls, u2.scrolls);
+        // an unclosed chain round-trips unclosed
+        let bytes2 = Phext::serialize_universes(&[u1.clone(), u2.clone()], false);
+        let (back2, closed2) = Phext::parse_universes(&bytes2);
+        assert!(!closed2);
+        assert_eq!(back2[1].scrolls, u2.scrolls);
+    }
+
+    #[test]
+    fn single_universe_serializes_byte_identical_to_plain() {
+        // The compatibility floor: until a second universe
+        // exists, a state file is byte-for-byte the file the
+        // pre-chain build wrote — no chain bytes appear.
+        let mut px = Phext::new();
+        px.insert([1, 1, 1, 1, 1, 1, 1, 1, 1], "home".into());
+        px.insert([9, 9, 9, 2, 1, 1, 1, 1, 1], "config".into());
+        assert_eq!(Phext::serialize_universes(&[px.clone()], false), px.serialize());
+        assert_eq!(Phext::serialize_universes(&[px.clone()], true), px.serialize());
+        let (back, _) = Phext::parse_universes(&px.serialize());
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].scrolls, px.scrolls);
     }
 
     #[test]

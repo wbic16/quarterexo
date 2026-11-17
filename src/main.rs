@@ -5,12 +5,14 @@
 //! (infer), the plan's pure core (plan), doctor's two layers
 //! (doctor), the distributed-builds upgrade (distbuilds),
 //! the state lattice and its Layer 2 addressing
-//! (lattice), the state commands (core), the wiring gate
+//! (lattice), the state commands (core), the dispatch
+//! queue's local verbs (dispatch), the wiring gate
 //! (wiring), and this CLI.
 
 mod cli;
 mod core;
 mod crypto;
+mod dispatch;
 mod distbuilds;
 mod doctor;
 #[allow(dead_code)]
@@ -62,6 +64,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Update { check: false }
             | Command::Evolve { check: false }
             | Command::Doctor { fix: true }
+            | Command::Enqueue(_)
     );
     if write_intent {
         lattice::set_write_intent();
@@ -146,6 +149,9 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             distbuilds::distributed_builds(scheduler, status, branch)
         }
         Command::Register(args) => core::register(&args),
+        Command::Enqueue(args) => dispatch::enqueue(&args),
+        Command::Queue { all, node } => dispatch::queue(all, node),
+        Command::Show(addr) => dispatch::show(&addr),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),
         Command::Evolve { check } => core::evolve(check),
@@ -264,8 +270,31 @@ fn phext_file_ops(args: &[String]) -> i32 {
                     return 2;
                 }
             };
-            let px = phext::Phext::parse(&text);
-            match phext::parse_coord(&coord_s).and_then(|c| px.get(&c)) {
+            // The address may carry a universe prefix ($N:,
+            // libphext 0.6 multiverse addressing): a bare
+            // address reads the file exactly as it always has
+            // (a single-phext read — chain bytes are content);
+            // a $N: address reads universe N of the file's
+            // chain.
+            let (universe, coord) = match phext::parse_universe_addr(&coord_s) {
+                Some(x) => x,
+                None => {
+                    eprintln!("no scroll at {}", coord_s);
+                    return 1;
+                }
+            };
+            let px = if universe == 1 && !coord_s.starts_with('$') {
+                phext::Phext::parse(&text)
+            } else {
+                let (mut universes, _) = phext::Phext::parse_universes(&text);
+                if universe >= 1 && universe <= universes.len() {
+                    universes.swap_remove(universe - 1)
+                } else {
+                    eprintln!("{}: no universe ${} in its chain", path, universe);
+                    return 1;
+                }
+            };
+            match px.get(&coord) {
                 Some(body) => {
                     print!("{}", body);
                     0

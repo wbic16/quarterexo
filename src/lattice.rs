@@ -13,7 +13,10 @@
 //!   7.7.7/7.7.7/7.7.7 mailbox & sessions, 8.8.8/8.8.8/8.8.8
 //!   telemetry, 9.9.9/9.9.9/9.9.9 config & wiring, and — added in
 //!   v1.4.0, the tens — 10.10.10/10.10.10/10.10.10 lessons &
-//!   learning (the `qexo learn` curriculum deck). Records live
+//!   learning (the `qexo learn` curriculum deck), and — added by
+//!   the dispatch core, the elevens — 11.11.11/11.11.11/11.11.11
+//!   dispatch & queue (queue items, assignments, schedules,
+//!   bridges, the register link). Records live
 //!   at full 9D addresses in the anchor's vicinity. No
 //!   hash-derived coordinates, no counters-as-addresses, no
 //!   arithmetic sequence splits.
@@ -76,6 +79,24 @@ pub const HL_LEARN: [u32; 3] = [10, 10, 10];
 /// The curriculum deck's cluster inside the learn homeland: one
 /// Book per card, grown by adjacency (Layer 2 growth rule).
 pub const LEARN_DECK_C: u32 = 2;
+
+/// Dispatch & queue (dispatch core slice 1, spec §3.1): the
+/// elevens — send-off country. The pattern extends by one
+/// again: the elevens are the node's record of work in flight
+/// — what was queued, what is assigned, what runs where.
+pub const HL_DISPATCH: [u32; 3] = [11, 11, 11];
+
+/// Clusters (Collection) inside dispatch & queue, in the
+/// spec's order: queue items first (the ledger family — one
+/// Book per item in arrival sequence), then assignments,
+/// schedules, bridges, and the register link. Slice 1 lays
+/// down the homeland and the items cluster; the rest take
+/// their clusters as their slices land.
+pub const DISPATCH_ITEMS_C: u32 = 2;
+pub const DISPATCH_ASSIGN_C: u32 = 3;
+pub const DISPATCH_SCHED_C: u32 = 4;
+pub const DISPATCH_BRIDGES_C: u32 = 5;
+pub const DISPATCH_REGISTER_C: u32 = 6;
 
 /// The home scroll: prose index of the whole state file.
 pub const HOME: Coord = [1, 1, 1, 1, 1, 1, 1, 1, 1];
@@ -521,6 +542,28 @@ pub fn regen_indexes(px: &mut Phext) {
     }
     px.insert(index_addr(HL_LEARN), lrn);
 
+    // ---- dispatch & queue index ----
+    let item_books = component_values(px, &[11, 11, 11, DISPATCH_ITEMS_C, 1], 5);
+    let mut dsp = String::new();
+    dsp.push_str("dispatch & queue — homeland anchor 11.11.11/11.11.11/11.11.11\n\n");
+    dsp.push_str(&format!(
+        "The elevens: send-off country. Queue items live in\ncluster {} — one Book per item in arrival sequence: the item\nrecord at Scroll 1, its brief at Scroll 2, dependency and\ncontext citations after. Assignments (cluster {}), schedules\n(cluster {}), bridges (cluster {}), and the register link\n(cluster {}) take their clusters as their slices land.\n\n",
+        DISPATCH_ITEMS_C, DISPATCH_ASSIGN_C, DISPATCH_SCHED_C, DISPATCH_BRIDGES_C, DISPATCH_REGISTER_C
+    ));
+    dsp.push_str(&format!("items: {}\n", item_books.len()));
+    for b in &item_books {
+        let addr = at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, *b, 1, 1, 1]);
+        if let Some(t) = px.get(&addr) {
+            dsp.push_str(&format!(
+                "- {} — {} — state {}\n",
+                field(t, "title").unwrap_or_else(|| "untitled".into()),
+                crate::phext::fmt_coord(&addr),
+                field(t, "state").unwrap_or_default()
+            ));
+        }
+    }
+    px.insert(index_addr(HL_DISPATCH), dsp);
+
     // ---- home index (written last: it summarizes the rest) ----
     let id = px.get(&IDENTITY);
     let (node_line, born_line) = match id {
@@ -601,6 +644,11 @@ pub fn regen_indexes(px: &mut Phext) {
         crate::phext::fmt_coord(&index_addr(HL_LEARN)),
         card_books.len()
     ));
+    home.push_str(&format!(
+        "{} — dispatch & queue: {} item(s) in the queue\n",
+        crate::phext::fmt_coord(&index_addr(HL_DISPATCH)),
+        item_books.len()
+    ));
     px.insert(HOME, home);
 }
 
@@ -610,7 +658,7 @@ pub fn regen_indexes(px: &mut Phext) {
 /// whole under the running binary's layout.
 pub fn index_addresses() -> Vec<Coord> {
     let mut out = vec![HOME];
-    for h in [HL_KEYS, HL_PEERS, HL_PERSONAS, HL_PLAN, HL_LEDGERS, HL_MAIL, HL_TELEMETRY, HL_CONFIG, HL_LEARN] {
+    for h in [HL_KEYS, HL_PEERS, HL_PERSONAS, HL_PLAN, HL_LEDGERS, HL_MAIL, HL_TELEMETRY, HL_CONFIG, HL_LEARN, HL_DISPATCH] {
         out.push(index_addr(h));
     }
     out
@@ -908,15 +956,37 @@ pub fn state_dir() -> PathBuf {
 
 /// The loaded state document. All reads and writes of node state go
 /// through this type; no other module touches the file directly.
+///
+/// The file is a chain (dispatch core slice 1, spec §3.3):
+/// universe 1 is `px` — the state every shipped verb reads and
+/// writes — and universes 2.. are carried in `extra`, untouched
+/// by universe-1 work, preserved across every save. Attempts
+/// live there at the same addresses as their item records.
 pub struct Lattice {
     pub px: Phext,
+    extra: Vec<Phext>,
+    chain_closed: bool,
     path: PathBuf,
 }
 
 impl Lattice {
     /// An unborn state document bound to `path` (config's birth).
     pub fn born(path: PathBuf) -> Lattice {
-        Lattice { px: Phext::new(), path }
+        Lattice { px: Phext::new(), extra: Vec::new(), chain_closed: false, path }
+    }
+
+    /// Universe N of the state chain (1-based; 1 is `px`).
+    pub fn universe(&self, n: usize) -> Option<&Phext> {
+        match n {
+            0 => None,
+            1 => Some(&self.px),
+            _ => self.extra.get(n - 2),
+        }
+    }
+
+    /// How many universes the loaded chain carries.
+    pub fn universe_count(&self) -> usize {
+        1 + self.extra.len()
     }
 
     /// Load the state file if it exists. Ok(None) = not born yet
@@ -933,7 +1003,9 @@ impl Lattice {
         }
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("{}: {}", path.display(), e))?;
-        Ok(Some(Lattice { px: Phext::parse(&text), path: path.clone() }))
+        let (mut universes, chain_closed) = Phext::parse_universes(&text);
+        let px = if universes.is_empty() { Phext::new() } else { universes.remove(0) };
+        Ok(Some(Lattice { px, extra: universes, chain_closed, path: path.clone() }))
     }
 
     pub fn path(&self) -> &PathBuf {
@@ -959,7 +1031,20 @@ impl Lattice {
             std::fs::create_dir_all(parent)
                 .map_err(|e| format!("{}: {}", parent.display(), e))?;
         }
-        std::fs::write(&self.path, self.px.serialize())
+        // Chain preservation: with no universes beyond the
+        // first, the bytes are exactly the pre-chain form (no
+        // chain bytes are ever added to a single-universe
+        // state). With attempts aboard, the whole chain is
+        // written back, universes in order, closed flag kept.
+        let bytes = if self.extra.is_empty() {
+            self.px.serialize()
+        } else {
+            let mut all = Vec::with_capacity(1 + self.extra.len());
+            all.push(self.px.clone());
+            all.extend(self.extra.iter().cloned());
+            Phext::serialize_universes(&all, self.chain_closed)
+        };
+        std::fs::write(&self.path, bytes)
             .map_err(|e| format!("{}: {}", self.path.display(), e))
     }
 }
@@ -975,7 +1060,7 @@ mod tests {
         let mut px = Phext::new();
         px.insert(HOME, "home".to_string());
         px.insert(IDENTITY, "second".to_string());
-        let mut lat = Lattice { px, path: path.clone() };
+        let mut lat = Lattice { px, extra: Vec::new(), chain_closed: false, path: path.clone() };
         lat.save().unwrap();
         let back = Lattice::load_from(&path).unwrap().expect("state exists");
         assert_eq!(back.px.scrolls, lat.px.scrolls);
@@ -1156,13 +1241,16 @@ mod tests {
         std::fs::write(&path, text).unwrap();
         let mut lat = Lattice::load_from(&path).unwrap().expect("fixture loads");
         assert!(lat.px.get(&index_addr(HL_LEARN)).is_none(), "fixture must predate the learn homeland");
+        assert!(lat.px.get(&index_addr(HL_DISPATCH)).is_none(), "fixture must predate the dispatch homeland");
         let report = crate::doctor::check_lattice(&lat);
-        assert_eq!(report.problems(), 1, "the only complaint is the missing learn index: {}", report.render());
+        assert_eq!(report.problems(), 2, "the complaints are the missing learn + dispatch indexes: {}", report.render());
         assert!(report.findings.iter().any(|f| !f.ok && f.fixable && f.item.contains("lessons")), "{}", report.render());
+        assert!(report.findings.iter().any(|f| !f.ok && f.fixable && f.item.contains("dispatch")), "{}", report.render());
         let before = lat.px.clone();
         lat.save().unwrap();
         let back = Lattice::load_from(&path).unwrap().expect("saved state loads");
         assert!(back.px.get(&index_addr(HL_LEARN)).is_some(), "learn index topped up");
+        assert!(back.px.get(&index_addr(HL_DISPATCH)).is_some(), "dispatch index topped up");
         assert!(crate::doctor::check_lattice(&back).ok(), "doctor clean after the top-up");
         for (a, t) in &before.scrolls {
             assert_eq!(back.px.get(a), Some(t), "predecessor scroll at {:?} was touched", a);
@@ -1178,8 +1266,83 @@ mod tests {
     }
 
     #[test]
-    fn learn_homeland_regenerates_its_index() {
+    fn chain_state_roundtrips_and_single_universe_bytes_are_unchanged() {
+        // A two-universe chain file loads with universe 1 as the
+        // document and universe 2 carried; a universe-1 save
+        // preserves the whole chain. A single-universe state
+        // writes exactly the pre-chain bytes (no chain bytes).
+        let dir = std::env::temp_dir().join(format!("qexo-chain-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.phext");
+        let mut u1 = Phext::new();
+        u1.insert(HOME, "home".to_string());
+        u1.insert(at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, 1, 1, 1, 1]), "queue item\ntitle: t\nstate: queued\n".to_string());
+        let mut u2 = Phext::new();
+        u2.insert(at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, 1, 1, 1, 1]), "attempt copy".to_string());
+        std::fs::write(&path, Phext::serialize_universes(&[u1.clone(), u2.clone()], true)).unwrap();
+        let mut lat = Lattice::load_from(&path).unwrap().expect("chain loads");
+        assert_eq!(lat.universe_count(), 2);
+        assert_eq!(lat.universe(1).map(|u| u.scrolls.clone()), Some(u1.scrolls.clone()));
+        assert_eq!(
+            lat.universe(2).and_then(|u| u.get(&at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, 1, 1, 1, 1]))).map(|s| s.as_str()),
+            Some("attempt copy")
+        );
+        assert!(lat.universe(3).is_none());
+        assert!(lat.universe(0).is_none());
+        lat.save().unwrap();
+        let back = Lattice::load_from(&path).unwrap().expect("chain reloads");
+        assert_eq!(back.universe_count(), 2);
+        assert_eq!(
+            back.universe(2).and_then(|u| u.get(&at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, 1, 1, 1, 1]))).map(|s| s.as_str()),
+            Some("attempt copy")
+        );
+        // single-universe: the file on disk is the plain form
+        // (save tops the document up first — the expectation is
+        // the topped-up document's own serialize(), and the
+        // bytes carry no chain break / chain close)
+        let path1 = dir.join("single.phext");
+        let mut one = Lattice::born(path1.clone());
+        one.px.insert(HOME, "home".to_string());
+        one.save().unwrap();
+        let expect = one.px.serialize();
+        let raw = std::fs::read_to_string(&path1).unwrap();
+        assert_eq!(raw, expect, "no chain bytes in a single-universe save");
+        assert!(!raw.contains('\u{2}') && !raw.contains('\u{3}'));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dispatch_homeland_regenerates_its_index() {
         let mut px = Phext::new();
+        px.insert(
+            at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, 1, 1, 1, 1]),
+            "queue item\ntitle: First job\nstate: queued\n".to_string(),
+        );
+        px.insert(
+            at(HL_DISPATCH, [DISPATCH_ITEMS_C, 1, 2, 1, 1, 1]),
+            "queue item\ntitle: Second job\nstate: queued\n".to_string(),
+        );
+        regen_indexes(&mut px);
+        let idx = px.get(&index_addr(HL_DISPATCH)).expect("dispatch index written");
+        assert!(idx.contains("11.11.11/11.11.11/11.11.11"), "{}", idx);
+        assert!(idx.contains("items: 2"), "{}", idx);
+        assert!(idx.contains("- First job — 11.11.11/2.1.1/1.1.1 — state queued"), "{}", idx);
+        assert!(idx.contains("- Second job — 11.11.11/2.1.2/1.1.1 — state queued"), "{}", idx);
+        let home = px.get(&HOME).expect("home index");
+        assert!(home.contains("dispatch & queue: 2 item(s)"), "{}", home);
+        assert_eq!(index_addr(HL_DISPATCH), [11, 11, 11, 11, 11, 11, 11, 11, 11]);
+        // top-up: a state missing only the dispatch index seeds
+        // exactly it, touching nothing else
+        let mut px2 = px.clone();
+        px2.scrolls.remove(&index_addr(HL_DISPATCH));
+        let seeded = seed_missing_indexes(&mut px2);
+        assert_eq!(seeded, vec![index_addr(HL_DISPATCH)]);
+        assert_eq!(px2.get(&index_addr(HL_DISPATCH)), px.get(&index_addr(HL_DISPATCH)));
+    }
+
+    #[test]
+    fn learn_homeland_regenerates_its_index() {        let mut px = Phext::new();
         px.insert(
             at(HL_LEARN, [LEARN_DECK_C, 1, 1, 1, 1, 1]),
             record(&[("kind", "learn card"), ("id", "verbs-config"), ("front", "f"), ("back", "b"), ("due", "10"), ("interval_days", "1"), ("ease", "2.5"), ("reps", "0"), ("lapses", "0")]),
