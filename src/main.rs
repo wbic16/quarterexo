@@ -7,7 +7,8 @@
 //! the state lattice and its Layer 2 addressing
 //! (lattice), the state commands (core), the dispatch
 //! queue's local verbs (dispatch), the register link
-//! (register), the wiring gate (wiring), and this CLI.
+//! (register), the wire dispatch verbs (wire), the
+//! wiring gate (wiring), and this CLI.
 
 mod cli;
 mod core;
@@ -24,6 +25,7 @@ mod learn;
 mod phext;
 mod plan;
 mod register;
+mod wire;
 mod wiring;
 mod xz;
 
@@ -70,6 +72,10 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Resume(_)
             | Command::Cancel(_)
             | Command::Drain { check: false, .. }
+            | Command::Dispatch { check: false, .. }
+            | Command::Heartbeat(_)
+            | Command::Checkpoint(_)
+            | Command::Fail(_)
     );
     if write_intent {
         lattice::set_write_intent();
@@ -161,6 +167,17 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         Command::Resume(args) => dispatch::resume(&args),
         Command::Cancel(args) => dispatch::cancel(&args),
         Command::Drain { check, url } => register::drain(check, url),
+        Command::Dispatch { item, to, check } => wire::cmd_dispatch(item.as_deref(), to.as_deref(), check),
+        Command::Heartbeat(addr) => {
+            if addr.is_empty() {
+                eprintln!("usage: qexo heartbeat <item-address>");
+                2
+            } else {
+                wire::cmd_heartbeat(&addr)
+            }
+        }
+        Command::Checkpoint(args) => wire::cmd_checkpoint(&args),
+        Command::Fail(args) => wire::cmd_fail(&args),
         Command::Audit(args) => dispatch::audit(&args),
         Command::Show(addr) => dispatch::show(&addr),
         Command::Release => core::release(),

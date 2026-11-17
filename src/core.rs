@@ -2096,6 +2096,21 @@ pub fn plan_cmd() -> i32 {
         .map(|v| (v.total_bytes.to_string(), v.free_bytes.to_string()))
         .unwrap_or_else(|| ("".to_string(), "".to_string()));
 
+    // Slice 4 (§6): temperature joins the observation
+    // as a probe field, with load and cores beside it —
+    // placement eligibility is judged from telemetry,
+    // never assumed. An unreadable probe records empty,
+    // which eligibility reads as unmeasured.
+    let temp_s = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+        .ok()
+        .and_then(|s| s.trim().parse::<i64>().ok())
+        .map(|m| format!("{:.1}", m as f64 / 1000.0))
+        .unwrap_or_default();
+    let load_s = format!("{:.2}", plan::host_snapshot().1);
+    let cores_s = std::thread::available_parallelism()
+        .map(|n| n.get().to_string())
+        .unwrap_or_default();
+
     // Record the observation in the telemetry homeland: the
     // series is native now; the forecast reads its own lattice.
     let ob = lattice::next_free_book(&lat.px, [8, 8, 8, lattice::TELEM_DISK_C, 1], 1);
@@ -2109,6 +2124,9 @@ pub fn plan_cmd() -> i32 {
             ("used_gb", &format!("{:.2}", used_gb)),
             ("total_bytes", &total_bytes),
             ("free_bytes", &free_bytes),
+            ("temp", &temp_s),
+            ("load", &load_s),
+            ("cores", &cores_s),
             ("level", &level),
             ("files", &files.to_string()),
             ("files root", &staging_root_s),
@@ -2211,25 +2229,61 @@ pub fn serve(port: u16) -> i32 {
         }
     };
     println!("qexo serve — http://{}:{} — payloads are scroll text", bind_ip, port);
-    println!("routes: / (home index), /v1/doctor, /v1/plan, /v1/peers, /v1/scroll/<coord>, /v1/release, /v1/release/signature, /release/qexo-<version>");
+    println!("routes: / (home index), /v1/doctor, /v1/plan, /v1/peers, /v1/scroll/<coord>, /v1/release, /v1/release/signature, /release/qexo-<version>, POST /v1/dispatch");
     for stream in listener.incoming() {
         let mut stream = match stream {
             Ok(s) => s,
             Err(_) => continue,
         };
+        // Read the request: headers to the blank line,
+        // then the body its Content-Length names (a
+        // dispatch bundle outgrows one read; the shipped
+        // GET routes carry no body at all).
+        let mut raw: Vec<u8> = Vec::new();
         let mut buf = [0u8; 8192];
-        let n = match stream.read(&mut buf) {
-            Ok(n) => n,
-            Err(_) => continue,
+        let head_len = loop {
+            if let Some(pos) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                break pos + 4;
+            }
+            match stream.read(&mut buf) {
+                Ok(0) => break raw.len(),
+                Ok(n) => {
+                    raw.extend_from_slice(&buf[..n]);
+                    if raw.len() > 1_048_576 {
+                        break raw.len();
+                    }
+                }
+                Err(_) => break raw.len(),
+            }
         };
-        let req = String::from_utf8_lossy(&buf[..n]);
-        let path = req
+        let head_text = String::from_utf8_lossy(&raw[..head_len]).to_string();
+        let mut parts = head_text.split_whitespace();
+        let method = parts.next().unwrap_or("GET").to_string();
+        let path = parts.next().unwrap_or("/").to_string();
+        let content_length: usize = head_text
             .lines()
-            .next()
-            .and_then(|l| l.split_whitespace().nth(1))
-            .unwrap_or("/")
-            .to_string();
-        let (status, ctype, body) = route(&path);
+            .find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                if k.trim().eq_ignore_ascii_case("content-length") {
+                    v.trim().parse().ok()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
+        while raw.len() < head_len + content_length {
+            match stream.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => raw.extend_from_slice(&buf[..n]),
+                Err(_) => break,
+            }
+        }
+        let body_bytes: &[u8] = if head_len <= raw.len() { &raw[head_len..] } else { &[] };
+        let (status, ctype, body) = if method == "POST" && path == "/v1/dispatch" {
+            route_dispatch(body_bytes)
+        } else {
+            route(&path)
+        };
         let mut resp = format!(
             "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
             status,
@@ -2256,6 +2310,34 @@ fn latest_release(px: &Phext) -> Option<(String, String)> {
 
 fn text_route(status: &str, body: String) -> (String, &'static str, Vec<u8>) {
     (status.to_string(), "text/plain; charset=utf-8", body.into_bytes())
+}
+
+/// POST /v1/dispatch (slice 4, §3.4): a bundle
+/// arrives, the acceptance rule judges it, and the
+/// outcome — acceptance or refusal, each carrying its
+/// receipt — is the response. State changes only
+/// through the acceptance path: an acceptance files
+/// the attempt and its assignment; a refusal files its
+/// receipt and nothing else; an unparsable bundle is a
+/// 400 before state is ever loaded.
+fn route_dispatch(body_bytes: &[u8]) -> (String, &'static str, Vec<u8>) {
+    if let Err(e) = crate::wire::parse_wire_bundle(body_bytes) {
+        return text_route("400 Bad Request", format!("qexo dispatch: {}\n", e));
+    }
+    let mut lat = match Lattice::load() {
+        Ok(Some(l)) => l,
+        Ok(None) => return text_route("200 OK", "qexo: state not born — run qexo config on the node\n".to_string()),
+        Err(e) => return text_route("500 Internal Server Error", format!("qexo: state unreadable: {}\n", e)),
+    };
+    let gpg = crate::crypto::Gpg::open_in(&lattice::state_dir());
+    let (status, body) = match crate::wire::accept_wire_bundle(&mut lat, &gpg, body_bytes) {
+        crate::wire::AcceptOutcome::Accepted(b) => ("200 OK", b),
+        crate::wire::AcceptOutcome::Refused(r) => ("403 Forbidden", format!("{}\n", r)),
+    };
+    if let Err(e) = lat.save() {
+        return text_route("500 Internal Server Error", format!("qexo: cannot save state: {}\n", e));
+    }
+    text_route(status, body)
 }
 
 fn route(path: &str) -> (String, &'static str, Vec<u8>) {
@@ -2287,12 +2369,15 @@ fn route(path: &str) -> (String, &'static str, Vec<u8>) {
             // One scroll by its full 9D coordinate — the read the
             // phextnet's convergence passes navigate by: a peer's
             // index scroll names the records, this route carries
-            // them. Read-only, like everything serve does; state
-            // changes only ever arrive as whole verified acts
-            // (register, sync adoption), never as writes here.
+            // them. The address may carry a `$N:` universe prefix
+            // (slice 4: an origin reads its executor's attempt
+            // scrolls here). Read-only, like every GET serve
+            // does; state changes only ever arrive as whole
+            // verified acts (register, sync adoption, a verified
+            // dispatch bundle), never as writes here.
             let coord_s = &path["/v1/scroll/".len()..];
-            match crate::phext::parse_coord(coord_s) {
-                Some(c) => match lat.px.get(&c) {
+            match crate::phext::parse_universe_addr(coord_s) {
+                Some((n, c)) => match lat.universe(n).and_then(|u| u.get(&c)) {
                     Some(t) => text_route("200 OK", t.clone()),
                     None => text_route("404 Not Found", format!("no scroll at {}\n", coord_s)),
                 },
@@ -2323,7 +2408,7 @@ fn route(path: &str) -> (String, &'static str, Vec<u8>) {
         }
         _ => text_route(
             "404 Not Found",
-            "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers, /v1/scroll/<coord>, /v1/release, /v1/release/signature, /release/qexo-<version> (payloads are scroll text; the release binary is the one byte route)\n".to_string(),
+            "no such route — qexo serves /, /v1/doctor, /v1/plan, /v1/peers, /v1/scroll/<coord>, /v1/release, /v1/release/signature, /release/qexo-<version>, POST /v1/dispatch (payloads are scroll text; the release binary is the one byte route)\n".to_string(),
         ),
     }
 }

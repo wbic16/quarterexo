@@ -562,9 +562,11 @@ pub fn check_queue(lat: &Lattice) -> Report {
         }
         // Illegal combination 6: the bundle hash. The shape
         // is checkable today; a divergent attempt-universe
-        // copy is checkable today; recomputation against
-        // the canonical bundle lands with the bundle
-        // builder in slice 4.
+        // copy is checkable today; and (slice 4, the block
+        // after the terminal checks) the digest recomputed
+        // from an attempt universe's contents — the
+        // canonical bundle rebuilt by the builder that
+        // landed with wire dispatch — must equal it.
         if let Some(h) = &item.bundle_sha256 {
             if !dispatch::is_sha256_hex(h) {
                 findings.push(bad(format!(
@@ -572,16 +574,56 @@ pub fn check_queue(lat: &Lattice) -> Report {
                     addr_s, h
                 )));
             }
+            // The hashes this item's attempts are known
+            // by: the record's current hash plus every
+            // assignment's. A superseded attempt's
+            // stratum copy carries its own attempt's
+            // hash — matching any filed attempt is
+            // well-formed; matching none is divergence.
+            let mut known: Vec<String> = vec![h.clone()];
+            for a in assignments.iter().filter(|a| a.item.as_deref() == Some(addr_s.as_str())) {
+                if let Some(t) = lat.px.get(&a.addr) {
+                    if let Some(ah) = lattice::field(t, "bundle-sha256") {
+                        if !known.contains(&ah) {
+                            known.push(ah);
+                        }
+                    }
+                }
+            }
             for n in 2..=(item.attempts as usize) + 1 {
                 if let Some(doc) = lat.universe(n) {
                     if let Some(copy) = doc.get(&item.addr) {
                         if let Some(h2) = lattice::field(copy, "bundle-sha256") {
-                            if h2 != *h {
+                            if !known.iter().any(|k| k == &h2) {
                                 findings.push(bad(format!(
                                     "{}: attempt universe ${}'s bundle-sha256 does not match the item record's (illegal combination 6, §4.6)",
                                     addr_s, n
                                 )));
                             }
+                        }
+                    }
+                }
+            }
+        }
+        // Slice 4: combination 6 completed — for each
+        // live assignment naming this item, rebuild the
+        // canonical bundle from the attempt universe the
+        // acceptance filed and compare its digest to the
+        // record's. A stratum missing its pieces returns
+        // None (combination 7 owns absence); a stratum
+        // whose contents hash elsewhere is the finding.
+        if let Some(h) = &item.bundle_sha256 {
+            for a in assignments.iter().filter(|a| a.live && a.item.as_deref() == Some(addr_s.as_str())) {
+                if let Some(att) = a.attempt.as_deref().and_then(|s| s.parse::<u32>().ok()) {
+                    if let Some(recomputed) = crate::wire::recompute_bundle_sha256(lat, &item.addr, att) {
+                        if recomputed != *h {
+                            findings.push(bad(format!(
+                                "{}: attempt universe ${}'s contents recompute to bundle digest {}, not the record's {} (illegal combination 6, §4.6)",
+                                addr_s,
+                                att + 1,
+                                recomputed,
+                                h
+                            )));
                         }
                     }
                 }

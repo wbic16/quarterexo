@@ -33,6 +33,10 @@ pub enum Command {
     Cancel(Vec<String>),
     Audit(Vec<String>),
     Drain { check: bool, url: Option<String> },
+    Dispatch { item: Option<String>, to: Option<String>, check: bool },
+    Heartbeat(String),
+    Checkpoint(Vec<String>),
+    Fail(Vec<String>),
     Show(String),
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
@@ -147,6 +151,35 @@ pub fn parse(args: &[String]) -> Command {
             }
             Command::Drain { check: args.iter().any(|a| a == "--check"), url }
         }
+        "dispatch" => {
+            let mut item: Option<String> = None;
+            let mut to: Option<String> = None;
+            let mut check = false;
+            let mut i = 1;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--to" if i + 1 < args.len() => {
+                        to = Some(args[i + 1].clone());
+                        i += 2;
+                    }
+                    "--check" => {
+                        check = true;
+                        i += 1;
+                    }
+                    other if !other.starts_with("--") && item.is_none() => {
+                        item = Some(other.to_string());
+                        i += 1;
+                    }
+                    _ => {
+                        i += 1;
+                    }
+                }
+            }
+            Command::Dispatch { item, to, check }
+        }
+        "heartbeat" => Command::Heartbeat(args.get(1).cloned().unwrap_or_default()),
+        "checkpoint" => Command::Checkpoint(args[1..].to_vec()),
+        "fail" => Command::Fail(args[1..].to_vec()),
         "show" => Command::Show(w(1).to_string()),
         "release" => Command::Release,
         "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
@@ -254,7 +287,7 @@ pub fn help_text() -> String {
     s.push_str("                            (update is one stage of evolve: with evolve: on in the config record,\n");
     s.push_str("                            the automatic timer fires `qexo evolve` instead of `qexo update`)\n\n");
 
-    s.push_str("Dispatch (local — the dispatch core's foundation):\n");
+    s.push_str("Dispatch (the dispatch core):\n");
     s.push_str("  qexo enqueue <brief-file> [--title <t>] [--coordinate <task-coordinate>] [--register <n>]\n");
     s.push_str("                            [--value <1-9>] [--cost <1-9>] [--goal <text>] [--after <item-address>]\n");
     s.push_str("                            [--exit <text>] [--origin <origin>]\n");
@@ -298,6 +331,27 @@ pub fn help_text() -> String {
     s.push_str("                            the audit view (ledgers, cluster 9): what was checked and why\n");
     s.push_str("                            an act was allowed to happen quietly — newest last.\n");
     s.push_str("                            `qexo audit show <address>` renders one audit in full\n");
+    s.push_str("  qexo dispatch [<item-address>] [--to <node>] [--check]\n");
+    s.push_str("                            place the queue's head (or the named item) on a node drawn\n");
+    s.push_str("                            fairly from the eligible set (spec §6: reachable, load/thermal\n");
+    s.push_str("                            gates, no resident displaced, inputs stageable, capability fit),\n");
+    s.push_str("                            as a signed bundle (spec §3.4) the target accepts or refuses with\n");
+    s.push_str("                            a receipt. The placement receipt is the assignment record\n");
+    s.push_str("                            (11.11.11, cluster 3). An empty eligible set is a receipted\n");
+    s.push_str("                            outcome — the item stays queued; nothing defaults to the\n");
+    s.push_str("                            coordinator. --check prints the round and writes nothing\n");
+    s.push_str("  qexo heartbeat <item-address>\n");
+    s.push_str("                            on the executing node: beat — the heartbeat line lands on the\n");
+    s.push_str("                            assignment and the attempt record; the first beat moves the\n");
+    s.push_str("                            item dispatched → running. On the item's home node: read the\n");
+    s.push_str("                            executor's assignment over the scroll route and reconcile\n");
+    s.push_str("  qexo checkpoint <item-address> --note <text>\n");
+    s.push_str("                            append a checkpoint scroll (Scroll 4+) in the attempt universe's\n");
+    s.push_str("                            item Book and cite it on the assignment\n");
+    s.push_str("  qexo fail <item-address> --note <evidence>\n");
+    s.push_str("                            the executor's failure receipt: the item returns to queued (the\n");
+    s.push_str("                            third consecutive failure auto-pauses it) and the assignment\n");
+    s.push_str("                            retires with the evidence as its status\n");
     s.push_str("  qexo show <address>       render one record from this node's state; the address may carry\n");
     s.push_str("                            a universe prefix — $2:11.11.11/2.1.1/1.1.1 reads universe 2 of\n");
     s.push_str("                            the state chain (a bare address is universe 1)\n\n");
