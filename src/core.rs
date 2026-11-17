@@ -1746,7 +1746,7 @@ pub fn message(persona: &str, text: &str) -> i32 {
 
 pub fn status() -> i32 {
     let path = lattice::state_path();
-    println!("qexo v1.4.0 — node status");
+    println!("qexo {} — node status", plan::PLAN_VERSION);
     println!("state: {}", path.display());
     let lat = match Lattice::load() {
         Ok(Some(l)) => l,

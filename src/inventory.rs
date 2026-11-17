@@ -246,7 +246,7 @@ pub fn inventory(name: Option<String>, install: Option<String>) -> i32 {
                 println!("  {}", lattice::field(&text, "install").unwrap_or_default());
                 println!("launch: {}", lattice::field(&text, "launch").unwrap_or_default());
                 println!("home: {}", lattice::field(&text, "home").unwrap_or_default());
-                println!("(print-only in qexo v1.4.0 — qexo never installs ecosystem products silently; copy and run it yourself)");
+                println!("(print-only in qexo v{} — qexo never installs ecosystem products silently; copy and run it yourself)", env!("CARGO_PKG_VERSION"));
                 0
             }
             None => {

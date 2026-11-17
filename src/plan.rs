@@ -36,7 +36,13 @@ const BUILD_TOKENS: &[&str] = &[
     "benchmark", "bulk", "suite", "phcc",
 ];
 
-pub const PLAN_VERSION: &str = "v1.7.1";
+/// The build's own version, from the Cargo manifest — the single
+/// source every user-facing version stamp derives from (v1.7.2).
+/// Hand-written version literals drifted three releases behind
+/// (the "qexo v1.4.0" help/status prints on a v1.7.1 binary);
+/// deriving them makes that drift impossible by construction.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+pub const PLAN_VERSION: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Class {
@@ -1120,6 +1126,18 @@ mod tests {
         assert_eq!(f.intervals, FORECAST_WINDOW_INTERVALS);
         assert_eq!(f.files_per_day, 1000.0);
         assert_eq!(f.gb_per_day, 0.0);
+    }
+
+    #[test]
+    fn version_stamps_derive_from_the_build() {
+        // v1.7.2: PLAN_VERSION is never a hand-written literal —
+        // it is the Cargo manifest version with the v prefix, so a
+        // release bump moves every stamp at once and no banner can
+        // drift behind the build (the "qexo v1.4.0" help/status
+        // prints on the v1.7.1 binary). If this fails, someone
+        // re-hardcoded a stamp.
+        assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
+        assert_eq!(PLAN_VERSION, format!("v{}", env!("CARGO_PKG_VERSION")));
     }
 
     #[test]
