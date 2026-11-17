@@ -429,6 +429,270 @@ pub fn fix_lattice(lat: &mut Lattice) -> Vec<String> {
     done
 }
 
+// ----------------------------------------------------------------
+// The queue reconciliation (dispatch core slice 2, spec §4.5):
+// calculated from the records on every run, never stored.
+// ----------------------------------------------------------------
+
+use crate::dispatch::{self, ItemState};
+
+/// Doctor's queue section. The §4.5 counts: items by state;
+/// terminal items lacking a receipt (must be 0); receipts
+/// citing no live item (must be 0); assignments whose
+/// heartbeat is stale (counted here — the F5 path that acts
+/// on them arrives in slice 5); an audit record for every
+/// non-ping closure (a closure without one is a finding,
+/// §7.2). The §4.6 illegal combinations are checked one by
+/// one, each in its own words. No queue finding is fixable
+/// by doctor: the repair is a transition or Will's hand,
+/// never an invention — a nonzero must-be-0 count is a
+/// doctor failure of the same class as a missing homeland
+/// index (§4.5).
+pub fn check_queue(lat: &Lattice) -> Report {
+    let px = &lat.px;
+    let mut findings = Vec::new();
+    let items = dispatch::load_items(px);
+    let receipts = dispatch::load_transition_receipts(px);
+    let audits = dispatch::load_audits(px);
+    let assignments = dispatch::load_assignments(px);
+
+    // Items by state — calculated, never stored.
+    let mut counts: Vec<String> = Vec::new();
+    for s in dispatch::ALL_STATES {
+        let n = items.iter().filter(|i| i.state == Some(s)).count();
+        if n > 0 {
+            counts.push(format!("{} {}", n, s.name()));
+        }
+    }
+    let unknown = items.iter().filter(|i| i.state.is_none()).count();
+    if unknown > 0 {
+        counts.push(format!("{} in an unknown state", unknown));
+    }
+    findings.push(Finding {
+        item: "queue reconciliation".into(),
+        ok: true,
+        detail: if items.is_empty() {
+            "queue: 0 item(s)".to_string()
+        } else {
+            format!("queue: {} item(s) — {}", items.len(), counts.join(", "))
+        },
+        fixable: false,
+    });
+
+    let item_addrs: std::collections::HashSet<String> =
+        items.iter().map(|i| crate::phext::fmt_coord(&i.addr)).collect();
+    let local_node = px
+        .get(&lattice::IDENTITY)
+        .and_then(|t| lattice::field(t, "node"))
+        .unwrap_or_default();
+    let local_actor = dispatch::local_actor(px);
+
+    for item in &items {
+        let addr_s = crate::phext::fmt_coord(&item.addr);
+        let bad = |detail: String| Finding { item: "queue integrity".into(), ok: false, detail, fixable: false };
+        if item.state.is_none() {
+            findings.push(bad(format!(
+                "{}: state '{}' is not a queue state (§4.6)",
+                addr_s, item.state_raw
+            )));
+            continue;
+        }
+        let state = item.state.unwrap();
+        if !item.attempts_raw.is_empty() && item.attempts_raw.parse::<u32>().is_err() {
+            findings.push(bad(format!("{}: attempts: '{}' is not a count", addr_s, item.attempts_raw)));
+        }
+        if !item.failures_raw.is_empty() && item.failures_raw.parse::<u32>().is_err() {
+            findings.push(bad(format!("{}: failures: '{}' is not a count", addr_s, item.failures_raw)));
+        }
+        // Illegal combination 5: waiting with no register cite.
+        if state == ItemState::Waiting
+            && item.register.as_deref().map(|r| r.trim().is_empty()).unwrap_or(true)
+        {
+            findings.push(bad(format!(
+                "{}: waiting with no register number cited (illegal combination 5, §4.6)",
+                addr_s
+            )));
+        }
+        // Illegal combination 3: the auto-pause counter rules.
+        if state == ItemState::PausedAuto && item.failures < 3 {
+            findings.push(bad(format!(
+                "{}: paused-auto with failures: {} < 3 (illegal combination 3, §4.6)",
+                addr_s, item.failures
+            )));
+        }
+        if state == ItemState::Queued && item.failures >= 3 {
+            findings.push(bad(format!(
+                "{}: queued with failures: {} ≥ 3 and no intervening verified progress or manual resume (illegal combination 3, §4.6)",
+                addr_s, item.failures
+            )));
+        }
+        // Illegal combination 7: the cited attempt universe
+        // does not exist. Attempts live in this node's chain
+        // for items homed here; an item whose `home:` names
+        // another node keeps its attempts there.
+        if item.attempts >= 1 {
+            let home_here = item.home.as_deref().map(|h| h == local_node).unwrap_or(true);
+            if home_here && lat.universe_count() < (item.attempts as usize) + 1 {
+                findings.push(bad(format!(
+                    "{}: cites attempt universe ${} but the state chain holds {} universe(s) (illegal combination 7, §4.6)",
+                    addr_s,
+                    item.attempts + 1,
+                    lat.universe_count()
+                )));
+            }
+        }
+        // Illegal combination 6: the bundle hash. The shape
+        // is checkable today; a divergent attempt-universe
+        // copy is checkable today; recomputation against
+        // the canonical bundle lands with the bundle
+        // builder in slice 4.
+        if let Some(h) = &item.bundle_sha256 {
+            if !dispatch::is_sha256_hex(h) {
+                findings.push(bad(format!(
+                    "{}: bundle-sha256 '{}' is not a SHA-256 digest (illegal combination 6, §4.6)",
+                    addr_s, h
+                )));
+            }
+            for n in 2..=(item.attempts as usize) + 1 {
+                if let Some(doc) = lat.universe(n) {
+                    if let Some(copy) = doc.get(&item.addr) {
+                        if let Some(h2) = lattice::field(copy, "bundle-sha256") {
+                            if h2 != *h {
+                                findings.push(bad(format!(
+                                    "{}: attempt universe ${}'s bundle-sha256 does not match the item record's (illegal combination 6, §4.6)",
+                                    addr_s, n
+                                )));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Terminal items: combination 1 (no receipt, or a
+        // receipt whose evidence fields are empty),
+        // combination 4 (cancelled with no note, or by an
+        // executor), and §7.2's twin (a done closure with
+        // no audit record).
+        if state.is_terminal() {
+            let term = receipts
+                .iter()
+                .filter(|r| r.item.as_deref() == Some(addr_s.as_str()) && r.to.as_deref() == Some(state.name()))
+                .last();
+            match term {
+                None => findings.push(bad(format!(
+                    "{}: terminal ({}) with no receipt (illegal combination 1, §4.6)",
+                    addr_s,
+                    state.name()
+                ))),
+                Some(r) => {
+                    let ev_empty = r.evidence.as_deref().map(|e| e.trim().is_empty()).unwrap_or(true);
+                    if ev_empty {
+                        if state == ItemState::Cancelled {
+                            findings.push(bad(format!(
+                                "{}: cancelled with no note — receipt {} carries no evidence (illegal combination 4, §4.6)",
+                                addr_s,
+                                crate::phext::fmt_coord(&r.addr)
+                            )));
+                        } else {
+                            findings.push(bad(format!(
+                                "{}: terminal receipt {} has empty evidence fields (illegal combination 1, §4.6)",
+                                addr_s,
+                                crate::phext::fmt_coord(&r.addr)
+                            )));
+                        }
+                    }
+                    if state == ItemState::Cancelled {
+                        let actor = r.actor.clone().unwrap_or_default();
+                        let actor_node = actor.split_whitespace().next().unwrap_or("");
+                        let legit = actor == "will"
+                            || actor == "emise"
+                            || actor == local_actor
+                            || (!local_node.is_empty() && actor_node == local_node);
+                        if !legit {
+                            findings.push(bad(format!(
+                                "{}: cancelled by '{}' — not Will/Emise or this node (illegal combination 4, §4.6)",
+                                addr_s, actor
+                            )));
+                        }
+                    }
+                }
+            }
+            if state == ItemState::Done {
+                let has_audit = audits
+                    .iter()
+                    .any(|a| a.kind == "non-ping-close" && a.item.as_deref() == Some(addr_s.as_str()));
+                if !has_audit {
+                    findings.push(bad(format!(
+                        "{}: done with no audit record — a non-ping closure without one is a finding (§4.5, §7.2)",
+                        addr_s
+                    )));
+                }
+            }
+        }
+        // Illegal combination 2: an item running under two
+        // live assignments (the single-assignment invariant).
+        if state == ItemState::Running {
+            let live = assignments
+                .iter()
+                .filter(|a| a.live && a.item.as_deref() == Some(addr_s.as_str()))
+                .count();
+            if live >= 2 {
+                findings.push(bad(format!(
+                    "{}: running under {} live assignments — exactly one attempt universe is authoritative (illegal combination 2, §4.6)",
+                    addr_s, live
+                )));
+            }
+        }
+    }
+
+    // §4.5: receipts citing no live item (must be 0).
+    for r in &receipts {
+        if let Some(it) = &r.item {
+            if !item_addrs.contains(it) {
+                findings.push(Finding {
+                    item: "queue integrity".into(),
+                    ok: false,
+                    detail: format!(
+                        "receipt {} cites {}, which is not a live queue item (§4.5)",
+                        crate::phext::fmt_coord(&r.addr),
+                        it
+                    ),
+                    fixable: false,
+                });
+            }
+        }
+    }
+
+    // Assignments: counted, with stale heartbeats named as
+    // a count — the F5 path that acts on them is slice 5.
+    let live = assignments.iter().filter(|a| a.live).count();
+    let now = crate::core::now_minutes();
+    let stale = assignments
+        .iter()
+        .filter(|a| {
+            a.live
+                && a.heartbeat
+                    .as_deref()
+                    .and_then(crate::core::stamp_minutes)
+                    .map(|m| now - m > 6)
+                    .unwrap_or(false)
+        })
+        .count();
+    findings.push(Finding {
+        item: "queue assignments".into(),
+        ok: true,
+        detail: format!(
+            "{} assignment(s), {} live, {} with a stale heartbeat (3 missed 2-minute beats, §15 Q5) — the F5 path that acts on these arrives in slice 5",
+            assignments.len(),
+            live,
+            stale
+        ),
+        fixable: false,
+    });
+
+    Report { findings }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +776,176 @@ mod tests {
         let done = fix_lattice(&mut lat);
         assert!(done.iter().any(|d| d.contains("peers index")), "{:?}", done);
         assert!(check_lattice(&lat).ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // --------------------------------------------------------
+    // Slice 2: the queue reconciliation (§4.5) and the
+    // illegal combinations (§4.6), one fixture per rule.
+    // --------------------------------------------------------
+
+    fn queue_lat(px: crate::phext::Phext) -> Lattice {
+        let dir = std::env::temp_dir().join(format!("qexo-doctor-queue-{}", std::process::id()));
+        let mut lat = Lattice::born(dir.join("state.phext"));
+        lat.px = px;
+        lat
+    }
+
+    fn queue_px() -> crate::phext::Phext {
+        let mut px = crate::phext::Phext::new();
+        px.insert(
+            lattice::IDENTITY,
+            lattice::record(&[("name", "Test Node"), ("node", "test-node"), ("born", "now")]),
+        );
+        px.insert(
+            lattice::NODE_KEY_RECORD,
+            lattice::record(&[("kind", "node key"), ("fingerprint", "TESTFP"), ("status", "generated")]),
+        );
+        px
+    }
+
+    fn item_text(state: &str, failures: u32, extra: &[(&str, &str)]) -> String {
+        let mut t = crate::dispatch::item_record(
+            "T",
+            None,
+            None,
+            "emise",
+            "2026-11-16 07:52 UTC",
+            "test-node TESTFP",
+            "standing",
+            Some(5),
+            Some(1),
+            None,
+            None,
+        );
+        t = lattice::set_field(&t, "state", state);
+        t = lattice::set_field(&t, "failures", &failures.to_string());
+        for (k, v) in extra {
+            t = lattice::set_field(&t, k, v);
+        }
+        t
+    }
+
+    fn transition_receipt(px: &mut crate::phext::Phext, item: &str, from: &str, to: &str, actor: &str, evidence: &str) {
+        crate::core::append_receipt(
+            px,
+            "transition",
+            &[("item", item), ("from", from), ("to", to), ("actor", actor), ("evidence", evidence)],
+        );
+    }
+
+    fn flagged(report: &Report, needle: &str) -> bool {
+        report.findings.iter().any(|f| !f.ok && f.detail.contains(needle))
+    }
+
+    #[test]
+    fn queue_reconciliation_accepts_a_healthy_queue() {
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[]));
+        px.insert(crate::dispatch::item_addr(2), item_text("paused", 1, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.2/1.1.1", "queued", "paused", "test-node TESTFP", "later");
+        let report = check_queue(&queue_lat(px));
+        assert!(report.ok(), "{:?}", report.findings.iter().map(|f| &f.detail).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn queue_reconciliation_flags_each_illegal_combination() {
+        // 1 — terminal with no receipt; and done with a
+        // receipt but no audit (the §7.2 twin).
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("done", 0, &[]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 1"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("done", 0, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "done", "test-node TESTFP", "checked: x");
+        let report = check_queue(&queue_lat(px.clone()));
+        assert!(!flagged(&report, "illegal combination 1"), "receipted done must pass combination 1");
+        assert!(flagged(&report, "no audit record"));
+        crate::dispatch::append_audit(&mut px, "non-ping-close", "11.11.11/2.1.1/1.1.1", "c", "s", "v", "test-node TESTFP");
+        assert!(check_queue(&queue_lat(px)).ok());
+
+        // 2 — running under two live assignments.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("running", 0, &[]));
+        for b in [1, 2] {
+            px.insert(
+                lattice::at(lattice::HL_DISPATCH, [lattice::DISPATCH_ASSIGN_C, 1, b, 1, 1, 1]),
+                lattice::record(&[("item", "11.11.11/2.1.1/1.1.1"), ("attempt", "1"), ("heartbeat", "2026-11-16 07:52 UTC")]),
+            );
+        }
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 2"));
+
+        // 3 — paused-auto below the failure cap; queued at it.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("paused-auto", 1, &[]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 3"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 3, &[]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 3"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("paused-auto", 3, &[]));
+        assert!(!flagged(&check_queue(&queue_lat(px)), "illegal combination 3"));
+
+        // 4 — cancelled by another node (an executor), and
+        // cancelled with no note.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("cancelled", 0, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "queued", "cancelled", "other-node ABCD", "moot");
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 4"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("cancelled", 0, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "queued", "cancelled", "test-node TESTFP", "");
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 4"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("cancelled", 0, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "queued", "cancelled", "test-node TESTFP", "moot");
+        assert!(check_queue(&queue_lat(px)).ok());
+
+        // 5 — waiting with no register cite.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("waiting", 0, &[]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 5"));
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("waiting", 0, &[("register", "181")]));
+        assert!(check_queue(&queue_lat(px)).ok());
+
+        // 6 — a bundle-sha256 that is not a digest.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[("bundle-sha256", "xyz")]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 6"));
+
+        // 7 — attempts cited, attempt universe absent.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[("attempts", "2")]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "illegal combination 7"));
+
+        // §4.5 — a receipt citing no live item.
+        let mut px = queue_px();
+        transition_receipt(&mut px, "11.11.11/2.1.99/1.1.1", "queued", "paused", "test-node TESTFP", "later");
+        assert!(flagged(&check_queue(&queue_lat(px)), "not a live queue item"));
+
+        // An unknown state is a finding in its own right.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("sideways", 0, &[]));
+        assert!(flagged(&check_queue(&queue_lat(px)), "is not a queue state"));
+    }
+
+    #[test]
+    fn queue_reconciliation_honors_an_existing_attempt_universe() {
+        // Item with attempts: 1 whose attempt universe ($2)
+        // exists in the chain: no combination-7 finding.
+        let mut u1 = queue_px();
+        u1.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[("attempts", "1")]));
+        let mut u2 = crate::phext::Phext::new();
+        u2.insert(crate::dispatch::item_addr(1), item_text("running", 0, &[("attempts", "1")]));
+        let dir = std::env::temp_dir().join(format!("qexo-doctor-chain-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("state.phext");
+        let bytes = crate::phext::Phext::serialize_universes(&[u1, u2], true);
+        std::fs::write(&path, bytes).unwrap();
+        let lat = Lattice::load_from(&path).unwrap().expect("chain state loads");
+        let report = check_queue(&lat);
+        assert!(!flagged(&report, "illegal combination 7"), "{:?}", report.findings.iter().map(|f| &f.detail).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
