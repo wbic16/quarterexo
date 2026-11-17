@@ -443,6 +443,15 @@ pub struct Item {
     pub title: String,
     pub coordinate: Option<String>,
     pub register: Option<String>,
+    /// The register entry seq this item was drained at
+    /// (§10.3) — the drain's dedup key. Register-born items
+    /// carry it from birth; other items never do.
+    pub register_seq: Option<String>,
+    /// §10.4 write-back bookkeeping: `pending` when a local
+    /// terminal close owes the register its resolution,
+    /// `recorded` once the resolution stands at the
+    /// register. Absent when no write-back is owed.
+    pub register_writeback: Option<String>,
     pub origin: String,
     pub enqueued: String,
     pub enqueued_min: Option<i64>,
@@ -475,6 +484,8 @@ pub fn parse_item(book: u32, text: &str) -> Item {
         title: f("title").unwrap_or_else(|| "untitled".to_string()),
         coordinate: f("coordinate"),
         register: f("register"),
+        register_seq: f("register-seq"),
+        register_writeback: f("register-writeback"),
         origin: f("origin").unwrap_or_default(),
         enqueued_min: crate::core::stamp_minutes(&enqueued),
         enqueued,
@@ -553,6 +564,11 @@ pub struct Transition {
     pub verdict: Option<String>,
     pub register: Option<String>,
     pub manual: bool,
+    /// A register resolution is closing this item (§10.3):
+    /// the drain's path, gated on the resolution's F4 cite.
+    /// No other caller sets this — every other road to a
+    /// terminal state keeps the matrix below.
+    pub register_close: bool,
 }
 
 impl Transition {
@@ -567,6 +583,7 @@ impl Transition {
             verdict: None,
             register: None,
             manual: false,
+            register_close: false,
         }
     }
 }
@@ -589,6 +606,10 @@ pub enum AuditOwed {
     NonPingClose,
     AutoPause,
     Override,
+    /// A closure the register itself ordered (§10.3): the
+    /// audit kind is `register-close`, citing the
+    /// resolution seq as its live-surface evidence (§7.2).
+    RegisterClose,
 }
 
 /// The legality oracle (spec §4.6): is this transition
@@ -620,6 +641,35 @@ pub fn check_transition(item: &Item, t: &Transition) -> Result<Plan, String> {
         register: None,
         audit: None,
     };
+    if t.register_close {
+        // §10.3: a register resolution closes the matching
+        // item where it stands. The register of record is
+        // the live surface and its resolution atom is the
+        // F4 evidence — checked/showed/verdict cite it, and
+        // the audit kind is register-close (§7.2). This
+        // path is the drain's alone: the coordinator acting
+        // on a resolution. It exists because the register
+        // is an authority the matrix's roads do not model —
+        // an item Will resolves in the register closes even
+        // if it never ran. Every other road to done or
+        // cancelled keeps the matrix below, unchanged.
+        if !matches!(t.to, ItemState::Done | ItemState::Cancelled) {
+            return Err("a register close lands in done or cancelled, nothing else (§10.3)".into());
+        }
+        if t.actor != Actor::Coordinator {
+            return Err("a register close is the coordinator's act — the drain applying a resolution (§10.3)".into());
+        }
+        if t.evidence.trim().is_empty() {
+            return Err("a register close cites its resolution — the note or the seq (§10.3)".into());
+        }
+        let f4 = [&t.checked, &t.showed, &t.verdict];
+        if f4.iter().any(|f| f.as_deref().map(|s| s.trim().is_empty()).unwrap_or(true)) {
+            return Err("a register close carries the F4 shape — checked, showed, verdict (§7.2)".into());
+        }
+        let mut p = plain(t.to);
+        p.audit = Some(AuditOwed::RegisterClose);
+        return Ok(p);
+    }
     let need_actor = |ok: bool, who: &str| -> Result<(), String> {
         if ok {
             Ok(())
@@ -785,6 +835,20 @@ pub fn apply_transition(lat: &mut Lattice, book: u32, t: &Transition) -> Result<
     if let Some(r) = &plan.register {
         new_text = lattice::set_field(&new_text, "register", r);
     }
+    // §10.4 write-back bookkeeping, in the same write: a
+    // LOCAL terminal close of a register-numbered item owes
+    // the register its resolution — the record says
+    // `pending` until the write-back lands (§10.4). A
+    // register-driven close is the register's own act; the
+    // resolution already stands there, so the field records
+    // it settled.
+    if plan.to.is_terminal() && item.register.is_some() {
+        if t.register_close {
+            new_text = lattice::set_field(&new_text, "register-writeback", "recorded");
+        } else if item.register_writeback.as_deref() != Some("recorded") {
+            new_text = lattice::set_field(&new_text, "register-writeback", "pending");
+        }
+    }
     lat.px.insert(addr, new_text);
 
     // The receipt (§4.2): item, from→to, actor, evidence —
@@ -818,6 +882,20 @@ pub fn apply_transition(lat: &mut Lattice, book: u32, t: &Transition) -> Result<
             append_audit(
                 &mut lat.px,
                 "non-ping-close",
+                &addr_s,
+                &one_line(t.checked.as_deref().unwrap_or_default()),
+                &one_line(t.showed.as_deref().unwrap_or_default()),
+                &one_line(t.verdict.as_deref().unwrap_or_default()),
+                &actor_name,
+            );
+        }
+        Some(AuditOwed::RegisterClose) => {
+            // §10.3/§7.2: the register-close audit — its
+            // checked field cites the resolution seq, the
+            // live-surface evidence the close stands on.
+            append_audit(
+                &mut lat.px,
+                "register-close",
                 &addr_s,
                 &one_line(t.checked.as_deref().unwrap_or_default()),
                 &one_line(t.showed.as_deref().unwrap_or_default()),
@@ -1164,6 +1242,9 @@ fn render_queue_line(item: &Item, daily: Option<&str>) -> String {
     if item.state == Some(ItemState::PausedAuto) {
         line.push_str(" — PAUSED-AUTO: pinned to head");
     }
+    if item.register_writeback.as_deref() == Some("pending") {
+        line.push_str(" — register write-back pending");
+    }
     line
 }
 
@@ -1383,7 +1464,7 @@ pub fn resume(args: &[String]) -> i32 {
 }
 
 pub fn cancel(args: &[String]) -> i32 {
-    run_transition("cancel", "cancelled", args, true, |_addr, note, lat| {
+    let code = run_transition("cancel", "cancelled", args, true, |_addr, note, lat| {
         match note {
             Some(n) if !n.trim().is_empty() => {
                 let mut t = Transition::new(ItemState::Cancelled, Actor::WillEmise, &local_actor(&lat.px));
@@ -1392,7 +1473,54 @@ pub fn cancel(args: &[String]) -> i32 {
             }
             _ => Err("cancel requires --note <text> — the note is the receipt's evidence".into()),
         }
-    })
+    });
+    if code != 0 {
+        return code;
+    }
+    // §2.1/§10.4: cancelling a register-numbered item is
+    // the act that writes the register resolution. The
+    // close above is durable (its receipt proves it); the
+    // write-back is attempted now and its outcome is
+    // printed either way. A failure leaves the record's
+    // `register-writeback: pending` standing — the next
+    // drain's sweep retries it, and the queue renders it.
+    let (addr_s, note) = match parse_item_verb("cancel", args, true) {
+        Ok(x) => x,
+        Err(_) => return code,
+    };
+    let book = match item_book(&addr_s) {
+        Ok(b) => b,
+        Err(_) => return code,
+    };
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let items = load_items(&lat.px);
+    let item = match items.iter().find(|i| i.book == book) {
+        Some(i) => i.clone(),
+        None => return code,
+    };
+    let number = match &item.register {
+        Some(n) if item.register_writeback.as_deref() == Some("pending") => n.clone(),
+        _ => return code,
+    };
+    match crate::register::write_back(&mut lat, &item, "cancelled", note.as_deref()) {
+        Ok(seq) => {
+            println!(
+                "register write-back: resolution seq {} recorded for register #{} (credential: qexo-token (env))",
+                seq, number
+            );
+            0
+        }
+        Err(e) => {
+            eprintln!(
+                "qexo cancel: {} — the local close is durable; the write-back stays pending",
+                e
+            );
+            1
+        }
+    }
 }
 
 const USAGE_AUDIT: &str = "usage: qexo audit [--item <address>] [--kind <kind>] [--since <date>] | qexo audit show <address>";
@@ -1823,6 +1951,125 @@ mod tests {
         let rec = lat.px.get(&item_addr(1)).unwrap();
         assert_eq!(lattice::field(rec, "state").as_deref(), Some("waiting"));
         assert_eq!(lattice::field(rec, "register").as_deref(), Some("181"));
+    }
+
+    // --------------------------------------------------------
+    // Slice 3: the register close (§10.3) and write-back
+    // bookkeeping (§10.4).
+    // --------------------------------------------------------
+
+    fn record_with_register(state: &str, number: &str) -> String {
+        let t = item_record(
+            "Do the thing",
+            None,
+            Some(number),
+            "emise",
+            "2026-11-16 07:52 UTC",
+            "test-node TESTFP",
+            "standing",
+            None,
+            None,
+            None,
+            None,
+        );
+        lattice::set_field(&t, "state", state)
+    }
+
+    fn register_close(to: ItemState, actor: Actor) -> Transition {
+        let mut t = Transition::new(to, actor, "test-node TESTFP");
+        t.register_close = true;
+        t.evidence = "register resolution seq 4".into();
+        t.checked = Some("register resolution seq 4 (register link)".into());
+        t.showed = Some("the register records the resolution".into());
+        t.verdict = Some("closed-settled".into());
+        t
+    }
+
+    #[test]
+    fn a_register_resolution_closes_an_item_where_it_stands() {
+        // queued → done is refused on every other road (the
+        // matrix has no such row); the register's resolution
+        // is the one authority that closes it (§10.3).
+        for s in ["queued", "waiting", "paused", "paused-auto", "dispatched", "running"] {
+            let item = parse_item(1, &record_with_register(s, "42"));
+            assert!(
+                check_transition(&item, &register_close(ItemState::Done, Actor::Coordinator)).is_ok(),
+                "register close from {}",
+                s
+            );
+            assert!(
+                check_transition(&item, &register_close(ItemState::Cancelled, Actor::Coordinator)).is_ok(),
+                "register cancel from {}",
+                s
+            );
+        }
+        // and the same request WITHOUT the register-close
+        // flag keeps the matrix's refusal — the flag is the
+        // whole difference.
+        let item = parse_item(1, &record_with_register("queued", "42"));
+        let mut plain_done = register_close(ItemState::Done, Actor::Coordinator);
+        plain_done.register_close = false;
+        assert!(check_transition(&item, &plain_done).is_err());
+    }
+
+    #[test]
+    fn register_close_refusals_name_their_rule() {
+        let item = parse_item(1, &record_with_register("queued", "42"));
+        // only done/cancelled landings
+        assert!(check_transition(&item, &register_close(ItemState::Queued, Actor::Coordinator)).is_err());
+        // the coordinator's act alone (the drain)
+        assert!(check_transition(&item, &register_close(ItemState::Done, Actor::Executor)).is_err());
+        assert!(check_transition(&item, &register_close(ItemState::Done, Actor::WillEmise)).is_err());
+        // the resolution cite is required evidence
+        let mut no_evidence = register_close(ItemState::Done, Actor::Coordinator);
+        no_evidence.evidence = String::new();
+        assert!(check_transition(&item, &no_evidence).is_err());
+        // the F4 shape is required (§7.2)
+        let mut no_f4 = register_close(ItemState::Cancelled, Actor::Coordinator);
+        no_f4.verdict = None;
+        assert!(check_transition(&item, &no_f4).is_err());
+        // terminal items refuse even the register's word
+        let done_item = parse_item(1, &record_with_register("done", "42"));
+        assert!(check_transition(&done_item, &register_close(ItemState::Cancelled, Actor::Coordinator)).is_err());
+    }
+
+    #[test]
+    fn a_register_close_writes_its_audit_and_settles_the_writeback_field() {
+        let dir = std::env::temp_dir().join(format!("qexo-dispatch-test-{}-regclose", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut lat = Lattice::born(dir.join("state.phext"));
+        lat.px.insert(item_addr(1), record_with_register("queued", "42"));
+        apply_transition(&mut lat, 1, &register_close(ItemState::Done, Actor::Coordinator)).unwrap();
+        let rec = lat.px.get(&item_addr(1)).unwrap();
+        assert_eq!(lattice::field(rec, "state").as_deref(), Some("done"));
+        assert_eq!(lattice::field(rec, "register-writeback").as_deref(), Some("recorded"));
+        let audits = load_audits(&lat.px);
+        assert_eq!(audits.len(), 1);
+        assert_eq!(audits[0].kind, "register-close");
+        assert_eq!(audits[0].item.as_deref(), Some("11.11.11/2.1.1/1.1.1"));
+        assert!(audits[0].checked.clone().unwrap_or_default().contains("seq 4"));
+        let receipts = load_transition_receipts(&lat.px);
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0].to.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_local_close_of_a_register_item_marks_the_writeback_pending() {
+        let dir = std::env::temp_dir().join(format!("qexo-dispatch-test-{}-wbpend", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut lat = Lattice::born(dir.join("state.phext"));
+        lat.px.insert(item_addr(1), record_with_register("queued", "42"));
+        let mut t = Transition::new(ItemState::Cancelled, Actor::WillEmise, "test-node TESTFP");
+        t.evidence = "moot".into();
+        apply_transition(&mut lat, 1, &t).unwrap();
+        let rec = lat.px.get(&item_addr(1)).unwrap();
+        assert_eq!(lattice::field(rec, "state").as_deref(), Some("cancelled"));
+        assert_eq!(lattice::field(rec, "register-writeback").as_deref(), Some("pending"));
+        // an item with no register number owes no write-back
+        let (mut lat2, _p) = born_lat_with_item("queued", 0);
+        apply_transition(&mut lat2, 1, &t).unwrap();
+        let rec2 = lat2.px.get(&item_addr(1)).unwrap();
+        assert_eq!(lattice::field(rec2, "register-writeback"), None);
     }
 
     fn bare_item(book: u32, goal: &str, value: Option<u32>, cost: Option<u32>, enqueued: &str, state: &str, pin: Option<&str>) -> Item {
