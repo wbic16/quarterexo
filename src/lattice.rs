@@ -997,6 +997,24 @@ impl Lattice {
         1 + self.extra.len()
     }
 
+    /// Replace universe N (1-based), growing the chain
+    /// with empty universes where a gap would open —
+    /// slice 4's writer: an acceptance files its attempt
+    /// universe, an origin files its as-dispatched
+    /// snapshot. Universe 1 is `px` itself.
+    pub fn set_universe(&mut self, n: usize, u: Phext) {
+        match n {
+            0 => {}
+            1 => self.px = u,
+            _ => {
+                while self.extra.len() < n - 1 {
+                    self.extra.push(Phext::new());
+                }
+                self.extra[n - 2] = u;
+            }
+        }
+    }
+
     /// Load the state file if it exists. Ok(None) = not born yet
     /// (no file): callers treat that as "run config", never as an
     /// occasion to invent a substitute store.
