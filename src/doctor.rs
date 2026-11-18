@@ -436,11 +436,39 @@ pub fn fix_lattice(lat: &mut Lattice) -> Vec<String> {
 
 use crate::dispatch::{self, ItemState};
 
+/// The (receipt Book, item) pairs filed under a kind
+/// receipt's `action:` in the receipts ledger —
+/// detection and verified-progress receipts are not
+/// transitions, so the transition loader never sees
+/// them; the doctor reads them raw (§8).
+fn kind_receipt_books(px: &crate::phext::Phext, action: &str) -> Vec<(u32, String)> {
+    let mut out = Vec::new();
+    for b in lattice::component_values(px, &[6, 6, 6, lattice::LEDGER_RECEIPTS, 1], 5) {
+        let addr = lattice::at(lattice::HL_LEDGERS, [lattice::LEDGER_RECEIPTS, 1, b, 1, 1, 1]);
+        if let Some(t) = px.get(&addr) {
+            if lattice::field(t, "action").as_deref() == Some(action) {
+                if let Some(item) = lattice::field(t, "item") {
+                    out.push((b, item));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The set of items named by kind receipts of `action`.
+fn kind_receipt_items(px: &crate::phext::Phext, action: &str) -> std::collections::HashSet<String> {
+    kind_receipt_books(px, action).into_iter().map(|(_, i)| i).collect()
+}
+
 /// Doctor's queue section. The §4.5 counts: items by state;
 /// terminal items lacking a receipt (must be 0); receipts
 /// citing no live item (must be 0); assignments whose
-/// heartbeat is stale (counted here — the F5 path that acts
-/// on them arrives in slice 5); an audit record for every
+/// heartbeat is stale (counted here; since slice 5 the
+/// F5 path acts on them — a stale assignment for an item
+/// homed here with no detection on file is a finding,
+/// and the failure counter is checked against its
+/// receipted history, §8); an audit record for every
 /// non-ping closure (a closure without one is a finding,
 /// §7.2 — a register-close audit satisfies it for a
 /// register-driven closure, §10.3). Slice 3 adds the
@@ -779,8 +807,115 @@ pub fn check_queue(lat: &Lattice) -> Report {
         });
     }
 
+    // Slice 5 (§8, §4.5): the F5 path, checked. A live
+    // assignment with a stale heartbeat for an item
+    // homed HERE, still dispatched or running, with no
+    // `failure detected` receipt filed for the item, is
+    // an executor loss the path has not acted on — the
+    // doctor names it; the heartbeat verb's reconcile
+    // is the repair. An executor's own copy (its record
+    // carries `home:`) is the origin's business, never
+    // this node's finding.
+    let detected_items = kind_receipt_items(px, "failure detected");
+    for a in &assignments {
+        if !a.live {
+            continue;
+        }
+        let stale_beat = a
+            .heartbeat
+            .as_deref()
+            .and_then(crate::core::stamp_minutes)
+            .map(|m| crate::core::now_minutes() - m > 6)
+            .unwrap_or(false);
+        if !stale_beat {
+            continue;
+        }
+        let item_s = match &a.item {
+            Some(s) => s.clone(),
+            None => continue,
+        };
+        if detected_items.contains(&item_s) {
+            continue;
+        }
+        if let Some(it) = items.iter().find(|i| crate::phext::fmt_coord(&i.addr) == item_s) {
+            if it.home.is_none()
+                && matches!(it.state, Some(ItemState::Dispatched) | Some(ItemState::Running))
+            {
+                findings.push(Finding {
+                    item: "queue integrity".into(),
+                    ok: false,
+                    detail: format!(
+                        "{}: assignment {} (attempt {}) has a stale heartbeat and no failure detection on file — the executor loss is not on the F5 path (§8)",
+                        item_s,
+                        crate::phext::fmt_coord(&a.addr),
+                        a.attempt.as_deref().unwrap_or("?")
+                    ),
+                    fixable: false,
+                });
+            }
+        }
+    }
+
+    // Slice 5 (§8): the failure counter against its
+    // receipted history. The counter resets ONLY on a
+    // verified progress receipt or a manual resume, so
+    // the failures receipted since the last receipted
+    // reset are the counter's floor: a record below
+    // that floor understates its own history — a reset
+    // happened with no receipt behind it. A record
+    // above the floor is an incomplete history (older
+    // receipts gone) and stays silent: the doctor
+    // convicts on evidence, never on absence.
+    let verified_books = kind_receipt_books(px, "progress verified");
+    for item in &items {
+        let addr_s = crate::phext::fmt_coord(&item.addr);
+        let mut events: Vec<(u32, i32)> = Vec::new();
+        for r in &receipts {
+            if r.item.as_deref() != Some(addr_s.as_str()) {
+                continue;
+            }
+            let book = r.addr[5];
+            let from = r.from.as_deref().unwrap_or("");
+            let to = r.to.as_deref().unwrap_or("");
+            if (from == "running" || from == "dispatched") && (to == "queued" || to == "paused-auto") {
+                events.push((book, 1));
+            } else if (from == "paused" || from == "paused-auto") && to == "queued" {
+                events.push((book, 0));
+            }
+        }
+        for (book, it) in &verified_books {
+            if *it == addr_s {
+                events.push((*book, 0));
+            }
+        }
+        if events.is_empty() {
+            continue;
+        }
+        events.sort_by_key(|(b, _)| *b);
+        let mut implied: u32 = 0;
+        for (_, e) in &events {
+            if *e == 1 {
+                implied += 1;
+            } else {
+                implied = 0;
+            }
+        }
+        if item.failures < implied {
+            findings.push(Finding {
+                item: "queue integrity".into(),
+                ok: false,
+                detail: format!(
+                    "{}: failures: {} understates its receipted history — {} consecutive failure(s) stand since the last receipted reset (verified progress or manual resume, §8)",
+                    addr_s, item.failures, implied
+                ),
+                fixable: false,
+            });
+        }
+    }
+
     // Assignments: counted, with stale heartbeats named as
-    // a count — the F5 path that acts on them is slice 5.
+    // a count — the F5 path that acts on them is slice 5
+    // (§8; the per-assignment finding stands above).
     let live = assignments.iter().filter(|a| a.live).count();
     let now = crate::core::now_minutes();
     let stale = assignments
@@ -798,7 +933,7 @@ pub fn check_queue(lat: &Lattice) -> Report {
         item: "queue assignments".into(),
         ok: true,
         detail: format!(
-            "{} assignment(s), {} live, {} with a stale heartbeat (3 missed 2-minute beats, §15 Q5) — the F5 path that acts on these arrives in slice 5",
+            "{} assignment(s), {} live, {} with a stale heartbeat (3 missed 2-minute beats, §15 Q5) — the F5 path acts on these since slice 5 (§8)",
             assignments.len(),
             live,
             stale
@@ -1099,5 +1234,59 @@ mod tests {
         let report = check_queue(&lat);
         assert!(!flagged(&report, "illegal combination 7"), "{:?}", report.findings.iter().map(|f| &f.detail).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn queue_reconciliation_checks_the_f5_path_and_the_counter() {
+        // Slice 5 (§8, §4.5): a stale live assignment
+        // for an item homed here, still running, with
+        // no detection on file, is flagged; filing the
+        // detection receipt clears the finding.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("running", 0, &[]));
+        px.insert(
+            lattice::at(lattice::HL_DISPATCH, [lattice::DISPATCH_ASSIGN_C, 1, 1, 1, 1, 1]),
+            lattice::record(&[("item", "11.11.11/2.1.1/1.1.1"), ("attempt", "1"), ("heartbeat", "2026-11-16 07:52 UTC")]),
+        );
+        assert!(flagged(&check_queue(&queue_lat(px.clone())), "not on the F5 path"));
+        crate::core::append_receipt(
+            &mut px,
+            "failure detected",
+            &[("item", "11.11.11/2.1.1/1.1.1"), ("attempt", "1"), ("node", "beta"), ("evidence", "test")],
+        );
+        assert!(!flagged(&check_queue(&queue_lat(px)), "not on the F5 path"));
+
+        // The counter against its history (§8): two
+        // receipted failures, no receipted reset — a
+        // record claiming failures: 1 understates them.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 1, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "queued", "test-node TESTFP", "boom 1");
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "queued", "test-node TESTFP", "boom 2");
+        assert!(flagged(&check_queue(&queue_lat(px.clone())), "understates its receipted history"));
+        // A record that owns its history is silent.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 2, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "queued", "test-node TESTFP", "boom 1");
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "queued", "test-node TESTFP", "boom 2");
+        assert!(!flagged(&check_queue(&queue_lat(px)), "understates its receipted history"));
+        // A verified progress receipt between the
+        // failures resets the floor (§8).
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 1, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "queued", "test-node TESTFP", "boom 1");
+        crate::core::append_receipt(
+            &mut px,
+            "progress verified",
+            &[("item", "11.11.11/2.1.1/1.1.1"), ("attempt", "2"), ("checkpoint", "$3:11.11.11/2.1.1/1.1.4"), ("failures", "1 -> 0")],
+        );
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "queued", "test-node TESTFP", "boom 2");
+        assert!(!flagged(&check_queue(&queue_lat(px)), "understates its receipted history"));
+        // A manual resume resets it too.
+        let mut px = queue_px();
+        px.insert(crate::dispatch::item_addr(1), item_text("queued", 0, &[]));
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "running", "paused-auto", "test-node TESTFP", "boom 3");
+        transition_receipt(&mut px, "11.11.11/2.1.1/1.1.1", "paused-auto", "queued", "test-node TESTFP", "manual resume");
+        assert!(!flagged(&check_queue(&queue_lat(px)), "understates its receipted history"));
     }
 }

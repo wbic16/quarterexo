@@ -52,6 +52,39 @@
 //! oracle: the first-beat transition, a failure
 //! transition carrying the executor's evidence,
 //! checkpoint cites.
+//!
+//! Slice 5 (§13.3 slice 5) completes F5 (§8) on this
+//! foundation: **failure detection** — the origin's
+//! heartbeat pass is the coordinator act that declares
+//! an executor lost on either evidence: its serve
+//! unreachable with 3 consecutive beats missed, or
+//! its serve answering while its beats have stopped
+//! (silent). Detection files a `failure detected`
+//! receipt, closes the attempt through the oracle
+//! (the third consecutive failure lands in
+//! paused-auto, §8), retires the origin's assignment,
+//! and — when the item lands queued — teleports it:
+//! a fresh `dispatch` in a fresh fair-draw round whose
+//! bundle carries `resume-from:` citing the last
+//! checkpoint (§6). **Checkpoint custody:** a
+//! reconcile that meets a new checkpoint cite reads
+//! the checkpoint scroll back and files it into the
+//! origin's own stratum for the attempt, so a
+//! teleport's bundle can carry the checkpoint itself
+//! as a resume universe — the resume currency (§6)
+//! survives the node that minted it. **Verified
+//! progress:** a checkpoint may cite outputs
+//! (`--output <coord>`, hashed at checkpoint time);
+//! the origin reads each cited output back over the
+//! scroll route and compares hashes — only a fully
+//! verified checkpoint resets the item's consecutive-
+//! failure counter, with a `progress verified`
+//! receipt in the same save (§8: never the executor's
+//! say-so). And the acceptance fencing is completed:
+//! a bundle below the highest attempt this node has
+//! filed — live or already closed — is refused as
+//! stale, so a dead executor's late bundle cannot
+//! move state (§4.6 combination 2).
 
 use crate::core::{append_receipt, now_stamp, require_born};
 use crate::crypto::Gpg;
@@ -217,11 +250,18 @@ pub fn unsigned_chain_bytes(universes: &[Phext]) -> String {
 /// Build a bundle's universes (unsigned) and manifest
 /// for `item` as it stands in `px` — the record
 /// pre-transition (state queued, attempts = attempt−1).
+/// `resume_text` is the checkpoint scroll the origin
+/// holds in custody for `resume_from`'s cite (§8): when
+/// both are present, the checkpoint rides as the
+/// bundle's last universe, provenanced like any context
+/// universe, so the replacement executor receives the
+/// resume currency itself — not just its address.
 pub fn build_bundle_parts(
     px: &Phext,
     item: &Item,
     attempt: u32,
     resume_from: Option<&str>,
+    resume_text: Option<&str>,
 ) -> Result<(Vec<Phext>, String), String> {
     let raw_record = px
         .get(&item.addr)
@@ -249,7 +289,6 @@ pub fn build_bundle_parts(
     // scroll list) plus the selected scrolls at their
     // own addresses. Read-only evidence (§3.4).
     let mut contexts: Vec<Phext> = Vec::new();
-    let mut hash_lines: Vec<String> = Vec::new();
     for (lo, hi) in item_contexts(px, item) {
         let mut sel = Phext::new();
         for (c, _) in px.toc() {
@@ -276,12 +315,50 @@ pub fn build_bundle_parts(
                 u.insert(c, t.clone());
             }
         }
+        contexts.push(u);
+    }
+
+    // The resume universe (§6 teleport, §8): when this
+    // dispatch resumes and the origin holds the cited
+    // checkpoint's scroll in custody, the checkpoint
+    // rides as the last universe — its provenance names
+    // the cite and the scroll's hash, and the scroll
+    // itself rides at its own coordinate, so the
+    // receiving node's stratum files it where the new
+    // attempt's own checkpoints will follow. A cite
+    // whose content the origin does not hold still
+    // names the resume point in the manifest; the
+    // bundle simply carries no resume universe, and
+    // the gap is visible in the manifest's hash list.
+    if let (Some(cite), Some(text)) = (resume_from, resume_text) {
+        if let Some((_, coord)) = phext::parse_universe_addr(cite) {
+            let prov = format!(
+                "bundle provenance\n{}",
+                lattice::record(&[
+                    ("kind", "resume-checkpoint"),
+                    ("source", cite),
+                    ("source-sha256", &sha256_hex(text.as_bytes())),
+                    ("scrolls", &phext::fmt_coord(&coord)),
+                ])
+            );
+            let mut u = Phext::new();
+            u.insert(BUNDLE_ANCHOR, prov);
+            u.insert(coord, text.to_string());
+            contexts.push(u);
+        }
+    }
+
+    // The manifest's per-universe hash list, in
+    // universe order (§3.4) — calculated from the
+    // assembled universes, so a resume universe takes
+    // its place in the list like any other.
+    let mut hash_lines: Vec<String> = Vec::new();
+    for (i, u) in contexts.iter().enumerate() {
         hash_lines.push(format!(
             "universe: {} sha256: {}",
-            contexts.len() + 2,
+            i + 2,
             sha256_hex(u.serialize().as_bytes())
         ));
-        contexts.push(u);
     }
 
     // The manifest ($1:'s anchor scroll, §3.4): the
@@ -344,8 +421,14 @@ pub struct Bundle {
     pub universes: Vec<Phext>,
 }
 
-pub fn build_bundle(px: &Phext, item: &Item, attempt: u32, resume_from: Option<&str>) -> Result<Bundle, String> {
-    let (universes, manifest) = build_bundle_parts(px, item, attempt, resume_from)?;
+pub fn build_bundle(
+    px: &Phext,
+    item: &Item,
+    attempt: u32,
+    resume_from: Option<&str>,
+    resume_text: Option<&str>,
+) -> Result<Bundle, String> {
+    let (universes, manifest) = build_bundle_parts(px, item, attempt, resume_from, resume_text)?;
     let sha256 = sha256_hex(unsigned_chain_bytes(&universes).as_bytes());
     Ok(Bundle {
         item_addr: phext::fmt_coord(&item.addr),
@@ -415,6 +498,9 @@ pub struct ParsedBundle {
     pub capabilities: Vec<String>,
     pub universes: Vec<Phext>,
     pub sha256: String,
+    /// The manifest's `resume-from:` cite, when this
+    /// bundle resumes a teleported attempt (§6).
+    pub resume_from: Option<String>,
 }
 
 pub fn parse_wire_bundle(bytes: &[u8]) -> Result<ParsedBundle, String> {
@@ -440,6 +526,7 @@ pub fn parse_wire_bundle(bytes: &[u8]) -> Result<ParsedBundle, String> {
         .ok_or("manifest attempt is not a number")?;
     let sha256 = sha256_hex(unsigned_chain_bytes(&universes).as_bytes());
     let capabilities = field_all(&manifest, "capability");
+    let resume_from = lattice::field(&manifest, "resume-from");
     Ok(ParsedBundle {
         manifest,
         item_addr,
@@ -450,6 +537,7 @@ pub fn parse_wire_bundle(bytes: &[u8]) -> Result<ParsedBundle, String> {
         capabilities,
         universes,
         sha256,
+        resume_from,
     })
 }
 
@@ -705,6 +793,62 @@ fn write_assignment(lat: &mut Lattice, fields: &[(&str, &str)]) -> Coord {
     write_assignment_at(lat, book, fields)
 }
 
+/// The fencing screen (§4.6 combination 2, §8): is
+/// this bundle's attempt already behind the story this
+/// node has filed for the item? Exactly one attempt
+/// universe is authoritative — the highest. A bundle
+/// is fenced out when a LIVE assignment carries a
+/// higher attempt, when any CLOSED assignment carries
+/// a higher attempt, or when a closed assignment
+/// carries this very attempt (a closed attempt is
+/// never re-run; the origin dispatches the next one).
+/// An equal LIVE attempt is not fenced here — dedup
+/// and the equal-attempt stale rule, below, own it.
+/// Returns the refusal reason when fenced.
+fn fencing_block(lat: &Lattice, item: &Coord, attempt: u32) -> Option<String> {
+    let item_s = phext::fmt_coord(item);
+    let mut highest_live: Option<u32> = None;
+    let mut highest_closed: Option<u32> = None;
+    let mut closed_same = false;
+    for rec in dispatch::load_assignments(&lat.px) {
+        if rec.item.as_deref() != Some(item_s.as_str()) {
+            continue;
+        }
+        let a = rec.attempt.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
+        if rec.live {
+            if a > attempt {
+                highest_live = Some(highest_live.map_or(a, |h: u32| h.max(a)));
+            }
+        } else {
+            if a > attempt {
+                highest_closed = Some(highest_closed.map_or(a, |h: u32| h.max(a)));
+            }
+            if a == attempt {
+                closed_same = true;
+            }
+        }
+    }
+    if let Some(h) = highest_live {
+        return Some(format!(
+            "stale: attempt {} is below the live attempt {} for this item on this node (fencing, §4.6)",
+            attempt, h
+        ));
+    }
+    if let Some(h) = highest_closed {
+        return Some(format!(
+            "stale: attempt {} is below attempt {}, already closed on this node (fencing, §4.6)",
+            attempt, h
+        ));
+    }
+    if closed_same {
+        return Some(format!(
+            "stale: attempt {} already closed on this node — a closed attempt is never re-run; the origin dispatches the next attempt (fencing, §4.6)",
+            attempt
+        ));
+    }
+    None
+}
+
 /// Accept a wire bundle on this node (§3.4), in the
 /// acceptance rule's order: parse → the signer is a
 /// registered peer and the signature verifies → the
@@ -759,6 +903,15 @@ pub fn accept_wire_bundle(lat: &mut Lattice, gpg: &Gpg, bytes: &[u8]) -> AcceptO
             Some(&pb),
             format!("this node does not declare capability {}", missing),
         );
+    }
+    // Fencing (§4.6 combination 2, completed in
+    // slice 5): a bundle below the highest attempt
+    // this node has filed — live or already closed —
+    // is stale, and a closed attempt is never re-run.
+    // The refusal receipt below is its evidence; it
+    // cannot move state.
+    if let Some(why) = fencing_block(lat, &pb.item_addr, pb.attempt) {
+        return refuse(lat, Some(&pb), why);
     }
     // Dedup and fencing (§4.3, §4.6 combination 2).
     if let Some((rec, text)) = live_assignment_for(lat, &pb.item_addr, pb.attempt) {
@@ -1314,9 +1467,40 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         return 1;
     }
 
+    // Teleport (§6, §8): a re-dispatch of an item whose
+    // earlier attempt checkpointed resumes from the
+    // last checkpoint — the cite the origin's
+    // reconciles kept on the assignment record, and
+    // the checkpoint scroll itself when the origin
+    // holds it in custody (filed into the origin's
+    // stratum for that attempt when the cite was
+    // read). The brief is never widened: the resumed
+    // bundle is built from the same record and brief
+    // as every attempt (§4.3).
+    let (resume_from, resume_text) = if attempt >= 2 {
+        match last_checkpoint_cite(&lat, &item) {
+            Some(cite) => {
+                let text = phext::parse_universe_addr(&cite)
+                    .and_then(|(u, c)| lat.universe(u).and_then(|s| s.get(&c)).cloned());
+                (Some(cite), text)
+            }
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    let resume_line: Option<String> = if attempt >= 2 {
+        Some(match &resume_from {
+            Some(cite) => cite.clone(),
+            None => "none — no checkpoint held; the attempt starts from the brief".to_string(),
+        })
+    } else {
+        None
+    };
+
     // Build and sign the bundle (§3.4, §4.3).
     let gpg = Gpg::open_in(&lattice::state_dir());
-    let bundle = match build_bundle(&lat.px, &item, attempt, None) {
+    let bundle = match build_bundle(&lat.px, &item, attempt, resume_from.as_deref(), resume_text.as_deref()) {
         Ok(b) => b,
         Err(e) => {
             eprintln!("qexo dispatch: cannot build the bundle: {}", e);
@@ -1515,6 +1699,9 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
                 text.push_str(&l);
                 text.push('\n');
             }
+            if let Some(r) = &resume_line {
+                text.push_str(&format!("resume-from: {}\n", r));
+            }
             lat.px.insert(rec2.addr, text);
         }
     } else {
@@ -1529,6 +1716,9 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
             if let Some((k, v)) = l.split_once(": ") {
                 owned.push((k.to_string(), v.to_string()));
             }
+        }
+        if let Some(r) = &resume_line {
+            owned.push(("resume-from".into(), r.clone()));
         }
         let refs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let origin_book = next_assignment_book(&lat);
@@ -1547,8 +1737,16 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         return 1;
     }
     println!(
-        "dispatched {} attempt {} to {} — bundle {} (acceptance receipt {})",
-        bundle.item_addr, attempt, target_name, bundle.sha256, accept_receipt
+        "dispatched {} attempt {} to {} — bundle {} (acceptance receipt {}){}",
+        bundle.item_addr,
+        attempt,
+        target_name,
+        bundle.sha256,
+        accept_receipt,
+        match &resume_from {
+            Some(cite) => format!(" — resuming from {}", cite),
+            None => String::new(),
+        }
     );
     0
 }
@@ -1619,6 +1817,161 @@ fn held_item(lat: &Lattice, addr: &Coord) -> Option<Item> {
     Some(dispatch::parse_item(addr[5], text))
 }
 
+/// The last checkpoint cite the origin holds for an
+/// item (§3.1: the assignment record carries the last
+/// checkpoint cite): the `checkpoint:` field of the
+/// item's highest-attempt assignment, live or retired
+/// — retirement ends an assignment's liveness, never
+/// its record. This is the cite a teleport's manifest
+/// names in `resume-from:` (§6).
+fn last_checkpoint_cite(lat: &Lattice, item: &Item) -> Option<String> {
+    let item_s = phext::fmt_coord(&item.addr);
+    let mut best: Option<(u32, String)> = None;
+    for rec in dispatch::load_assignments(&lat.px) {
+        if rec.item.as_deref() != Some(item_s.as_str()) {
+            continue;
+        }
+        if let Some(t) = assignment_text(lat, &rec) {
+            if let Some(cp) = lattice::field(&t, "checkpoint") {
+                let a = rec.attempt.as_deref().and_then(|s| s.parse().ok()).unwrap_or(0);
+                if best.as_ref().map(|(ba, _)| a >= *ba).unwrap_or(true) {
+                    best = Some((a, cp));
+                }
+            }
+        }
+    }
+    best.map(|(_, cp)| cp)
+}
+
+/// Verify a checkpoint's cited outputs (§8): every
+/// `output:` line names a scroll, every
+/// `output-sha256:` line the hash the executor took
+/// of it at checkpoint time; `read` fetches a cited
+/// scroll's current text (the origin reads over the
+/// scroll route). Ok(n) = n outputs read back and
+/// hash-matched. A checkpoint citing no outputs
+/// returns Ok(0) — it verifies nothing and proves no
+/// progress; the caller treats only n ≥ 1 as a
+/// verified progress event. Err names the first
+/// failure: an unreadable output, a hash that does
+/// not match, or a cite/hash count mismatch.
+pub fn check_checkpoint_outputs(text: &str, read: &dyn Fn(&str) -> Option<String>) -> Result<usize, String> {
+    let outs = field_all(text, "output");
+    let hashes = field_all(text, "output-sha256");
+    if outs.len() != hashes.len() {
+        return Err(format!(
+            "the checkpoint cites {} output(s) but {} output hash(es)",
+            outs.len(),
+            hashes.len()
+        ));
+    }
+    for (o, h) in outs.iter().zip(hashes.iter()) {
+        match read(o) {
+            None => return Err(format!("output {} cannot be read back", o)),
+            Some(body) => {
+                let got = sha256_hex(body.as_bytes());
+                if got != *h {
+                    return Err(format!(
+                        "output {} hashes to {}, the checkpoint cites {}",
+                        o, got, h
+                    ));
+                }
+            }
+        }
+    }
+    Ok(outs.len())
+}
+
+/// The stamp of an item's latest dispatched
+/// transition on this node's ledger — when no beat
+/// was ever reconciled, the executor's beats were due
+/// from here (§8: the 3-missed-beats reckoning needs
+/// a start line, and the dispatch is it).
+fn dispatch_stamp(lat: &Lattice, item_s: &str) -> Option<String> {
+    let mut stamp = None;
+    for r in dispatch::load_transition_receipts(&lat.px) {
+        if r.item.as_deref() == Some(item_s) && r.to.as_deref() == Some("dispatched") {
+            stamp = lat.px.get(&r.addr).and_then(|t| lattice::field(t, "at"));
+        }
+    }
+    stamp
+}
+
+/// §8's coordinator act, shared by both detection
+/// evidences (serve unreachable, executor silent):
+/// file the `failure detected` receipt, close the
+/// attempt through the oracle — the third consecutive
+/// failure lands in paused-auto, with its audit —
+/// retire the origin's assignment, and save. When the
+/// item lands queued, teleport it: the caller
+/// re-enters through the dispatch verb, so a teleport
+/// is an ordinary dispatch of a re-queued item in a
+/// fresh fair-draw round, its bundle carrying
+/// `resume-from:` from the held checkpoint cite (§6).
+/// When it lands paused-auto, the surfacing is the
+/// queue pin and the audit view (§8) — no teleport.
+fn finish_detection(
+    lat: &mut Lattice,
+    addr: &Coord,
+    asg: &dispatch::AssignmentRec,
+    attempt: u32,
+    node: &str,
+    evidence: &str,
+    actor_name: &str,
+) -> i32 {
+    let item_s = phext::fmt_coord(addr);
+    let det = append_receipt(
+        &mut lat.px,
+        "failure detected",
+        &[
+            ("item", &item_s),
+            ("attempt", &attempt.to_string()),
+            ("node", node),
+            ("evidence", evidence),
+        ],
+    );
+    let det_s = phext::fmt_coord(&det);
+    let mut landed = String::new();
+    if let Some(it) = held_item(lat, addr) {
+        if matches!(it.state, Some(ItemState::Dispatched) | Some(ItemState::Running)) {
+            let mut t = Transition::new(ItemState::Queued, Actor::Coordinator, actor_name);
+            t.evidence = format!("failure detected — {} (detection receipt {})", evidence, det_s);
+            if let Err(e) = dispatch::apply_transition(lat, it.book, &t) {
+                eprintln!("qexo heartbeat: the detected failure transition was refused by the oracle: {}", e);
+                return 1;
+            }
+        }
+        landed = held_item(lat, addr)
+            .and_then(|i| i.state)
+            .map(|s| s.name().to_string())
+            .unwrap_or_default();
+    }
+    retire_assignment(lat, &asg.addr, &format!("failed — executor lost (detection receipt {})", det_s));
+    if let Err(e) = lat.save() {
+        eprintln!("qexo heartbeat: cannot save state: {}", e);
+        return 1;
+    }
+    println!(
+        "failure detected for {} attempt {} — {} (detection receipt {})",
+        item_s, attempt, evidence, det_s
+    );
+    if landed == "paused-auto" {
+        println!(
+            "{} auto-paused at 3 consecutive failures — pinned at the head of every queue rendering; the auto-pause audit stands in the audit view (§8)",
+            item_s
+        );
+        return 0;
+    }
+    if landed == "queued" {
+        println!(
+            "teleporting {} — a fresh fair-draw round places the next attempt (§6, §8)",
+            item_s
+        );
+        return cmd_dispatch(Some(&item_s), None, false);
+    }
+    0
+}
+
 /// `qexo heartbeat <item-address>` — one verb, two
 /// sides (§6). Executor side: beat — the `heartbeat:`
 /// line lands on the assignment record and the attempt
@@ -1626,7 +1979,8 @@ fn held_item(lat: &Lattice, addr: &Coord) -> Option<Item> {
 /// item dispatched → running through the oracle.
 /// Origin side: read the executor's assignment record
 /// over the scroll route and reconcile the home record
-/// with what it says.
+/// with what it says — or, on §8's evidences, detect
+/// the executor's loss and teleport the item.
 pub fn cmd_heartbeat(item_arg: &str) -> i32 {
     let mut lat = match require_born() {
         Ok(l) => l,
@@ -1727,10 +2081,16 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
             return 1;
         }
     };
-    // Find the executor's assignment scroll: its
-    // Collection 3 Books over the scroll route (dense
-    // from 1 — next_free_book's allocation) until a
-    // record names this item with `home:` = us.
+    // Find the executor's assignment scroll FOR THIS
+    // ATTEMPT: its Collection 3 Books over the scroll
+    // route (dense from 1 — next_free_book's
+    // allocation) until a record names this item, this
+    // attempt, with `home:` = us. The attempt match is
+    // load-bearing (slice 5): a retired record from an
+    // earlier attempt names the same item and home —
+    // reconciling against it would re-apply a closed
+    // attempt's outcome to the live one.
+    let attempt_s = attempt.to_string();
     let mut remote: Option<String> = None;
     for b in 1..=64u32 {
         let c = lattice::at(lattice::HL_DISPATCH, [lattice::DISPATCH_ASSIGN_C, 1, b, 1, 1, 1]);
@@ -1738,6 +2098,7 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
             Ok(t) => {
                 if lattice::field(&t, "item").as_deref() == Some(item_arg)
                     && lattice::field(&t, "home").as_deref() == Some(self_name.as_str())
+                    && lattice::field(&t, "attempt").as_deref() == Some(attempt_s.as_str())
                 {
                     remote = Some(t);
                     break;
@@ -1749,11 +2110,44 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
     let remote = match remote {
         Some(r) => r,
         None => {
-            eprintln!(
-                "qexo heartbeat: {} holds no assignment record for {} — unreachable or never accepted; the home record is untouched",
-                node, item_arg
+            // The executor's record cannot be read.
+            // §8's detection (a) needs both halves: the
+            // node's serve unreachable or silent AND 3
+            // consecutive beats missed. A serve that
+            // answers but holds no record for the item
+            // is neither — the home record is untouched,
+            // as it is when fewer than 3 beats are due.
+            let serve_answers = fetch_scroll(&endpoint, &phext::fmt_coord(&lattice::IDENTITY)).is_ok();
+            if serve_answers {
+                eprintln!(
+                    "qexo heartbeat: {} holds no assignment record for {} — the serve answers but the record is absent; the home record is untouched",
+                    node, item_arg
+                );
+                return 1;
+            }
+            let asg_text = lat.px.get(&asg.addr).cloned().unwrap_or_default();
+            let last_beat = lattice::field(&asg_text, "heartbeat").or_else(|| dispatch_stamp(&lat, item_arg));
+            let missed = last_beat
+                .as_deref()
+                .and_then(crate::core::stamp_minutes)
+                .map(|m| crate::core::now_minutes() - m)
+                .unwrap_or(0);
+            if missed <= 6 {
+                eprintln!(
+                    "qexo heartbeat: {} is unreachable, but the last beat ({}) is only {} minute(s) old — 3 consecutive missed 2-minute beats (6 minutes) make a detection (§8); the home record is untouched",
+                    node,
+                    last_beat.as_deref().unwrap_or("none"),
+                    missed
+                );
+                return 1;
+            }
+            let evidence = format!(
+                "heartbeat miss — the serve at {} is unreachable and the last beat ({}) is {} minutes old: 3 consecutive 2-minute beats missed",
+                endpoint,
+                last_beat.as_deref().unwrap_or("none"),
+                missed
             );
-            return 1;
+            return finish_detection(&mut lat, &addr, &asg, attempt, &node, &evidence, &actor_name);
         }
     };
     // The attempt scroll itself, for its checkpoint
@@ -1781,7 +2175,30 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
         }
         retire_assignment(&mut lat, &asg.addr, &format!("executor reports: {}", status));
         changed = true;
-    } else if let Some(beat) = lattice::field(&remote, "heartbeat") {
+    } else {
+        // No retirement on the executor: its beats are
+        // the evidence. Stopped beats with an answering
+        // serve are §8's silent executor — the same
+        // 3-missed-beats reckoning as the unreachable
+        // case, the start line being the last beat (or
+        // the dispatch itself, when none ever landed).
+        let beat = lattice::field(&remote, "heartbeat");
+        let beat_stamp = beat.clone().or_else(|| dispatch_stamp(&lat, item_arg));
+        let missed = beat_stamp
+            .as_deref()
+            .and_then(crate::core::stamp_minutes)
+            .map(|m| crate::core::now_minutes() - m)
+            .unwrap_or(0);
+        if missed > 6 {
+            let evidence = format!(
+                "executor silent — {}'s serve answers, but its last beat ({}) is {} minutes old: 3 consecutive 2-minute beats missed",
+                node,
+                beat_stamp.as_deref().unwrap_or("none"),
+                missed
+            );
+            return finish_detection(&mut lat, &addr, &asg, attempt, &node, &evidence, &actor_name);
+        }
+        if let Some(beat) = beat {
         // Refresh the origin's cites; the first
         // executor heartbeat moves the home record
         // dispatched → running through the oracle.
@@ -1793,7 +2210,82 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
                 .and_then(|s| lattice::field(s, "checkpoint"))
         });
         if let Some(cp) = cp {
+            let prev_cp = lattice::field(&asg_text, "checkpoint");
             asg_text = lattice::set_field(&asg_text, "checkpoint", &cp);
+            if prev_cp.as_deref() != Some(cp.as_str()) {
+                // A checkpoint cite this origin has not
+                // seen: take custody of the checkpoint
+                // scroll — the resume currency must
+                // survive the executor that wrote it
+                // (§6) — and verify its cited outputs
+                // against the executor's own scrolls.
+                // Only a checkpoint whose outputs all
+                // read back and hash-match is verified
+                // progress (§8): the counter resets on
+                // the coordinator's READ, never on the
+                // executor's say-so.
+                match fetch_scroll(&endpoint, &cp) {
+                    Ok(cp_text) => {
+                        if let Some((u, coord)) = phext::parse_universe_addr(&cp) {
+                            let mut stratum = lat.universe(u).cloned().unwrap_or_default();
+                            stratum.insert(coord, cp_text.clone());
+                            lat.set_universe(u, stratum);
+                        }
+                        let read = |o: &str| fetch_scroll(&endpoint, o).ok();
+                        match check_checkpoint_outputs(&cp_text, &read) {
+                            Ok(0) => {}
+                            Ok(n) => {
+                                asg_text = lattice::set_field(&asg_text, "verified-checkpoint", &cp);
+                                if let Some(it) = &item {
+                                    if it.state == Some(ItemState::Running) && it.failures > 0 {
+                                        let old = it.failures;
+                                        append_receipt(
+                                            &mut lat.px,
+                                            "progress verified",
+                                            &[
+                                                ("item", item_arg),
+                                                ("attempt", &attempt.to_string()),
+                                                ("checkpoint", &cp),
+                                                ("outputs", &format!("{} cited output(s) read back from {} and hash-matched", n, node)),
+                                                ("failures", &format!("{} -> 0", old)),
+                                            ],
+                                        );
+                                        let rec = lat.px.get(&it.addr).cloned().unwrap_or_default();
+                                        let rec = lattice::set_field(&rec, "failures", "0");
+                                        lat.px.insert(it.addr, rec);
+                                        println!(
+                                            "verified progress for {} — {} output(s) read back from {}; failures reset {} -> 0 (§8)",
+                                            item_arg, n, node, old
+                                        );
+                                    }
+                                }
+                            }
+                            Err(why) => {
+                                append_receipt(
+                                    &mut lat.px,
+                                    "progress unverified",
+                                    &[
+                                        ("item", item_arg),
+                                        ("attempt", &attempt.to_string()),
+                                        ("checkpoint", &cp),
+                                        ("reason", &why),
+                                    ],
+                                );
+                                println!(
+                                    "checkpoint {} for {} does not verify: {} — the failure counter stands (§8)",
+                                    cp, item_arg, why
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        println!(
+                            "checkpoint {} for {} could not be read back for custody ({}): the cite stands, its content is not held here",
+                            cp, item_arg, e
+                        );
+                    }
+                }
+            }
         }
         lat.px.insert(asg.addr, asg_text);
         changed = true;
@@ -1806,6 +2298,7 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
                     return 1;
                 }
             }
+        }
         }
     }
     if changed {
@@ -1824,21 +2317,41 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
     0
 }
 
-/// `qexo checkpoint <item-address> --note <text>` —
-/// executor-local (§6): a checkpoint scroll in the
-/// attempt universe's item Book (the next free scroll
-/// at Scroll 4+), a running → running oracle
-/// transition, and the cite recorded on the attempt
-/// copy and the assignment.
+/// `qexo checkpoint <item-address> --note <text>
+/// [--output <coordinate>]…` — executor-local (§6):
+/// a checkpoint scroll in the attempt universe's item
+/// Book (the next free scroll at Scroll 4+), a
+/// running → running oracle transition, and the cite
+/// recorded on the attempt copy and the assignment.
+/// Each `--output` names a scroll this attempt
+/// produced (a bare coordinate, or `$<n>:<coordinate>`
+/// to name its universe); the executor resolves it
+/// from its own chain and records the scroll's
+/// SHA-256 beside the cite — the pair the origin later
+/// reads back to verify progress (§8). An output that
+/// cannot be read here is refused before anything is
+/// written: a checkpoint never cites what its own
+/// node cannot produce.
 pub fn cmd_checkpoint(args: &[String]) -> i32 {
     let mut item_arg: Option<&str> = None;
     let mut note: Option<String> = None;
+    let mut outputs: Vec<String> = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--note" => {
                 i += 1;
                 note = args.get(i).cloned();
+            }
+            "--output" => {
+                i += 1;
+                match args.get(i) {
+                    Some(o) => outputs.push(o.clone()),
+                    None => {
+                        eprintln!("qexo checkpoint: --output needs a coordinate");
+                        return 2;
+                    }
+                }
             }
             other if !other.starts_with("--") && item_arg.is_none() => item_arg = Some(other),
             other => {
@@ -1851,7 +2364,7 @@ pub fn cmd_checkpoint(args: &[String]) -> i32 {
     let item_arg = match item_arg {
         Some(a) => a,
         None => {
-            eprintln!("usage: qexo checkpoint <item-address> --note <text>");
+            eprintln!("usage: qexo checkpoint <item-address> --note <text> [--output <coordinate>]…");
             return 2;
         }
     };
@@ -1889,6 +2402,35 @@ pub fn cmd_checkpoint(args: &[String]) -> i32 {
         );
         return 1;
     }
+    // Resolve every cited output from this node's own
+    // chain before any write (§8): the cite and the
+    // hash the origin will verify against.
+    let mut output_pairs: Vec<(String, String)> = Vec::new();
+    for o in &outputs {
+        let body = match phext::parse_universe_addr(o) {
+            Some((u, c)) => lat.universe(u).and_then(|s| s.get(&c)).cloned(),
+            None => match phext::parse_coord(o) {
+                Some(c) => lat.px.get(&c).cloned(),
+                None => None,
+            },
+        };
+        match body {
+            Some(b) => {
+                let cite = match phext::parse_universe_addr(o) {
+                    Some(_) => o.clone(),
+                    None => format!("$1:{}", o),
+                };
+                output_pairs.push((cite, sha256_hex(b.as_bytes())));
+            }
+            None => {
+                eprintln!(
+                    "qexo checkpoint: output {} cannot be read on this node — a checkpoint cites only what its own node can produce (§8)",
+                    o
+                );
+                return 1;
+            }
+        }
+    }
     let (_, stamp) = now_stamp();
     let actor_name = dispatch::local_actor(&lat.px);
     let stratum_u = (attempt + 1) as usize;
@@ -1908,10 +2450,12 @@ pub fn cmd_checkpoint(args: &[String]) -> i32 {
         return 1;
     }
     let mut stratum = lat.universe(stratum_u).cloned().unwrap_or_default();
-    let text = format!(
-        "checkpoint\n{}",
-        lattice::record(&[("at", &stamp), ("note", &note)])
-    );
+    let mut fields: Vec<(&str, &str)> = vec![("at", &stamp), ("note", &note)];
+    for (cite, hash) in &output_pairs {
+        fields.push(("output", cite));
+        fields.push(("output-sha256", hash));
+    }
+    let text = format!("checkpoint\n{}", lattice::record(&fields));
     stratum.insert(cite_coord, text);
     if let Some(copy) = stratum.get(&addr).cloned() {
         let copy = lattice::set_field(&copy, "checkpoint", &cite);
@@ -2234,8 +2778,8 @@ mod tests {
     fn bundle_canonical_form_is_deterministic_and_self_describing() {
         let px = fixture_px();
         let item = fixture_item(&px);
-        let b1 = build_bundle(&px, &item, 1, None).unwrap();
-        let b2 = build_bundle(&px, &item, 1, None).unwrap();
+        let b1 = build_bundle(&px, &item, 1, None, None).unwrap();
+        let b2 = build_bundle(&px, &item, 1, None, None).unwrap();
         assert_eq!(b1.sha256, b2.sha256, "an unchanged item re-dispatches to the same identity (§4.3)");
         assert_eq!(b1.universes.len(), 2, "spec universe + one context universe");
         assert!(b1.manifest.contains("item: 11.11.11/2.1.1/1.1.1"));
@@ -2259,7 +2803,7 @@ mod tests {
         let mut px2 = fixture_px();
         px2.insert(dispatch::brief_addr(1), "brief\ncapability: rust\ndo another thing\n".into());
         let item2 = fixture_item(&px2);
-        let b3 = build_bundle(&px2, &item2, 1, None).unwrap();
+        let b3 = build_bundle(&px2, &item2, 1, None, None).unwrap();
         assert_ne!(b1.sha256, b3.sha256);
     }
 
@@ -2267,7 +2811,7 @@ mod tests {
     fn doctor_recomputation_round_trips_and_detects_divergence() {
         let px = fixture_px();
         let item = fixture_item(&px);
-        let bundle = build_bundle(&px, &item, 1, None).unwrap();
+        let bundle = build_bundle(&px, &item, 1, None, None).unwrap();
         // Parse the unsigned universes as a wire bundle
         // (parse does not need the signature; verify does).
         let wire = Phext::serialize_universes(&bundle.universes, true);
@@ -2312,7 +2856,7 @@ mod tests {
         let rec2 = lattice::set_field(&rec2, "attempts", "1");
         px2.insert(item.addr, rec2);
         let item2 = fixture_item(&px2);
-        let bundle2 = build_bundle(&px2, &item2, 2, None).unwrap();
+        let bundle2 = build_bundle(&px2, &item2, 2, None, None).unwrap();
         let wire2 = Phext::serialize_universes(&bundle2.universes, true);
         let pb2 = parse_wire_bundle(wire2.as_bytes()).unwrap();
         let mut lat2 = born_lat(Phext::new());
@@ -2334,7 +2878,7 @@ mod tests {
     fn file_attempt_refuses_a_foreign_bundle_at_the_same_address() {
         let px = fixture_px();
         let item = fixture_item(&px);
-        let bundle = build_bundle(&px, &item, 1, None).unwrap();
+        let bundle = build_bundle(&px, &item, 1, None, None).unwrap();
         let wire = Phext::serialize_universes(&bundle.universes, true);
         let pb = parse_wire_bundle(wire.as_bytes()).unwrap();
         let mut lat = born_lat(Phext::new());
@@ -2374,5 +2918,131 @@ mod tests {
         let recs = dispatch::load_assignments(&lat.px);
         assert_eq!(recs.len(), 1);
         assert!(!recs[0].live);
+    }
+
+    #[test]
+    fn resume_bundle_carries_the_checkpoint_and_recomputes() {
+        // §6 teleport, §8: a re-dispatch's bundle names
+        // resume-from: in the manifest and carries the
+        // checkpoint scroll itself as its last universe;
+        // the receiving side's recompute reproduces the
+        // identity from the filed paperwork (§4.3).
+        // Attempt 2 is built from the record as it
+        // stands after attempt 1 (attempts: 1) — the
+        // same fixture discipline as the recompute test
+        // above.
+        let mut px = fixture_px();
+        let rec = lattice::set_field(px.get(&dispatch::item_addr(1)).unwrap(), "attempts", "1");
+        px.insert(dispatch::item_addr(1), rec);
+        let item = fixture_item(&px);
+        let cp_text = "checkpoint\nat: 2026-11-17 10:00 CST\nnote: half the welds done\n";
+        let bundle = build_bundle(&px, &item, 2, Some("$2:11.11.11/2.1.1/1.1.4"), Some(cp_text)).unwrap();
+        assert!(bundle.manifest.contains("attempt: 2"));
+        assert!(bundle.manifest.contains("resume-from: $2:11.11.11/2.1.1/1.1.4"));
+        assert_eq!(bundle.universes.len(), 3, "spec + context + resume");
+        let resume_u = &bundle.universes[2];
+        let prov = resume_u.get(&BUNDLE_ANCHOR).unwrap();
+        assert!(prov.contains("kind: resume-checkpoint"), "{}", prov);
+        assert!(prov.contains("source: $2:11.11.11/2.1.1/1.1.4"));
+        let cp_coord = [11, 11, 11, 2, 1, 1, 1, 1, 4];
+        assert_eq!(resume_u.get(&cp_coord).map(|s| s.as_str()), Some(cp_text));
+        // The manifest's hash list covers the resume
+        // universe like any other.
+        let h = sha256_hex(resume_u.serialize().as_bytes());
+        assert!(bundle.manifest.contains(&format!("universe: 3 sha256: {}", h)));
+        // A cite without held content still names the
+        // resume point — and carries no resume universe.
+        let bare = build_bundle(&px, &item, 2, Some("$2:11.11.11/2.1.1/1.1.4"), None).unwrap();
+        assert!(bare.manifest.contains("resume-from: $2:11.11.11/2.1.1/1.1.4"));
+        assert_eq!(bare.universes.len(), 2);
+        // File the resume bundle on a receiving lattice:
+        // the checkpoint lands in the attempt stratum,
+        // and the doctor's recomputation reproduces the
+        // bundle identity exactly (combination 6).
+        let wire = Phext::serialize_universes(&bundle.universes, true);
+        let pb = parse_wire_bundle(wire.as_bytes()).unwrap();
+        assert_eq!(pb.resume_from.as_deref(), Some("$2:11.11.11/2.1.1/1.1.4"));
+        let mut lat = born_lat(Phext::new());
+        write_assignment(
+            &mut lat,
+            &[
+                ("item", &phext::fmt_coord(&pb.item_addr)),
+                ("node", "beta"),
+                ("attempt", "2"),
+                ("bundle-sha256", &pb.sha256),
+                ("home", "alpha"),
+            ],
+        );
+        file_attempt(&mut lat, &pb, 1).unwrap();
+        let stratum = lat.universe(3).unwrap();
+        assert_eq!(stratum.get(&cp_coord).map(|s| s.as_str()), Some(cp_text), "the checkpoint scroll is filed in the new attempt's stratum");
+        assert_eq!(recompute_bundle_sha256(&lat, &pb.item_addr, 2).as_deref(), Some(bundle.sha256.as_str()));
+    }
+
+    #[test]
+    fn fencing_refuses_stale_and_closed_attempts() {
+        // §4.6 combination 2, completed in slice 5: a
+        // bundle below the highest filed attempt —
+        // live or already closed — is stale, and a
+        // closed attempt is never re-run. The next
+        // attempt is never fenced.
+        let mut lat = born_lat(Phext::new());
+        let item = dispatch::item_addr(1);
+        let item_s = phext::fmt_coord(&item);
+        let a2 = write_assignment(
+            &mut lat,
+            &[
+                ("item", &item_s),
+                ("node", "beta"),
+                ("attempt", "2"),
+                ("bundle-sha256", "ab12"),
+                ("home", "alpha"),
+            ],
+        );
+        assert!(fencing_block(&lat, &item, 1).unwrap().contains("below the live attempt 2"));
+        assert!(fencing_block(&lat, &item, 2).is_none(), "an equal live attempt is dedup's business, not fencing's");
+        assert!(fencing_block(&lat, &item, 3).is_none());
+        retire_assignment(&mut lat, &a2, "failed — boom");
+        assert!(fencing_block(&lat, &item, 2).unwrap().contains("already closed"), "a closed attempt is never re-run");
+        assert!(fencing_block(&lat, &item, 1).unwrap().contains("already closed"));
+        assert!(fencing_block(&lat, &item, 3).is_none(), "the next attempt is never fenced");
+        // Another item's history fences nothing here.
+        let other = dispatch::item_addr(2);
+        assert!(fencing_block(&lat, &other, 1).is_none());
+    }
+
+    #[test]
+    fn checkpoint_outputs_verify_by_readback() {
+        // §8: verified progress is the coordinator's
+        // READ of the cited outputs, hash-matched —
+        // never the executor's say-so.
+        let out_text = "the welded frame\n";
+        let hash = sha256_hex(out_text.as_bytes());
+        let cp = format!(
+            "checkpoint\nat: 2026-11-17 10:00 CST\nnote: frame done\noutput: $2:5.5.5/5.5.5/5.5.5\noutput-sha256: {}\n",
+            hash
+        );
+        let read = |o: &str| {
+            if o == "$2:5.5.5/5.5.5/5.5.5" {
+                Some(out_text.to_string())
+            } else {
+                None
+            }
+        };
+        assert_eq!(check_checkpoint_outputs(&cp, &read), Ok(1));
+        // Tampered content: the hash no longer matches.
+        let read_bad = |_: &str| Some("forged\n".to_string());
+        assert!(check_checkpoint_outputs(&cp, &read_bad).unwrap_err().contains("hashes to"));
+        // An output that cannot be read back.
+        let read_none = |_: &str| None;
+        assert!(check_checkpoint_outputs(&cp, &read_none).unwrap_err().contains("cannot be read back"));
+        // A checkpoint citing nothing verifies nothing —
+        // Ok(0), which the caller never counts as
+        // progress.
+        let bare = "checkpoint\nat: 2026-11-17 10:00 CST\nnote: thinking\n";
+        assert_eq!(check_checkpoint_outputs(bare, &read_none), Ok(0));
+        // A cite without its hash is malformed.
+        let lopsided = "checkpoint\noutput: $2:5.5.5/5.5.5/5.5.5\n";
+        assert!(check_checkpoint_outputs(lopsided, &read).is_err());
     }
 }
