@@ -1413,11 +1413,24 @@ fn heavy_active(lat: &Lattice) -> usize {
 
 /// `qexo dispatch [<item-address>] [--to <node>]
 /// [--check]` — §2.1, §5, §6. One save, at the end, on
-/// success; --check writes nothing at all.
+/// success; --check writes nothing at all. The CLI driver:
+/// the run below, printed live, byte for byte as always.
 pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i32 {
+    dispatch_run(item_arg, to, check, true).0
+}
+
+/// The same dispatch as a captured run (slice 7, §2.3):
+/// the `--app` driver's road — one engine, its facts
+/// rendered in the protocol's shape by the caller.
+pub fn dispatch_app_run(item_arg: Option<&str>, to: Option<&str>, check: bool) -> (i32, dispatch::RunLines) {
+    dispatch_run(item_arg, to, check, false)
+}
+
+fn dispatch_run(item_arg: Option<&str>, to: Option<&str>, check: bool, live: bool) -> (i32, dispatch::RunLines) {
+    let mut sink = if live { dispatch::RunLines::live() } else { dispatch::RunLines::new() };
     let mut lat = match require_born() {
         Ok(l) => l,
-        Err(code) => return code,
+        Err(code) => return (code, sink),
     };
     // Item selection (§5): a named item, or the head of
     // the calculated order. Non-dispatchable items are
@@ -1429,29 +1442,29 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         let addr = match phext::parse_coord(arg) {
             Some(a) => a,
             None => {
-                eprintln!("qexo dispatch: `{}` is not an item address", arg);
-                return 2;
+                sink.err(format!("qexo dispatch: `{}` is not an item address", arg));
+                return (2, sink);
             }
         };
         match items.iter().find(|i| i.addr == addr) {
             Some(i) if i.state == Some(ItemState::Queued) => {
                 if let Some(why) = after_unmet(&lat.px, i) {
-                    eprintln!("qexo dispatch: {} is not dispatchable — {}", arg, why);
-                    return 1;
+                    sink.err(format!("qexo dispatch: {} is not dispatchable — {}", arg, why));
+                    return (1, sink);
                 }
                 chosen = Some(i.clone());
             }
             Some(i) => {
-                eprintln!(
+                sink.err(format!(
                     "qexo dispatch: {} is {} — only a queued item dispatches",
                     arg,
                     i.state.map(|s| s.name()).unwrap_or("in an unknown state")
-                );
-                return 1;
+                ));
+                return (1, sink);
             }
             None => {
-                eprintln!("qexo dispatch: no item at {}", arg);
-                return 1;
+                sink.err(format!("qexo dispatch: no item at {}", arg));
+                return (1, sink);
             }
         }
     } else {
@@ -1462,24 +1475,27 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
                 continue;
             }
             if let Some(why) = after_unmet(&lat.px, cand) {
-                println!("skip {} — {}", phext::fmt_coord(&cand.addr), why);
+                sink.out(format!("skip {} — {}", phext::fmt_coord(&cand.addr), why));
+                sink.fact("skip", &format!("{} — {}", phext::fmt_coord(&cand.addr), why));
                 continue;
             }
             let brief = lat.px.get(&dispatch::brief_addr(cand.book)).cloned().unwrap_or_default();
             if brief_facts(&brief).heavy && heavy_active(&lat) >= HEAVY_CAP {
-                println!(
+                sink.out(format!(
                     "skip {} — heavy: the heavy cap ({}) is reached; heavy items dispatch FIFO as slots free",
                     phext::fmt_coord(&cand.addr),
                     HEAVY_CAP
-                );
+                ));
+                sink.fact("skip", &format!("{} — heavy cap reached", phext::fmt_coord(&cand.addr)));
                 continue;
             }
             chosen = Some(cand.clone());
             break;
         }
         if chosen.is_none() {
-            println!("qexo dispatch: nothing dispatchable — the queue's head is not ready (see the skips above)");
-            return 0;
+            sink.out(format!("qexo dispatch: nothing dispatchable — the queue's head is not ready (see the skips above)"));
+            sink.fact("outcome", "nothing dispatchable");
+            return (0, sink);
         }
     }
     let item = chosen.unwrap();
@@ -1487,12 +1503,12 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
     let brief = lat.px.get(&dispatch::brief_addr(item.book)).cloned().unwrap_or_default();
     let facts_brief = brief_facts(&brief);
     if facts_brief.heavy && heavy_active(&lat) >= HEAVY_CAP {
-        eprintln!(
+        sink.err(format!(
             "qexo dispatch: {} is heavy and the heavy cap ({}) is reached — heavy items dispatch FIFO as slots free (§6)",
             phext::fmt_coord(&item.addr),
             HEAVY_CAP
-        );
-        return 1;
+        ));
+        return (1, sink);
     }
 
     // Bridge routing (§9.2): an item whose brief names
@@ -1553,18 +1569,22 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
                     let rec = lattice::set_field(&rec, "bridge-wait", &reason);
                     lat.px.insert(item.addr, rec);
                     if let Err(e) = lat.save() {
-                        eprintln!("qexo dispatch: cannot save state: {}", e);
-                        return 1;
+                        sink.err(format!("qexo dispatch: cannot save state: {}", e));
+                        return (1, sink);
                     }
-                    println!(
+                    sink.out(format!(
                         "{} waits queued — {} (the wait and every failover are receipted; no unlisted source is ever substituted)",
                         item_s, reason
-                    );
-                    return 0;
+                    ));
+                    sink.fact("item", &item_s);
+                    sink.fact("attempt", &attempt.to_string());
+                    sink.fact("outcome", "bridge-wait");
+                    sink.fact("reason", &reason);
+                    return (0, sink);
                 }
                 _ => {
-                    eprintln!("qexo dispatch: internal — a live routing walk returned a check-mode outcome");
-                    return 1;
+                    sink.err(format!("qexo dispatch: internal — a live routing walk returned a check-mode outcome"));
+                    return (1, sink);
                 }
             }
         }
@@ -1620,8 +1640,8 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
             if !facts_brief.bridges.is_empty() && !check {
                 let _ = lat.save();
             }
-            eprintln!("qexo dispatch: cannot build the bundle: {}", e);
-            return 1;
+            sink.err(format!("qexo dispatch: cannot build the bundle: {}", e));
+            return (1, sink);
         }
     };
     let wire_bytes = match sign_bundle(&gpg, &bundle) {
@@ -1630,8 +1650,8 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
             if !facts_brief.bridges.is_empty() && !check {
                 let _ = lat.save();
             }
-            eprintln!("qexo dispatch: cannot sign the bundle: {}", e);
-            return 1;
+            sink.err(format!("qexo dispatch: cannot sign the bundle: {}", e));
+            return (1, sink);
         }
     };
 
@@ -1641,20 +1661,39 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
     let self_name = local_node(&lat.px);
 
     if check {
-        println!("dispatch check — {} attempt {}", phext::fmt_coord(&item.addr), attempt);
-        println!("bundle-sha256: {}", bundle.sha256);
+        sink.out(format!("dispatch check — {} attempt {}", phext::fmt_coord(&item.addr), attempt));
+        sink.out(format!("bundle-sha256: {}", bundle.sha256));
         for note in &route_notes {
-            println!("{}", note);
+            sink.out(format!("{}", note));
         }
-        println!("bundle: {} bytes over {} universe(s)", wire_bytes.len(), bundle.universes.len());
+        sink.out(format!("bundle: {} bytes over {} universe(s)", wire_bytes.len(), bundle.universes.len()));
         for line in placement_lines(&placement, wire_bytes.len() as u64) {
-            println!("{}", line);
+            sink.out(format!("{}", line));
         }
         match &placement.chosen {
-            Some(n) => println!("would place on: {}", n),
-            None => println!("would place: nowhere — the eligible set is empty; the item stays queued"),
+            Some(n) => sink.out(format!("would place on: {}", n)),
+            None => sink.out(format!("would place: nowhere — the eligible set is empty; the item stays queued")),
         }
-        return 0;
+        sink.fact("item", &phext::fmt_coord(&item.addr));
+        sink.fact("attempt", &attempt.to_string());
+        sink.fact("check", "yes");
+        sink.fact("bundle-sha256", &bundle.sha256);
+        sink.fact("bundle-bytes", &wire_bytes.len().to_string());
+        for note in &route_notes {
+            if let Some((k, v)) = note.split_once(": ") {
+                sink.fact(k, v);
+            }
+        }
+        for line in placement_lines(&placement, wire_bytes.len() as u64) {
+            if let Some((k, v)) = line.split_once(": ") {
+                sink.fact(k, v);
+            }
+        }
+        match &placement.chosen {
+            Some(n) => sink.fact("would-place", n),
+            None => sink.fact("would-place", "nowhere — the eligible set is empty; the item stays queued"),
+        }
+        return (0, sink);
     }
 
     // No target: two distinct outcomes, both receipted.
@@ -1687,34 +1726,47 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
             let refs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let coord = append_receipt(&mut lat.px, "placement", &refs);
             if let Err(e) = lat.save() {
-                eprintln!("qexo dispatch: cannot save state: {}", e);
-                return 1;
+                sink.err(format!("qexo dispatch: cannot save state: {}", e));
+                return (1, sink);
             }
-            eprintln!(
+            sink.err(format!(
                 "qexo dispatch: named node {} is ineligible for {}: {} (placement receipt {})",
                 named,
                 bundle.item_addr,
                 why,
                 phext::fmt_coord(&coord)
-            );
-            return 1;
+            ));
+            sink.fact("item", &bundle.item_addr);
+            sink.fact("attempt", &attempt.to_string());
+            sink.fact("bundle-sha256", &bundle.sha256);
+            sink.fact("outcome", &format!("named node {} is ineligible: {}", named, why));
+            sink.fact("receipt", &phext::fmt_coord(&coord));
+            return (1, sink);
         }
         owned.push(("outcome".into(), "no eligible node — item stays queued".into()));
         let refs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let coord = append_receipt(&mut lat.px, "placement", &refs);
         if let Err(e) = lat.save() {
-            eprintln!("qexo dispatch: cannot save state: {}", e);
-            return 1;
+            sink.err(format!("qexo dispatch: cannot save state: {}", e));
+            return (1, sink);
         }
-        println!(
+        sink.out(format!(
             "no eligible node for {} — the item stays queued (placement receipt {})",
             bundle.item_addr,
             phext::fmt_coord(&coord)
-        );
+        ));
         for (name, why) in &placement.excluded {
-            println!("excluded: {} — {}", name, why);
+            sink.out(format!("excluded: {} — {}", name, why));
         }
-        return 0;
+        sink.fact("item", &bundle.item_addr);
+        sink.fact("attempt", &attempt.to_string());
+        sink.fact("bundle-sha256", &bundle.sha256);
+        sink.fact("outcome", "no eligible node — item stays queued");
+        sink.fact("receipt", &phext::fmt_coord(&coord));
+        for (name, why) in &placement.excluded {
+            sink.fact("excluded", &format!("{} — {}", name, why));
+        }
+        return (0, sink);
     }
     let target_name = placement.chosen.clone().unwrap();
 
@@ -1753,18 +1805,23 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
                 ],
             );
             if let Err(e) = lat.save() {
-                eprintln!("qexo dispatch: cannot save state: {}", e);
-                return 1;
+                sink.err(format!("qexo dispatch: cannot save state: {}", e));
+                return (1, sink);
             }
-            eprintln!(
+            sink.err(format!(
                 "qexo dispatch: {} refused {} attempt {}: {} (receipt {})",
                 target_name,
                 bundle.item_addr,
                 attempt,
                 why,
                 phext::fmt_coord(&coord)
-            );
-            return 1;
+            ));
+            sink.fact("item", &bundle.item_addr);
+            sink.fact("attempt", &attempt.to_string());
+            sink.fact("node", &target_name);
+            sink.fact("outcome", &format!("refused: {}", why));
+            sink.fact("receipt", &phext::fmt_coord(&coord));
+            return (1, sink);
         }
     };
     // The origin verifies the acceptance it was handed:
@@ -1775,11 +1832,11 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         .find_map(|l| l.trim().strip_prefix("bundle-sha256:"))
         .map(|s| s.trim().to_string());
     if cited_sha.as_deref() != Some(bundle.sha256.as_str()) {
-        eprintln!(
+        sink.err(format!(
             "qexo dispatch: {} accepted a different bundle (cited {:?}, built {}) — not recording the dispatch",
             target_name, cited_sha, bundle.sha256
-        );
-        return 1;
+        ));
+        return (1, sink);
     }
     let accept_receipt = accept_body
         .lines()
@@ -1812,8 +1869,8 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         t.evidence = format!("{} — bridge {} (probe {})", t.evidence, bname, bprobe);
     }
     if let Err(e) = dispatch::apply_transition(&mut lat, item.book, &t) {
-        eprintln!("qexo dispatch: the transition was refused by the oracle: {}", e);
-        return 1;
+        sink.err(format!("qexo dispatch: the transition was refused by the oracle: {}", e));
+        return (1, sink);
     }
     if target_name == self_name {
         // Self-acceptance: the executor assignment the
@@ -1864,17 +1921,17 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         let pb = match parse_wire_bundle(&wire_bytes) {
             Ok(pb) => pb,
             Err(e) => {
-                eprintln!("qexo dispatch: internal — the built bundle does not re-parse: {}", e);
-                return 1;
+                sink.err(format!("qexo dispatch: internal — the built bundle does not re-parse: {}", e));
+                return (1, sink);
             }
         };
         file_origin_snapshot(&mut lat, &pb, origin_book);
     }
     if let Err(e) = lat.save() {
-        eprintln!("qexo dispatch: cannot save state: {}", e);
-        return 1;
+        sink.err(format!("qexo dispatch: cannot save state: {}", e));
+        return (1, sink);
     }
-    println!(
+    sink.out(format!(
         "dispatched {} attempt {} to {} — bundle {} (acceptance receipt {}){}{}",
         bundle.item_addr,
         attempt,
@@ -1889,8 +1946,21 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
             Some((bname, _, _)) => format!(" — bridge {}", bname),
             None => String::new(),
         }
-    );
-    0
+    ));
+    sink.fact("item", &bundle.item_addr);
+    sink.fact("attempt", &attempt.to_string());
+    sink.fact("node", &target_name);
+    sink.fact("bundle-sha256", &bundle.sha256);
+    sink.fact("receipt", &accept_receipt);
+    sink.fact("outcome", "dispatched");
+    if let Some(cite) = &resume_from {
+        sink.fact("resume-from", cite);
+    }
+    if let Some((bname, _, bprobe)) = &route_choice {
+        sink.fact("bridge", bname);
+        sink.fact("bridge-probe", bprobe);
+    }
+    (0, sink)
 }
 
 // ----------------------------------------------------------------

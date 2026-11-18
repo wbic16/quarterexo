@@ -40,20 +40,69 @@ use crate::phext::{self, Coord};
 
 const USAGE_ENQUEUE: &str = "usage: qexo enqueue <brief-file|-> [--title <t>] [--coordinate <task-coordinate>] [--register <n>] [--value <1-9>] [--cost <1-9>] [--goal <text>] [--after <item-address>] [--exit <text>] [--origin <origin>]";
 
-struct EnqueueArgs {
-    source: Option<String>,
-    title: Option<String>,
-    coordinate: Option<String>,
-    register: Option<String>,
-    value: Option<String>,
-    cost: Option<String>,
-    goal: Option<String>,
-    after: Option<String>,
-    exit: Option<String>,
-    origin: Option<String>,
+/// One verb run's rendered lines, split by stream, plus the
+/// structured facts a second driver renders in its own shape
+/// (slice 7, spec §2.3). A verb core fills a RunLines and
+/// never prints directly: in `live` mode each line is also
+/// printed as it is produced — the CLI driver's mode, byte-
+/// and order-identical to the verb's historic printing —
+/// while the `--app` driver captures the run and renders
+/// `facts` as its `key: value` block instead. The core is
+/// one; the drivers can never disagree about what a verb
+/// did, only about how it is rendered.
+#[derive(Debug, Default)]
+pub struct RunLines {
+    pub out: Vec<String>,
+    pub err: Vec<String>,
+    pub facts: Vec<(String, String)>,
+    live: bool,
 }
 
-fn parse_enqueue_args(args: &[String]) -> Result<EnqueueArgs, String> {
+impl RunLines {
+    /// Capturing mode: lines are collected, nothing printed.
+    pub fn new() -> RunLines {
+        RunLines::default()
+    }
+
+    /// Live mode: lines print as produced (and are still
+    /// collected, for callers that want the record).
+    pub fn live() -> RunLines {
+        RunLines { live: true, ..RunLines::default() }
+    }
+
+    pub fn out(&mut self, line: String) {
+        if self.live {
+            println!("{}", line);
+        }
+        self.out.push(line);
+    }
+
+    pub fn err(&mut self, line: String) {
+        if self.live {
+            eprintln!("{}", line);
+        }
+        self.err.push(line);
+    }
+
+    pub fn fact(&mut self, key: &str, value: &str) {
+        self.facts.push((key.to_string(), value.to_string()));
+    }
+}
+
+pub(crate) struct EnqueueArgs {
+    pub(crate) source: Option<String>,
+    pub(crate) title: Option<String>,
+    pub(crate) coordinate: Option<String>,
+    pub(crate) register: Option<String>,
+    pub(crate) value: Option<String>,
+    pub(crate) cost: Option<String>,
+    pub(crate) goal: Option<String>,
+    pub(crate) after: Option<String>,
+    pub(crate) exit: Option<String>,
+    pub(crate) origin: Option<String>,
+}
+
+pub(crate) fn parse_enqueue_args(args: &[String]) -> Result<EnqueueArgs, String> {
     let mut out = EnqueueArgs {
         source: None,
         title: None,
@@ -100,7 +149,7 @@ fn parse_enqueue_args(args: &[String]) -> Result<EnqueueArgs, String> {
     Ok(out)
 }
 
-fn roi_1_9(flag: &str, v: &Option<String>) -> Result<Option<u32>, String> {
+pub(crate) fn roi_1_9(flag: &str, v: &Option<String>) -> Result<Option<u32>, String> {
     match v {
         None => Ok(None),
         Some(s) => match s.parse::<u32>() {
@@ -186,37 +235,9 @@ pub fn enqueue(args: &[String]) -> i32 {
         }
     };
     // Validate everything before touching state.
-    let value = match roi_1_9("--value", &parsed.value) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("qexo enqueue: {}", e);
-            return 2;
-        }
-    };
-    let cost = match roi_1_9("--cost", &parsed.cost) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("qexo enqueue: {}", e);
-            return 2;
-        }
-    };
-    if let Some(c) = &parsed.coordinate {
-        if phext::parse_coord(c).is_none() {
-            eprintln!("qexo enqueue: --coordinate '{}' is not a full 9D coordinate", c);
-            return 2;
-        }
-    }
-    if let Some(r) = &parsed.register {
-        if r.parse::<u64>().is_err() {
-            eprintln!("qexo enqueue: --register '{}' is not a register number", r);
-            return 2;
-        }
-    }
-    if let Some(a) = &parsed.after {
-        if phext::parse_coord(a).is_none() {
-            eprintln!("qexo enqueue: --after '{}' is not a full 9D address", a);
-            return 2;
-        }
+    if let Err(e) = enqueue_validated(&parsed) {
+        eprintln!("qexo enqueue: {}", e);
+        return 2;
     }
     let brief = if source == "-" {
         use std::io::Read;
@@ -237,6 +258,68 @@ pub fn enqueue(args: &[String]) -> i32 {
             }
         }
     };
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(code) => return code,
+    };
+    match enqueue_core(&mut lat, &parsed, &brief) {
+        Ok(addr) => {
+            println!("{}", addr);
+            0
+        }
+        Err((msg, code)) => {
+            eprintln!("qexo enqueue: {}", msg);
+            code
+        }
+    }
+}
+
+/// The enqueue flag validations (§2.1), in the CLI's
+/// order, returning the parsed ROI pair: value and cost
+/// as 1–9 integers where given, the coordinate/register/
+/// after shapes checked. One home for the checks — the
+/// CLI validates before it reads the brief (a bad flag
+/// never consumes stdin), and `enqueue_core` validates
+/// again on its own road, so the `--app` driver (slice 7)
+/// refuses identically without re-deriving the rules.
+pub(crate) fn enqueue_validated(parsed: &EnqueueArgs) -> Result<(Option<u32>, Option<u32>), String> {
+    let value = roi_1_9("--value", &parsed.value)?;
+    let cost = roi_1_9("--cost", &parsed.cost)?;
+    if let Some(c) = &parsed.coordinate {
+        if phext::parse_coord(c).is_none() {
+            return Err(format!("--coordinate '{}' is not a full 9D coordinate", c));
+        }
+    }
+    if let Some(r) = &parsed.register {
+        if r.parse::<u64>().is_err() {
+            return Err(format!("--register '{}' is not a register number", r));
+        }
+    }
+    if let Some(a) = &parsed.after {
+        if phext::parse_coord(a).is_none() {
+            return Err(format!("--after '{}' is not a full 9D address", a));
+        }
+    }
+    Ok((value, cost))
+}
+
+/// The enqueue act itself (§3.2, §4.1), over a loaded
+/// lattice: the title derivation, the F6 burn:never
+/// refusal (§9.2), the item record, the save. Write-
+/// before-ack lives here — the item's address is returned
+/// only after the save that carries the record completes,
+/// so an address in hand is proof the record is durable.
+/// The CLI verb above and the `--app` driver (slice 7,
+/// §2.3) both end here: an item is born identically
+/// whichever surface filed it. Errors carry the CLI's
+/// message (without its `qexo enqueue:` prefix) and the
+/// exit code the CLI returns for them.
+pub fn enqueue_core(
+    lat: &mut Lattice,
+    parsed: &EnqueueArgs,
+    brief: &str,
+) -> Result<String, (String, i32)> {
+    let (value, cost) = enqueue_validated(parsed).map_err(|e| (e, 2))?;
     let title = parsed
         .title
         .clone()
@@ -249,24 +332,22 @@ pub fn enqueue(args: &[String]) -> i32 {
         })
         .unwrap_or_else(|| "untitled brief".to_string());
 
-    let mut lat = match require_born() {
-        Ok(l) => l,
-        Err(code) => return code,
-    };
     // F6 (§9.2): a brief that names a bridge whose
     // record carries `burn: never` is refused at
     // enqueue — dispatch never routes work over such a
     // bridge, so the item could only ever wait. The
     // refusal costs no state: nothing has been written
     // yet, and the state file stays byte-identical.
-    for name in crate::bridge::brief_prefs(&brief) {
+    for name in crate::bridge::brief_prefs(brief) {
         if let Some(b) = crate::bridge::find_bridge(&lat.px, &name) {
             if b.burn == "never" {
-                eprintln!(
-                    "qexo enqueue: the brief names bridge '{}', whose record carries burn: never — dispatch never routes work over it (§9.2); the enqueue is refused",
-                    name
-                );
-                return 1;
+                return Err((
+                    format!(
+                        "the brief names bridge '{}', whose record carries burn: never — dispatch never routes work over it (§9.2); the enqueue is refused",
+                        name
+                    ),
+                    1,
+                ));
             }
         }
     }
@@ -299,17 +380,15 @@ pub fn enqueue(args: &[String]) -> i32 {
     let addr = item_addr(book);
     lat.px.insert(addr, record_text);
     if !brief.is_empty() {
-        lat.px.insert(brief_addr(book), brief);
+        lat.px.insert(brief_addr(book), brief.to_string());
     }
     lattice::regen_indexes(&mut lat.px);
-    // Write-before-ack (§4.1): the address is printed only
+    // Write-before-ack (§4.1): the address is returned only
     // after the save that carries the record has completed.
     if let Err(e) = lat.save() {
-        eprintln!("qexo enqueue: cannot save state: {}", e);
-        return 1;
+        return Err((format!("cannot save state: {}", e), 1));
     }
-    println!("{}", phext::fmt_coord(&addr));
-    0
+    Ok(phext::fmt_coord(&addr))
 }
 
 pub fn show(addr_s: &str) -> i32 {
@@ -1244,7 +1323,7 @@ fn roi_text(item: &Item) -> String {
     }
 }
 
-fn render_queue_line(item: &Item, daily: Option<&str>) -> String {
+pub(crate) fn render_queue_line(item: &Item, daily: Option<&str>) -> String {
     let mut line = format!(
         "{} — {} — {} — goal: {} ({}) — {} — {} — failures {} — attempts {}",
         phext::fmt_coord(&item.addr),
@@ -1375,7 +1454,7 @@ fn explain_item(addr_s: &str) -> i32 {
 /// The item Book an address names, when the address is a
 /// queue item record's own address (11.11.11/2.1.<book>/
 /// 1.1.1). Anything else is a named refusal, never a guess.
-fn item_book(addr_s: &str) -> Result<u32, String> {
+pub(crate) fn item_book(addr_s: &str) -> Result<u32, String> {
     let coord = phext::parse_coord(addr_s)
         .ok_or_else(|| format!("'{}' is not a full 9D address", addr_s))?;
     if coord[0..3] == [11, 11, 11]
@@ -1391,7 +1470,7 @@ fn item_book(addr_s: &str) -> Result<u32, String> {
 
 /// Parse a transition verb's tail: one item address, plus
 /// `--note <text>` where the verb takes one.
-fn parse_item_verb(verb: &str, args: &[String], allow_note: bool) -> Result<(String, Option<String>), String> {
+pub(crate) fn parse_item_verb(verb: &str, args: &[String], allow_note: bool) -> Result<(String, Option<String>), String> {
     let mut addr: Option<String> = None;
     let mut note: Option<String> = None;
     let mut i = 0;
@@ -1627,16 +1706,23 @@ pub fn audit(args: &[String]) -> i32 {
         .collect();
     println!("audit: {} record(s)", shown.len());
     for a in shown {
-        println!(
-            "{} — {} — item {} — {} — {}",
-            phext::fmt_coord(&a.addr),
-            a.kind,
-            a.item.clone().unwrap_or_else(|| "(none)".into()),
-            a.actor.clone().unwrap_or_default(),
-            a.at
-        );
+        println!("{}", render_audit_line(a));
     }
     0
+}
+
+/// One audit record as the audit view renders it — the
+/// line shape lives here so the `--app` driver (slice 7)
+/// renders the identical line as its `audit:` value.
+pub(crate) fn render_audit_line(a: &AuditRec) -> String {
+    format!(
+        "{} — {} — item {} — {} — {}",
+        phext::fmt_coord(&a.addr),
+        a.kind,
+        a.item.clone().unwrap_or_else(|| "(none)".into()),
+        a.actor.clone().unwrap_or_default(),
+        a.at
+    )
 }
 #[cfg(test)]
 mod tests {
