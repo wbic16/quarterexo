@@ -26,19 +26,19 @@ pub enum Command {
     Release,
     Update { check: bool },
     Evolve { check: bool },
-    Enqueue(Vec<String>),
-    Queue { all: bool, node: Option<String>, explain: Option<String> },
-    Pause(Vec<String>),
-    Resume(Vec<String>),
+    Enqueue { args: Vec<String>, app: bool },
+    Queue { all: bool, node: Option<String>, explain: Option<String>, app: bool },
+    Pause { args: Vec<String>, app: bool },
+    Resume { args: Vec<String>, app: bool },
     Cancel(Vec<String>),
-    Audit(Vec<String>),
+    Audit { args: Vec<String>, app: bool },
     Bridge { args: Vec<String>, write: bool },
-    Drain { check: bool, url: Option<String> },
-    Dispatch { item: Option<String>, to: Option<String>, check: bool },
+    Drain { check: bool, url: Option<String>, app: bool },
+    Dispatch { item: Option<String>, to: Option<String>, check: bool, app: bool },
     Heartbeat(String),
     Checkpoint(Vec<String>),
     Fail(Vec<String>),
-    Show(String),
+    Show { addr: String, app: bool },
     Host { persona: Option<String>, boot: Option<String> },
     Unhost(String),
     Message { persona: String, text: String },
@@ -51,6 +51,13 @@ pub enum Command {
 
 pub fn parse(args: &[String]) -> Command {
     let w = |i: usize| args.get(i).map(|s| s.as_str()).unwrap_or("");
+    // `--app` (slice 7, spec §2.3): the verb's app-surface
+    // form. It is stripped from the verb's own tail — the
+    // session it opens speaks for the whole dispatch set.
+    let strip_app = |tail: &[String]| -> (Vec<String>, bool) {
+        let app = tail.iter().any(|a| a == "--app");
+        (tail.iter().filter(|a| *a != "--app").cloned().collect(), app)
+    };
     match w(0) {
         "" => Command::Bare,
         "--help" | "-h" | "help" => Command::Help,
@@ -117,7 +124,10 @@ pub fn parse(args: &[String]) -> Command {
             }
         }
         "register" => Command::Register(args[1..].to_vec()),
-        "enqueue" => Command::Enqueue(args[1..].to_vec()),
+        "enqueue" => {
+            let (tail, app) = strip_app(&args[1..]);
+            Command::Enqueue { args: tail, app }
+        }
         "queue" => {
             let mut node: Option<String> = None;
             let mut explain: Option<String> = None;
@@ -133,12 +143,26 @@ pub fn parse(args: &[String]) -> Command {
                     i += 1;
                 }
             }
-            Command::Queue { all: args.iter().any(|a| a == "--all"), node, explain }
+            Command::Queue {
+                all: args.iter().any(|a| a == "--all"),
+                node,
+                explain,
+                app: args.iter().any(|a| a == "--app"),
+            }
         }
-        "pause" => Command::Pause(args[1..].to_vec()),
-        "resume" => Command::Resume(args[1..].to_vec()),
+        "pause" => {
+            let (tail, app) = strip_app(&args[1..]);
+            Command::Pause { args: tail, app }
+        }
+        "resume" => {
+            let (tail, app) = strip_app(&args[1..]);
+            Command::Resume { args: tail, app }
+        }
         "cancel" => Command::Cancel(args[1..].to_vec()),
-        "audit" => Command::Audit(args[1..].to_vec()),
+        "audit" => {
+            let (tail, app) = strip_app(&args[1..]);
+            Command::Audit { args: tail, app }
+        }
         "bridge" => Command::Bridge {
             write: args.iter().any(|a| a == "--add" || a == "--check" || a == "--retire"),
             args: args[1..].to_vec(),
@@ -154,7 +178,7 @@ pub fn parse(args: &[String]) -> Command {
                     i += 1;
                 }
             }
-            Command::Drain { check: args.iter().any(|a| a == "--check"), url }
+            Command::Drain { check: args.iter().any(|a| a == "--check"), url, app: args.iter().any(|a| a == "--app") }
         }
         "dispatch" => {
             let mut item: Option<String> = None;
@@ -180,12 +204,15 @@ pub fn parse(args: &[String]) -> Command {
                     }
                 }
             }
-            Command::Dispatch { item, to, check }
+            Command::Dispatch { item, to, check, app: args.iter().any(|a| a == "--app") }
         }
         "heartbeat" => Command::Heartbeat(args.get(1).cloned().unwrap_or_default()),
         "checkpoint" => Command::Checkpoint(args[1..].to_vec()),
         "fail" => Command::Fail(args[1..].to_vec()),
-        "show" => Command::Show(w(1).to_string()),
+        "show" => {
+            let addr = args[1..].iter().find(|a| *a != "--app").cloned().unwrap_or_default();
+            Command::Show { addr, app: args.iter().any(|a| a == "--app") }
+        }
         "release" => Command::Release,
         "update" => Command::Update { check: args.iter().any(|a| a == "--check") },
         "evolve" => Command::Evolve { check: args.iter().any(|a| a == "--check") },
@@ -382,7 +409,17 @@ pub fn help_text() -> String {
     s.push_str("                            slm | llm | sq | custom — the model line is first-class from day one\n");
     s.push_str("  qexo show <address>       render one record from this node's state; the address may carry\n");
     s.push_str("                            a universe prefix — $2:11.11.11/2.1.1/1.1.1 reads universe 2 of\n");
-    s.push_str("                            the state chain (a bare address is universe 1)\n\n");
+    s.push_str("                            the state chain (a bare address is universe 1)\n");
+    s.push_str("  qexo <verb> --app         the dispatch verbs as a line protocol for front-ends (the Android\n");
+    s.push_str("                            launcher): enqueue --app, queue --app, dispatch --app, show --app,\n");
+    s.push_str("                            pause --app, resume --app, audit --app, drain --app — every spelling\n");
+    s.push_str("                            opens the same session over the same queue state machine, the learn\n");
+    s.push_str("                            --app pattern: one command per line (enqueue / queue / dispatch /\n");
+    s.push_str("                            show / pause / resume / audit / drain / quit), replies as key: value\n");
+    s.push_str("                            lines, each block closed by end: <command>, a greeting block at\n");
+    s.push_str("                            start. Bare `enqueue` in the session pastes the brief: lines until\n");
+    s.push_str("                            a line containing only '.' (a line '..' unstuffs to '.'). cancel\n");
+    s.push_str("                            has no --app form — it stays a CLI act\n\n");
 
     s.push_str("Personas & inference:\n");
     s.push_str("  qexo host <persona>       load a persona into local inference (--boot <path> for a boot text file;\n");
@@ -457,28 +494,28 @@ mod tests {
         assert_eq!(parse(&v(&["inventory", "sq"])), Command::Inventory { name: Some("sq".into()), install: None });
         assert_eq!(parse(&v(&["inventory", "--install", "sq"])), Command::Inventory { name: None, install: Some("sq".into()) });
         assert_eq!(parse(&v(&["register", "keyfile.asc"])), Command::Register(v(&["keyfile.asc"])));
-        assert_eq!(parse(&v(&["enqueue", "brief.md", "--title", "T"])), Command::Enqueue(v(&["brief.md", "--title", "T"])));
-        assert_eq!(parse(&v(&["enqueue", "-"])), Command::Enqueue(v(&["-"])));
-        assert_eq!(parse(&v(&["queue"])), Command::Queue { all: false, node: None, explain: None });
-        assert_eq!(parse(&v(&["queue", "--all"])), Command::Queue { all: true, node: None, explain: None });
-        assert_eq!(parse(&v(&["queue", "--node", "aletheia-core"])), Command::Queue { all: false, node: Some("aletheia-core".into()), explain: None });
+        assert_eq!(parse(&v(&["enqueue", "brief.md", "--title", "T"])), Command::Enqueue { args: v(&["brief.md", "--title", "T"]), app: false });
+        assert_eq!(parse(&v(&["enqueue", "-"])), Command::Enqueue { args: v(&["-"]), app: false });
+        assert_eq!(parse(&v(&["queue"])), Command::Queue { all: false, node: None, explain: None, app: false });
+        assert_eq!(parse(&v(&["queue", "--all"])), Command::Queue { all: true, node: None, explain: None, app: false });
+        assert_eq!(parse(&v(&["queue", "--node", "aletheia-core"])), Command::Queue { all: false, node: Some("aletheia-core".into()), explain: None, app: false });
         assert_eq!(
             parse(&v(&["queue", "--explain", "11.11.11/2.1.4/1.1.1"])),
-            Command::Queue { all: false, node: None, explain: Some("11.11.11/2.1.4/1.1.1".into()) }
+            Command::Queue { all: false, node: None, explain: Some("11.11.11/2.1.4/1.1.1".into()), app: false }
         );
-        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1"])), Command::Pause(v(&["11.11.11/2.1.4/1.1.1"])));
-        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1", "--note", "later"])), Command::Pause(v(&["11.11.11/2.1.4/1.1.1", "--note", "later"])));
-        assert_eq!(parse(&v(&["resume", "11.11.11/2.1.4/1.1.1"])), Command::Resume(v(&["11.11.11/2.1.4/1.1.1"])));
+        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1"])), Command::Pause { args: v(&["11.11.11/2.1.4/1.1.1"]), app: false });
+        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1", "--note", "later"])), Command::Pause { args: v(&["11.11.11/2.1.4/1.1.1", "--note", "later"]), app: false });
+        assert_eq!(parse(&v(&["resume", "11.11.11/2.1.4/1.1.1"])), Command::Resume { args: v(&["11.11.11/2.1.4/1.1.1"]), app: false });
         assert_eq!(parse(&v(&["cancel", "11.11.11/2.1.4/1.1.1", "--note", "moot"])), Command::Cancel(v(&["11.11.11/2.1.4/1.1.1", "--note", "moot"])));
-        assert_eq!(parse(&v(&["drain"])), Command::Drain { check: false, url: None });
-        assert_eq!(parse(&v(&["drain", "--check"])), Command::Drain { check: true, url: None });
+        assert_eq!(parse(&v(&["drain"])), Command::Drain { check: false, url: None, app: false });
+        assert_eq!(parse(&v(&["drain", "--check"])), Command::Drain { check: true, url: None, app: false });
         assert_eq!(
             parse(&v(&["drain", "--url", "https://register.phext.io"])),
-            Command::Drain { check: false, url: Some("https://register.phext.io".into()) }
+            Command::Drain { check: false, url: Some("https://register.phext.io".into()), app: false }
         );
         assert_eq!(
             parse(&v(&["drain", "--check", "--url", "http://127.0.0.1:8791"])),
-            Command::Drain { check: true, url: Some("http://127.0.0.1:8791".into()) }
+            Command::Drain { check: true, url: Some("http://127.0.0.1:8791".into()), app: false }
         );
         assert_eq!(parse(&v(&["bridge"])), Command::Bridge { args: v(&[]), write: false });
         assert_eq!(
@@ -486,10 +523,10 @@ mod tests {
             Command::Bridge { args: v(&["--add", "claude", "--kind", "claude", "--endpoint", "https://claude.example", "--burn", "never"]), write: true }
         );
         assert_eq!(parse(&v(&["bridge", "--check", "claude"])), Command::Bridge { args: v(&["--check", "claude"]), write: true });
-        assert_eq!(parse(&v(&["audit"])), Command::Audit(v(&[])));
-        assert_eq!(parse(&v(&["audit", "show", "6.6.6/9.1.1/1.1.1"])), Command::Audit(v(&["show", "6.6.6/9.1.1/1.1.1"])));
-        assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1"])), Command::Show("11.11.11/2.1.4/1.1.1".into()));
-        assert_eq!(parse(&v(&["show", "$2:11.11.11/2.1.4/1.1.1"])), Command::Show("$2:11.11.11/2.1.4/1.1.1".into()));
+        assert_eq!(parse(&v(&["audit"])), Command::Audit { args: v(&[]), app: false });
+        assert_eq!(parse(&v(&["audit", "show", "6.6.6/9.1.1/1.1.1"])), Command::Audit { args: v(&["show", "6.6.6/9.1.1/1.1.1"]), app: false });
+        assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1"])), Command::Show { addr: "11.11.11/2.1.4/1.1.1".into(), app: false });
+        assert_eq!(parse(&v(&["show", "$2:11.11.11/2.1.4/1.1.1"])), Command::Show { addr: "$2:11.11.11/2.1.4/1.1.1".into(), app: false });
         assert_eq!(parse(&v(&["host"])), Command::Host { persona: None, boot: None });
         assert_eq!(
             parse(&v(&["host", "Emise", "--boot", "emise.phext"])),
@@ -507,6 +544,20 @@ mod tests {
         assert_eq!(parse(&v(&["wiring-check"])), Command::WiringCheck(None));
         assert_eq!(parse(&v(&["select", "f.phext", "1.1.1/1.1.1/1.1.1"])), Command::FileOp(v(&["select", "f.phext", "1.1.1/1.1.1/1.1.1"])));
         assert_eq!(parse(&v(&["frobnicate"])), Command::Unknown("frobnicate".into()));
+        // Slice 7 (§2.3): every dispatch verb's --app form —
+        // the flag is the session's door, stripped from the tail.
+        assert_eq!(parse(&v(&["enqueue", "--app"])), Command::Enqueue { args: v(&[]), app: true });
+        assert_eq!(parse(&v(&["enqueue", "brief.md", "--app"])), Command::Enqueue { args: v(&["brief.md"]), app: true });
+        assert_eq!(parse(&v(&["queue", "--app"])), Command::Queue { all: false, node: None, explain: None, app: true });
+        assert_eq!(parse(&v(&["dispatch", "--app"])), Command::Dispatch { item: None, to: None, check: false, app: true });
+        assert_eq!(parse(&v(&["dispatch", "--check", "--app"])), Command::Dispatch { item: None, to: None, check: true, app: true });
+        assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1", "--app"])), Command::Show { addr: "11.11.11/2.1.4/1.1.1".into(), app: true });
+        assert_eq!(parse(&v(&["show", "--app", "11.11.11/2.1.4/1.1.1"])), Command::Show { addr: "11.11.11/2.1.4/1.1.1".into(), app: true });
+        assert_eq!(parse(&v(&["pause", "11.11.11/2.1.4/1.1.1", "--app"])), Command::Pause { args: v(&["11.11.11/2.1.4/1.1.1"]), app: true });
+        assert_eq!(parse(&v(&["resume", "11.11.11/2.1.4/1.1.1", "--app"])), Command::Resume { args: v(&["11.11.11/2.1.4/1.1.1"]), app: true });
+        assert_eq!(parse(&v(&["audit", "--app"])), Command::Audit { args: v(&[]), app: true });
+        assert_eq!(parse(&v(&["drain", "--app"])), Command::Drain { check: false, url: None, app: true });
+        assert_eq!(parse(&v(&["drain", "--check", "--app"])), Command::Drain { check: true, url: None, app: true });
     }
 
     #[test]
@@ -538,6 +589,7 @@ mod tests {
             "enqueue", "queue", "show", "11.11.11/11.11.11/11.11.11",
             "pause", "resume", "cancel", "audit", "--explain", "drain", "11.11.11/6.1.1/1.1.1", "qexo.env",
             "bridge", "burn: never", "11.11.11/5.1.1/1.1.1",
+            "--app", "end: <command>", "launcher",
         ] {
             assert!(h.contains(word), "help is missing {}", word);
         }

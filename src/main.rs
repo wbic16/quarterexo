@@ -8,9 +8,10 @@
 //! (lattice), the state commands (core), the dispatch
 //! queue's local verbs (dispatch), the register link
 //! (register), the wire dispatch verbs (wire), the
-//! inference bridges (bridge), the wiring gate
-//! (wiring), and this CLI.
+//! inference bridges (bridge), the dispatch app surface
+//! (app), the wiring gate (wiring), and this CLI.
 
+mod app;
 mod bridge;
 mod cli;
 mod core;
@@ -69,10 +70,10 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Update { check: false }
             | Command::Evolve { check: false }
             | Command::Doctor { fix: true }
-            | Command::Enqueue(_)
+            | Command::Enqueue { .. }
             | Command::Bridge { write: true, .. }
-            | Command::Pause(_)
-            | Command::Resume(_)
+            | Command::Pause { .. }
+            | Command::Resume { .. }
             | Command::Cancel(_)
             | Command::Drain { check: false, .. }
             | Command::Dispatch { check: false, .. }
@@ -82,6 +83,26 @@ fn run(cmd: Command, args: &[String]) -> i32 {
     );
     if write_intent {
         lattice::set_write_intent();
+    }
+    // The app surface (slice 7, spec §2.3): any dispatch
+    // verb's --app form opens the one app session — a
+    // session can write (its commands include enqueue and
+    // pause), so it is write-intending whichever spelling
+    // opened it.
+    let app_form = matches!(
+        cmd,
+        Command::Enqueue { app: true, .. }
+            | Command::Queue { app: true, .. }
+            | Command::Dispatch { app: true, .. }
+            | Command::Show { app: true, .. }
+            | Command::Pause { app: true, .. }
+            | Command::Resume { app: true, .. }
+            | Command::Audit { app: true, .. }
+            | Command::Drain { app: true, .. }
+    );
+    if app_form {
+        lattice::set_write_intent();
+        return app::app_session();
     }
     match cmd {
         Command::Help => {
@@ -164,13 +185,13 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             distbuilds::distributed_builds(scheduler, status, branch)
         }
         Command::Register(args) => core::register(&args),
-        Command::Enqueue(args) => dispatch::enqueue(&args),
-        Command::Queue { all, node, explain } => dispatch::queue(all, node, explain),
-        Command::Pause(args) => dispatch::pause(&args),
-        Command::Resume(args) => dispatch::resume(&args),
+        Command::Enqueue { args, .. } => dispatch::enqueue(&args),
+        Command::Queue { all, node, explain, .. } => dispatch::queue(all, node, explain),
+        Command::Pause { args, .. } => dispatch::pause(&args),
+        Command::Resume { args, .. } => dispatch::resume(&args),
         Command::Cancel(args) => dispatch::cancel(&args),
-        Command::Drain { check, url } => register::drain(check, url),
-        Command::Dispatch { item, to, check } => wire::cmd_dispatch(item.as_deref(), to.as_deref(), check),
+        Command::Drain { check, url, .. } => register::drain(check, url),
+        Command::Dispatch { item, to, check, .. } => wire::cmd_dispatch(item.as_deref(), to.as_deref(), check),
         Command::Heartbeat(addr) => {
             if addr.is_empty() {
                 eprintln!("usage: qexo heartbeat <item-address>");
@@ -181,9 +202,9 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         }
         Command::Checkpoint(args) => wire::cmd_checkpoint(&args),
         Command::Fail(args) => wire::cmd_fail(&args),
-        Command::Audit(args) => dispatch::audit(&args),
+        Command::Audit { args, .. } => dispatch::audit(&args),
         Command::Bridge { args, .. } => bridge::cmd_bridge(&args),
-        Command::Show(addr) => dispatch::show(&addr),
+        Command::Show { addr, .. } => dispatch::show(&addr),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),
         Command::Evolve { check } => core::evolve(check),

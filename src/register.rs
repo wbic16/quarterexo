@@ -965,10 +965,27 @@ pub fn drain(check: bool, url: Option<String>) -> i32 {
         Err(c) => return c,
     };
     let creds = load_credentials();
-    drain_inner(&mut lat, check, url, &creds)
+    let mut sink = dispatch::RunLines::live();
+    drain_inner(&mut lat, check, url, &creds, &mut sink)
 }
 
-fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &Credentials) -> i32 {
+/// The drain as a captured run (slice 7, spec §2.3): the
+/// same pass `drain` makes — fetch, apply, the write-back
+/// sweep — rendered into a RunLines instead of printed, so
+/// the `--app` driver drives the identical engine and
+/// renders its facts in the protocol's shape.
+pub fn drain_run(check: bool, url: Option<String>) -> (i32, dispatch::RunLines) {
+    let mut sink = dispatch::RunLines::new();
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return (c, sink),
+    };
+    let creds = load_credentials();
+    let code = drain_inner(&mut lat, check, url, &creds, &mut sink);
+    (code, sink)
+}
+
+fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &Credentials, sink: &mut dispatch::RunLines) -> i32 {
     let existing = load_drain_record(&lat.px);
     let (we, wr) = existing
         .as_ref()
@@ -978,13 +995,14 @@ fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &
         Some(u) => u,
         None => {
             if check {
-                println!(
-                    "drain --check: no register link is recorded on this node — a first drain names it: qexo drain --url <register-url>"
+                sink.out(
+                    "drain --check: no register link is recorded on this node — a first drain names it: qexo drain --url <register-url>".to_string(),
                 );
+                sink.fact("outcome", "no register link recorded on this node");
                 return 0;
             }
-            eprintln!(
-                "qexo drain: no register URL is recorded and none was given — run once with --url <register-url>; it is kept in the drain record (11.11.11/6.1.1/1.1.1)"
+            sink.err(
+                "qexo drain: no register URL is recorded and none was given — run once with --url <register-url>; it is kept in the drain record (11.11.11/6.1.1/1.1.1)".to_string(),
             );
             return 2;
         }
@@ -995,17 +1013,17 @@ fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &
     let drain_token = match &creds.drain_token {
         Some(t) => t.clone(),
         None => {
-            eprintln!(
+            sink.err(format!(
                 "qexo drain: no drain credential is configured — {} carries no REGSVC_DRAIN_TOKEN (credentials live in the env file, never in state, §10.4)",
                 credentials_path().display()
-            );
+            ));
             return 1;
         }
     };
     let fetched = match fetch(&url, &drain_token, we, wr) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("qexo drain: {}", e);
+            sink.err(format!("qexo drain: {}", e));
             return 1;
         }
     };
@@ -1044,22 +1062,32 @@ fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &
             }
         }
         let pending = items.iter().filter(|i| i.register_writeback.as_deref() == Some("pending")).count();
-        println!("drain --check: register {} — watermarks: entries {}, resolutions {}", url, we, wr);
-        println!(
+        sink.out(format!("drain --check: register {} — watermarks: entries {}, resolutions {}", url, we, wr));
+        sink.out(format!(
             "drain --check: {} entr(ies) past the watermark: {} would file, {} already filed",
             fetched.entries.len(),
             would_file,
             deduped
-        );
-        println!(
+        ));
+        sink.out(format!(
             "drain --check: {} resolution(s): {} would close, {} duplicate(s), {} with no home (audited, never dropped)",
             fetched.resolutions.len(),
             closes,
             dups,
             orphans
-        );
-        println!("drain --check: watermarks would advance to entries {}, resolutions {}", new_we, new_wr);
-        println!("drain --check: {} write-back(s) pending — a live drain retries them", pending);
+        ));
+        sink.out(format!("drain --check: watermarks would advance to entries {}, resolutions {}", new_we, new_wr));
+        sink.out(format!("drain --check: {} write-back(s) pending — a live drain retries them", pending));
+        sink.fact("check", "yes");
+        sink.fact("register", &url);
+        sink.fact("entries-watermark", &format!("{} -> {}", we, new_we));
+        sink.fact("resolutions-watermark", &format!("{} -> {}", wr, new_wr));
+        sink.fact("entries-would-file", &would_file.to_string());
+        sink.fact("entries-deduped", &deduped.to_string());
+        sink.fact("resolutions-would-close", &closes.to_string());
+        sink.fact("resolutions-duplicate", &dups.to_string());
+        sink.fact("resolutions-no-home", &orphans.to_string());
+        sink.fact("writebacks-pending", &pending.to_string());
         return 0;
     }
 
@@ -1067,7 +1095,7 @@ fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &
     let outcome = match apply_drain(lat, &fetched, &actor) {
         Ok(o) => o,
         Err(e) => {
-            eprintln!("qexo drain: {}", e);
+            sink.err(format!("qexo drain: {}", e));
             return 1;
         }
     };
@@ -1106,30 +1134,47 @@ fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &
     lat.px.insert(drain_record_addr(), drain_record_text(&record));
     lattice::regen_indexes(&mut lat.px);
     if let Err(e) = lat.save() {
-        eprintln!("qexo drain: cannot save state: {}", e);
+        sink.err(format!("qexo drain: cannot save state: {}", e));
         return 1;
     }
-    println!(
+    sink.out(format!(
         "drain: filed {} item(s), closed {}, {} duplicate resolution(s), {} resolution(s) with no home — receipt {}",
         filed_n,
         closed_n,
         dup_n,
         orphan_n,
         phext::fmt_coord(&receipt)
-    );
-    println!("drain: watermarks — entries {} -> {}, resolutions {} -> {}", we, new_we, wr, new_wr);
+    ));
+    sink.out(format!("drain: watermarks — entries {} -> {}, resolutions {} -> {}", we, new_we, wr, new_wr));
+    sink.fact("check", "no");
+    sink.fact("register", &url);
+    sink.fact("receipt", &phext::fmt_coord(&receipt));
+    sink.fact("entries-filed", &filed_n);
+    sink.fact("entries-deduped", &deduped_n);
+    sink.fact("resolutions-closed", &closed_n);
+    sink.fact("resolutions-duplicate", &dup_n);
+    sink.fact("resolutions-no-home", &orphan_n);
+    sink.fact("entries-watermark", &format!("{} -> {}", we, new_we));
+    sink.fact("resolutions-watermark", &format!("{} -> {}", wr, new_wr));
+    for a in &outcome.filed {
+        sink.fact("filed", a);
+    }
+    for a in &outcome.closed {
+        sink.fact("closed", a);
+    }
 
     // The write-back sweep (§10.4): what the queue still
     // owes the register, retried now. Each success is its
     // own save (inside write_back_with); each failure
     // stays pending, named, and costs the pass its zero.
     let mut code = 0;
+    sink.fact("writebacks-pending", &outcome.writeback_pending.len().to_string());
     if !outcome.writeback_pending.is_empty() {
         if creds.qexo_token.is_none() {
-            println!(
+            sink.out(format!(
                 "drain: {} write-back(s) stay pending — no qexo service token is configured (env)",
                 outcome.writeback_pending.len()
-            );
+            ));
         } else {
             for p in &outcome.writeback_pending {
                 let items = dispatch::load_items(&lat.px);
@@ -1138,12 +1183,15 @@ fn drain_inner(lat: &mut Lattice, check: bool, url_arg: Option<String>, creds: &
                     None => continue,
                 };
                 match write_back_with(lat, &item, &p.outcome, p.note.as_deref(), creds) {
-                    Ok(seq) => println!(
-                        "drain: write-back recorded — register #{} {} as resolution seq {} (credential: qexo-token (env))",
-                        p.number, p.outcome, seq
-                    ),
+                    Ok(seq) => {
+                        sink.out(format!(
+                            "drain: write-back recorded — register #{} {} as resolution seq {} (credential: qexo-token (env))",
+                            p.number, p.outcome, seq
+                        ));
+                        sink.fact("write-back", &format!("register #{} {} as resolution seq {}", p.number, p.outcome, seq));
+                    }
                     Err(e) => {
-                        eprintln!("drain: write-back for register #{} failed: {}", p.number, e);
+                        sink.err(format!("drain: write-back for register #{} failed: {}", p.number, e));
                         code = 1;
                     }
                 }
@@ -1572,7 +1620,7 @@ mod tests {
 
         // Pass 1: entries file as items; the standing item
         // stands; the foreign scope never surfaces.
-        assert_eq!(drain_inner(&mut lat, false, Some(base.clone()), &creds), 0);
+        assert_eq!(drain_inner(&mut lat, false, Some(base.clone()), &creds, &mut dispatch::RunLines::new()), 0);
         let items = dispatch::load_items(&lat.px);
         assert_eq!(items.len(), 3);
         assert!(items.iter().all(|i| i.title != "Foreign entry"));
@@ -1587,19 +1635,19 @@ mod tests {
         assert_eq!(rec_now.url, base);
 
         // Pass 2: idempotent — a double drain files nothing twice.
-        assert_eq!(drain_inner(&mut lat, false, None, &creds), 0);
+        assert_eq!(drain_inner(&mut lat, false, None, &creds, &mut dispatch::RunLines::new()), 0);
         assert_eq!(dispatch::load_items(&lat.px).len(), 3);
 
         // --check is byte-inert: the state file does not move.
         let path = dir.join("state.phext");
         let before = std::fs::read(&path).unwrap();
-        assert_eq!(drain_inner(&mut lat, true, None, &creds), 0);
+        assert_eq!(drain_inner(&mut lat, true, None, &creds, &mut dispatch::RunLines::new()), 0);
         assert_eq!(std::fs::read(&path).unwrap(), before);
 
         // A resolution for #42 closes the standing item with
         // its register-close audit — and is NOT echoed back.
         st.lock().unwrap().will.resolutions.push(resolution_atom(1, 42, "will", "done", None, 1794920400));
-        assert_eq!(drain_inner(&mut lat, false, None, &creds), 0);
+        assert_eq!(drain_inner(&mut lat, false, None, &creds, &mut dispatch::RunLines::new()), 0);
         let items = dispatch::load_items(&lat.px);
         let standing = items.iter().find(|i| i.register.as_deref() == Some("42")).unwrap();
         assert_eq!(standing.state, Some(ItemState::Done));
@@ -1611,7 +1659,7 @@ mod tests {
 
         // A resolution with no home: audited, never dropped.
         st.lock().unwrap().will.resolutions.push(resolution_atom(2, 99, "will", "cancelled", Some("gone"), 1794920400));
-        assert_eq!(drain_inner(&mut lat, false, None, &creds), 0);
+        assert_eq!(drain_inner(&mut lat, false, None, &creds, &mut dispatch::RunLines::new()), 0);
         let audits = dispatch::load_audits(&lat.px);
         assert!(audits
             .iter()
@@ -1670,7 +1718,7 @@ mod tests {
             assert_eq!(json_string_field(&guard.will.entries[2], "user").as_deref(), Some("qexo"));
             assert_eq!(guard.other.entries.len(), 1);
         }
-        assert_eq!(drain_inner(&mut lat, false, None, &creds), 0);
+        assert_eq!(drain_inner(&mut lat, false, None, &creds, &mut dispatch::RunLines::new()), 0);
         let items = dispatch::load_items(&lat.px);
         assert!(items.iter().any(|i| i.register_seq.as_deref() == Some("3") && i.title == "Phone-born item"));
 
@@ -1729,14 +1777,14 @@ mod tests {
         lat.save().unwrap();
         let before = std::fs::read(&path).unwrap();
         // no credentials at all: a clean refusal, no state change
-        assert_eq!(drain_inner(&mut lat, false, Some(base.clone()), &Credentials::default()), 1);
+        assert_eq!(drain_inner(&mut lat, false, Some(base.clone()), &Credentials::default(), &mut dispatch::RunLines::new()), 1);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         // a drain token but a dead register: same discipline
         let creds = will_creds();
-        assert_eq!(drain_inner(&mut lat, false, Some("http://127.0.0.1:1".to_string()), &creds), 1);
+        assert_eq!(drain_inner(&mut lat, false, Some("http://127.0.0.1:1".to_string()), &creds, &mut dispatch::RunLines::new()), 1);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         // and with no URL anywhere: a named refusal, exit 2
-        assert_eq!(drain_inner(&mut lat, false, None, &creds), 2);
+        assert_eq!(drain_inner(&mut lat, false, None, &creds, &mut dispatch::RunLines::new()), 2);
         assert_eq!(std::fs::read(&path).unwrap(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1763,7 +1811,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut lat = Lattice::born(dir.join("state.phext"));
         lat.save().unwrap();
-        assert_eq!(drain_inner(&mut lat, false, Some(base), &will_creds()), 0);
+        assert_eq!(drain_inner(&mut lat, false, Some(base), &will_creds(), &mut dispatch::RunLines::new()), 0);
         assert_eq!(dispatch::load_items(&lat.px).len(), 0);
         assert_eq!(dispatch::load_audits(&lat.px).len(), 0);
         let rec = load_drain_record(&lat.px).unwrap();
