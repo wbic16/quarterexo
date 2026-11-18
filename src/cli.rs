@@ -32,6 +32,7 @@ pub enum Command {
     Resume(Vec<String>),
     Cancel(Vec<String>),
     Audit(Vec<String>),
+    Bridge { args: Vec<String>, write: bool },
     Drain { check: bool, url: Option<String> },
     Dispatch { item: Option<String>, to: Option<String>, check: bool },
     Heartbeat(String),
@@ -138,6 +139,10 @@ pub fn parse(args: &[String]) -> Command {
         "resume" => Command::Resume(args[1..].to_vec()),
         "cancel" => Command::Cancel(args[1..].to_vec()),
         "audit" => Command::Audit(args[1..].to_vec()),
+        "bridge" => Command::Bridge {
+            write: args.iter().any(|a| a == "--add" || a == "--check" || a == "--retire"),
+            args: args[1..].to_vec(),
+        },
         "drain" => {
             let mut url: Option<String> = None;
             let mut i = 1;
@@ -360,6 +365,21 @@ pub fn help_text() -> String {
     s.push_str("                            the executor's failure receipt: the item returns to queued (the\n");
     s.push_str("                            third consecutive failure auto-pauses it) and the assignment\n");
     s.push_str("                            retires with the evidence as its status\n");
+    s.push_str("  qexo bridge [--add <name> --kind <kind> --endpoint <where> [--capability <text>]...\n");
+    s.push_str("                            [--burn metered|never] [--reset <text>] [--freshness <seconds>]]\n");
+    s.push_str("                            [--check [<name>]] [--retire <name>]\n");
+    s.push_str("                            the bridge registry (spec §9: dispatch homeland cluster 5,\n");
+    s.push_str("                            records from 11.11.11/5.1.1/1.1.1):\n");
+    s.push_str("                            durable, health-checked routes to inference sources. Bare\n");
+    s.push_str("                            `qexo bridge` lists the registry with health calculated from\n");
+    s.push_str("                            each Book's health log — a bridge is live iff its latest probe\n");
+    s.push_str("                            succeeded within its freshness window; health is never a stored\n");
+    s.push_str("                            field. --check probes now and appends the evidence. An item whose\n");
+    s.push_str("                            brief names `bridge:` preferences routes only over a bridge\n");
+    s.push_str("                            verified live for that dispatch; failovers are receipts, and a\n");
+    s.push_str("                            `burn: never` bridge never routes work (enqueue refuses a brief\n");
+    s.push_str("                            that names one). Kinds: claude | grok | chatgpt | ollama | tlm |\n");
+    s.push_str("                            slm | llm | sq | custom — the model line is first-class from day one\n");
     s.push_str("  qexo show <address>       render one record from this node's state; the address may carry\n");
     s.push_str("                            a universe prefix — $2:11.11.11/2.1.1/1.1.1 reads universe 2 of\n");
     s.push_str("                            the state chain (a bare address is universe 1)\n\n");
@@ -460,6 +480,12 @@ mod tests {
             parse(&v(&["drain", "--check", "--url", "http://127.0.0.1:8791"])),
             Command::Drain { check: true, url: Some("http://127.0.0.1:8791".into()) }
         );
+        assert_eq!(parse(&v(&["bridge"])), Command::Bridge { args: v(&[]), write: false });
+        assert_eq!(
+            parse(&v(&["bridge", "--add", "claude", "--kind", "claude", "--endpoint", "https://claude.example", "--burn", "never"])),
+            Command::Bridge { args: v(&["--add", "claude", "--kind", "claude", "--endpoint", "https://claude.example", "--burn", "never"]), write: true }
+        );
+        assert_eq!(parse(&v(&["bridge", "--check", "claude"])), Command::Bridge { args: v(&["--check", "claude"]), write: true });
         assert_eq!(parse(&v(&["audit"])), Command::Audit(v(&[])));
         assert_eq!(parse(&v(&["audit", "show", "6.6.6/9.1.1/1.1.1"])), Command::Audit(v(&["show", "6.6.6/9.1.1/1.1.1"])));
         assert_eq!(parse(&v(&["show", "11.11.11/2.1.4/1.1.1"])), Command::Show("11.11.11/2.1.4/1.1.1".into()));
@@ -511,6 +537,7 @@ mod tests {
             "select", "get", "--help", "/var/lib/qexo/state.phext", "learn", "inventory", "~/.qexo/state.phext",
             "enqueue", "queue", "show", "11.11.11/11.11.11/11.11.11",
             "pause", "resume", "cancel", "audit", "--explain", "drain", "11.11.11/6.1.1/1.1.1", "qexo.env",
+            "bridge", "burn: never", "11.11.11/5.1.1/1.1.1",
         ] {
             assert!(h.contains(word), "help is missing {}", word);
         }
