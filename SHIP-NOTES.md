@@ -1,3 +1,47 @@
+# qexo v1.8.0 — ship notes
+
+Status: v1.8.0 — the dispatch core ships. Slices
+1–7 of the ratified dispatch-core SPEC stand in
+this tree: chain state and the queue with its
+transition oracle, the register integration
+(drain + scoped write-back), wire dispatch with
+the fair draw, F5 resume/teleport, the F6 bridge
+registry, and the --app drivers — with wbic16/qexo
+synced to the same stamp as the twin. The release
+is the re-scoped held v1.7.1-line ship (task
+40.9.7/11.9.17/8.8.11): the integration is aboard,
+as ordered ("integrate … and then ship it").
+
+Prepared and staged on aletheia-core
+(~/qexo-build-v1.8.0/fleet-build/): the Linux
+x86_64 binary, the windows-gnu exe, the twin's
+Android aarch64 binary, and the launcher v3 APK
+(versionCode 5 / versionName 1.8.0) — the first
+APK built on the v3 quick actions. Gates: cargo
+159/159 on both trees, package list + publish
+--dry-run clean, every slice pack green against
+the release binaries (the pack's one diff is the
+new stamp on a fixture's status line), upgrade
+exercise 20/20 from v1.6.1-born and v1.7.1-born
+states, transcripts byte-identical across the
+two repos' builds. The live fleet was not
+touched: the running service still stamps
+v1.6.1 and the fleet state file is
+hash-identical before and after.
+
+Held for Will's timing, by his standing order:
+the crates.io publish and the fleet rollout.
+The v1.8.0 tags name the merged exo trees once
+these PRs land (a tag names a tree that stamps
+its version — never a branch). The rollout's
+closing proof, a fleet node draining the real
+register, additionally waits on the §10.4
+credential leg: the per-user scoping update live
+on awsbox and the single provisioning pass.
+See CHANGELOG v1.8.0.
+
+---
+
 # qexo v1.6.0 (scratch line) — ship notes
 
 Status: v1.6.0 — OpenPGP moves inside. The `gpg` subprocess
