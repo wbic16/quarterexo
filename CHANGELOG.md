@@ -1,3 +1,110 @@
+## v1.8.0 — 2026-11-17 (the dispatch core ships)
+
+The held v1.7.1-line release (task 40.9.7/11.9.17/
+8.8.11) is re-scoped to this build, per SPEC §13.3
+slice 8: the ship carries the register integration
+aboard. What stands in this tree, built across
+dispatch-core slices 1–7 (task 26.5.9/7.6.11/5.5.10)
+under the ratified SPEC of 2026-11-16:
+
+- **Chain state + the local queue (slices 1–2).**
+  state.phext is a chain file (universe 1 =
+  yesterday's state, byte-compatible reads; a
+  v1.7.1-born state opens and operates unchanged);
+  `$N:` addressing; the dispatch homeland at
+  11.11.11. The queue semantics of §4.6 are code:
+  `check_transition` is the pure legality oracle,
+  `apply_transition` the only writer, transitions
+  and receipts land in one save (write-before-ack),
+  doctor runs the §4.5 reconciliation including
+  the seven illegal combinations, and the ROI
+  order is calculated, never stored.
+- **Register integration (slice 3, §10).** `qexo
+  drain` pulls register.phext.io entries into the
+  queue verbatim (register-seq dedup, watermarks
+  advancing only in the same save as the work they
+  witness) and writes resolutions back under the
+  scoped qexo service token — a credential that
+  authorizes exactly entries-append and
+  done/cancel on Will's scope, records user
+  `qexo`, and fails closed when unset. The
+  register-side token shipped as wbic16/register's
+  own sub-slice.
+- **Wire dispatch (slice 4, §§3.4/4.3/6).** The
+  canonical bundle (identity = SHA-256 over the
+  unsigned chain), `POST /v1/dispatch` acceptance
+  (signer peer + signature → per-universe hashes →
+  capability → dedup/fencing; a replay returns the
+  original receipt, a stale attempt is refused),
+  and placement as the fair draw executed:
+  eligibility is measured (reachable, thermal,
+  load, no resident agent at work, inputs
+  stageable), every exclusion is named in the
+  placement receipt, and an empty eligible set
+  leaves the item queued — nothing is placed on
+  the coordinator by default.
+- **F5 resume (slice 5, §8).** Failure detection
+  on heartbeat evidence, teleport to a freshly
+  drawn executor resuming from the last
+  checkpoint (the checkpoint scroll itself rides
+  in the resume bundle), the failure counter
+  reset only by *verified* progress (outputs read
+  back and hash-matched), and auto-pause with a
+  full audit at three consecutive failures.
+- **F6 bridges (slice 6, §9).** The bridge
+  registry — durable, health-checked routes to
+  inference sources, health *calculated* from the
+  per-probe log on every read, never stored.
+  Brief `bridge:` preferences walk in order,
+  every walked-past candidate files a failover
+  receipt, the chosen route rides inside the
+  bundle identity, and a `burn: never` record
+  (ChatGPT's standing mark) refuses at enqueue
+  with the state bytes unchanged.
+- **The app surface + twin sync (slice 7, §2.3).**
+  `--app` drivers for the eight §2.1 dispatch
+  verbs over one session, byte-identical to the
+  CLI by construction (same parsers, same oracle,
+  same bundle hashes); launcher v3 quick actions
+  on the phone surface; and the binding twin
+  sync — wbic16/qexo carries this same tree at
+  this same stamp, its three sanctioned
+  remainders (src/core.rs's Android timer truth,
+  and the two per-repo documents) gated by
+  recursive tree diff.
+
+Gates, all on sandbox state (the live fleet state
+was hash-identical before and after every gate):
+cargo 159/159 on both trees; the house release
+gates (package list 39 files; publish --dry-run
+clean); Gate G 74/74, Gate F 85/85, the slice-4
+pack 96/97 — its one diff is this release's own
+stamp on the `status` line of a v1.7.1-born
+fixture, the v1.7.2 derive-from-build rule
+working as designed — Gate E 84/84, the CLI
+battery 61/61, identical --app transcripts 3/3;
+an upgrade exercise 20/20 (states born under
+v1.6.1 and under the staged v1.7.1 open, operate,
+take the new write path, and still read back
+under their birth binaries); windows-gnu and
+Android aarch64 full links on both trees; the
+launcher v3 APK built from the twin's Android
+binary (versionCode 5, versionName 1.8.0).
+
+Version: Cargo 1.7.3 → 1.8.0; VERSION v1.8.0 — a
+new minor for a new era, in the house pattern
+(1.4.0 the install model, 1.5.0 learn, 1.6.0
+OpenPGP inside, 1.7.0 distributed builds). The
+two acts that remain are Will-timed, exactly as
+the v1.7.1 staging left them: the crates.io
+publish (the tag rule holds — the v1.8.0 tags
+name the merged exo trees of both repos) and
+the fleet rollout through the signed channel,
+whose closing proof — a fleet node draining the
+real register — waits on the §10.4 credential
+leg (Will's awsbox steps), unchanged since
+slice 3.
+
 ## v1.7.3 — 2026-11-17 (the fair draw)
 
 Motivating finding — the 2026-11-17 evaluation of 2026-11-16
