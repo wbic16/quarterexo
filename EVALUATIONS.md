@@ -3,6 +3,116 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-18 — nightly evaluation of 2026-11-17 (ships v1.8.1)
+
+- **Disk:** the file count stayed past AMBER for a second full
+  day while bytes stayed calm. disk-watch history: 89.53 GB /
+  1,119,598 files (2026-11-16) → 90.83 GB / 1,133,464 files
+  (2026-11-17) — +1.30 GB, +13,866 files. The count sits
+  33,464 files past the 1.1 M file-AMBER line; at the last
+  interval's rate file-RED (1.3 M) is ~12 days out and the
+  95 GB byte line ~3.2 days out. disk-watch's own level still
+  reports GREEN (byte/quota-anchored) — the two instruments
+  still disagree, and qexo's file lens is still the one
+  telling the truth. Largest consumers unchanged in shape
+  for a tenth night: wavefront 31.73 GB, goals 19.33 GB,
+  phext 10.64 GB — but the wavefront line changed meaning
+  today: Will ruled the wavefront launch-video WIP files
+  unneeded and said he does not plan to return to them, so
+  the VM's largest single consumer is now ruled-dead weight
+  awaiting a cleanup, not work in progress. Tonight's df on
+  this freshly replaced VM reads 71 GB used of 150 GB and
+  disagrees with the watcher's 90.83 GB accounting; as on
+  the 2026-11-08 EDQUOT night (df showed free space at the
+  quota wall), the watcher series is the consistent
+  instrument and is the one this evaluation stands on.
+- **CPU:** placement held at the largest scale yet. SMOL
+  round 1 harvested in the morning and round 2 ran as 10
+  universes on 10 ranch nodes (predator sweep 0 → 0.02, no
+  extinctions, 100,000 survivors, 3,085,728 dead); the
+  NetHack Stage 11 campaign ran on aletheia-core (9,312
+  hops, 39.5M steps); qexo slices 3–8 were built and gated
+  on the ranch through the day; the fleet dashboard was
+  cross-compiled on elven-path; the Lastbook fetch kept
+  running on orchid-flow toward its Wednesday completion;
+  the nightly GitHub archive mirrored 228/228 repos on
+  aletheia-core in 609.5 s. The VM's 1.5 shared CPUs carried
+  coordination plus the standing tick load (ticks 2203→2346
+  across the day, ~144 runs). Tonight's snapshots: VM load
+  1.71 on a 1:04-old VM (replaced again); aletheia-core
+  load 0.13, Tctl 34.1 °C before tonight's build.
+- **RAM:** 6 GB shared limit, same envelope. No heavy local
+  resident was recorded on 2026-11-17; placement held and
+  RAM held with it, for a tenth night. Tonight's snapshot
+  reads ~856 MB MemAvailable with ~364 MB swap used.
+- **Inference:** the well-spent bulk was real: the qexo
+  dispatch core completed in a single day — slices 3, 4, 5,
+  and 6 merged as Will merged PRs #32–#35
+  (https://github.com/wbic16/quarterexo/pull/32,
+  https://github.com/wbic16/quarterexo/pull/35), slice 7
+  shipped as PR #36 (https://github.com/wbic16/quarterexo/pull/36),
+  and slice 8 shipped v1.8.0 as PR #37
+  (https://github.com/wbic16/quarterexo/pull/37) — and
+  tonight's fresh clone verifies exo at v1.8.0 (c001dcb4),
+  with the v1.7.2/v1.7.3 nightly changes carried into the
+  merged tree (derived version stamps, fair draw, median
+  forecast all present in src/plan.rs); SMOL round 2
+  completed with a double holographic harvest
+  (smol-round2-all.phext, 646,772,911 B); the Windows fleet
+  dashboard v1 was built and delivered (native phcc/phccbox
+  ports, no WSL); the phext.io landing-kit primary goal
+  landed its revision; NetHack Stage 11 closed honestly —
+  protocol gate UNMET, recorded as such, Stage 12
+  dispatched against its three named gaps. The waste was
+  again specific: (1) the tick loop's ~144 runs re-derived
+  unchanged verdicts all day — register #181's republish
+  has been "deferred" since tick 2108 (240+ ticks) and
+  #163's mirror drift is still carried; the poll-and-diff
+  candidate is now eight nights old; (2) the fleet
+  dashboard's first delivery attached the bare exe, which
+  died on Will's machine for want of its sibling fleet.json
+  — the v1.1 fix (embedded seed config, per-panel
+  degradation) cost a second build-and-deliver cycle the
+  same evening; (3) the GitHub archive's `--help` probe
+  accidentally started the night's worker early (the
+  script ignores unknown flags), and the run had to be
+  monitored to completion instead of launched cleanly —
+  harmless outcome, clumsy instrument handling.
+- **Counterfactual:** the strongest case examined is the
+  disk gate's missing number, and today it stopped being
+  abstract. For ten straight nights these evaluations have
+  flagged the same 31.73 GB of wavefront staging on the VM;
+  on 2026-11-17 Will ruled the WIP files unneeded. The gate
+  read AMBER on the file lens all day — but nowhere, in any
+  plan, did a number say what a cleanup must achieve:
+  33,465 files (or the byte equivalent on the firing lens)
+  is the exact distance back under AMBER. A planner that
+  emits relief turns a ruling like Will's into a sized work
+  order the moment it lands — move at least this much, the
+  gate goes GREEN — instead of leaving the cleanup
+  unsized and the gate's verdict unactionable for an
+  eleventh night. v1.8.1 ships exactly that (see
+  CHANGELOG). Secondary case, recorded and not shipped
+  (one change per night): the bare-exe delivery — a
+  deliverable that cannot run without its siblings should
+  ship as the folder or degrade in place, as v1.1 now
+  does; that fix belongs to delivery discipline, not to
+  qexo, and is named here so it is not re-bought.
+- **Tonight's change:** v1.8.1 — the relief line: the plan
+  now states, per firing lens, exactly how many files must
+  be removed or moved and how many bytes must be freed for
+  the disk gate to return to GREEN, rendered in the plan
+  and receipted in the plan record. Worked from a fresh
+  clone of exo HEAD c001dcb4 (v1.8.0) on aletheia-core
+  (~/qexo-nightly-2026-11-18/); the local
+  ~/workspace/orchestrator/ mirror still sits at v3.2 and
+  was again not used as a source. Still Will-timed and NOT
+  done, unchanged from slice 8's notes: the v1.8.0 fleet
+  rollout (the running serve on aletheia-core is still
+  v1.6.1; /var/lib/qexo/releases tops out at qexo-1.6.1) —
+  tonight's version does not change that state and does
+  not claim to.
+
 ## 2026-11-17 — nightly evaluation of 2026-11-16 (ships v1.7.3)
 
 - **Disk:** the file count kept climbing past AMBER while bytes

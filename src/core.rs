@@ -2175,6 +2175,7 @@ pub fn plan_cmd() -> i32 {
         ("disk gate", &data.disk_gate),
         ("fair draw", &draw_receipt),
         ("gate reason", &data.gate_reason),
+        ("relief", &data.relief),
         ("open tasks", &data.open_tasks().to_string()),
         ("tasks source", if tasks_source.is_empty() { "(none configured)" } else { &tasks_source }),
         ("observation", &fmt_coord(&oaddr)),

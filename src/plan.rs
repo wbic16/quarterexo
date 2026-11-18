@@ -29,6 +29,15 @@
 //! empty roster queues heavy placements by name — never a
 //! silent fallback to the hub.
 //
+//! From v1.8.1 the plan states its relief. A gate verdict
+//! (AMBER — no new staging) names no size, and for ten straight
+//! nights the nightly evaluations flagged the same staging the
+//! gate could not size. `relief_line` computes, per firing
+//! lens, the exact distance back under that lens's AMBER line
+//! — files to remove or move, bytes to free — and the plan
+//! renders and receipts it, so a cleanup is a sized work
+//! order, not a mood.
+//!
 //! From-scratch shape: this module is the pure core. It computes
 //! from VALUES — a current disk observation, a history of
 //! observations, task rows, a host snapshot — and renders. Where
@@ -407,6 +416,53 @@ pub fn evaluate_gate(current: &DiskObs, vol: Option<&Volume>, files_root: &str, 
     GateEval { byte_gate, file_gate, disk_gate, byte_detail, file_detail, reason, action }
 }
 
+
+/// The relief line (v1.8.1): what must be removed, moved, or
+/// freed for every firing lens to return under its AMBER line.
+/// The gate's verdict alone names no size — a cleanup ordered
+/// against a verdict is unsized work. Relief is computed from
+/// the static lenses only: a forecast-escalated gate keeps the
+/// forecast's own action text, and this line still reports the
+/// static truth. A lens that is not firing contributes
+/// nothing; when no lens fires the line says so, plainly.
+pub fn relief_line(current: &DiskObs, vol: Option<&Volume>, cfg: &GateConfig) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if cfg.volume_on {
+        if let Some(v) = vol {
+            if v.free_pct() < cfg.free_amber_pct {
+                let needed = (cfg.free_amber_pct / 100.0 * v.total_bytes as f64).ceil() as u64;
+                if v.free_bytes < needed {
+                    parts.push(format!(
+                        "free at least {} on {} (volume AMBER at {:.0}% free)",
+                        fmt_gib(needed - v.free_bytes),
+                        v.root,
+                        cfg.free_amber_pct
+                    ));
+                }
+            }
+        }
+    }
+    if cfg.quota_on && current.used_gb >= cfg.quota_amber_gb {
+        parts.push(format!(
+            "free more than {:.2} GB of quota use (AMBER at {:.0} GB)",
+            current.used_gb - cfg.quota_amber_gb,
+            cfg.quota_amber_gb
+        ));
+    }
+    if current.files >= cfg.file_amber {
+        parts.push(format!(
+            "remove or move at least {} files under the staging root (AMBER at {})",
+            current.files - cfg.file_amber + 1,
+            cfg.file_amber
+        ));
+    }
+    if parts.is_empty() {
+        "none — every lens is under its AMBER line".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
 /// A task row as the planner consumes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskInput {
@@ -638,6 +694,9 @@ pub struct PlanData {
     pub file_detail: String,
     pub disk_gate: String,
     pub disk_gate_action: String,
+    /// The relief line (v1.8.1): the sized distance back to
+    /// GREEN, per firing lens — see `relief_line`.
+    pub relief: String,
     pub forecast: Forecast,
     pub ram_available_mb: f64,
     pub load1: f64,
@@ -778,6 +837,7 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         file_detail: eval.file_detail.clone(),
         disk_gate: disk_gate.to_string(),
         disk_gate_action,
+        relief: relief_line(current, gate.volume.as_ref(), &gate.config),
         forecast,
         ram_available_mb: host.0,
         load1: host.1,
@@ -859,6 +919,7 @@ pub fn render(plan: &PlanData) -> String {
         "  file gate: {} — {}\n",
         plan.file_gate, plan.file_detail
     ));
+    out.push_str(&format!("  relief:    {}\n", plan.relief));
     out.push_str(&format!("  forecast:  {}\n", forecast_line(plan)));
     out.push_str(&format!(
         "  cpu/ram:   host snapshot — {:.0} MB RAM available, load {:.2}\n",
@@ -1328,5 +1389,34 @@ mod tests {
         assert!(out.contains("[1.1.1/1.1.1/1.1.1] film encode"), "task line missing:\n{}", out);
         assert!(out.contains("disk gate: GREEN"), "gate line missing:\n{}", out);
         assert!(out.contains("900000 files under /staging"), "file line must name the counted root:\n{}", out);
+    }
+
+    #[test]
+    fn relief_line_names_the_distance_to_green() {
+        // The 2026-11-17 scenario, reproduced: the file count
+        // past AMBER by 33,464 — relief is the count that must
+        // go to sit back under the line, 33,465.
+        let o = obs(1, 90.83, "GREEN", 1_133_464);
+        let line = relief_line(&o, None, &GateConfig::default());
+        assert!(line.contains("remove or move at least 33465 files"), "relief: {}", line);
+        // The plan carries it, and the render prints it.
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &o, &[], (0.0, 0.0), &gin());
+        assert!(p.relief.contains("33465"), "plan relief: {}", p.relief);
+        assert!(render(&p).contains("  relief:    "), "render:\n{}", render(&p));
+        // Volume lens: 10 GiB free of 100 GiB against a 25%
+        // AMBER line — 15 GiB must be freed.
+        let gib = 1_073_741_824u64;
+        let v = vol("/", 100 * gib, 90 * gib, 10 * gib);
+        let line = relief_line(&obs(1, 0.0, "GREEN", 1), Some(&v), &GateConfig::default());
+        assert!(line.contains("free at least 15 GiB on /"), "relief: {}", line);
+        // Quota lens, where a node configures it.
+        let line = relief_line(&obs(1, 96.0, "GREEN", 1), None, &gin_quota().config);
+        assert!(line.contains("more than 1.00 GB of quota use"), "relief: {}", line);
+        // Firing lenses join in one line.
+        let line = relief_line(&obs(1, 96.0, "GREEN", 1_133_464), None, &gin_quota().config);
+        assert!(line.contains("more than 1.00 GB") && line.contains("33465 files"), "relief: {}", line);
+        // GREEN reports no relief — never an invented number.
+        let line = relief_line(&obs(1, 71.0, "GREEN", 1), None, &GateConfig::default());
+        assert!(line.starts_with("none"), "relief: {}", line);
     }
 }
