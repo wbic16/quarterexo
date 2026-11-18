@@ -184,6 +184,9 @@ pub struct BriefFacts {
     pub capabilities: Vec<String>,
     pub heavy: bool,
     pub contexts: Vec<(Coord, Coord)>,
+    /// The item's acceptable bridges in preference
+    /// order (§9.2): `bridge:` lines in the brief.
+    pub bridges: Vec<String>,
 }
 
 pub fn brief_facts(brief: &str) -> BriefFacts {
@@ -193,6 +196,7 @@ pub fn brief_facts(brief: &str) -> BriefFacts {
             out.capabilities.push(cap);
         }
     }
+    out.bridges = crate::bridge::brief_prefs(brief);
     out.heavy = lattice::field(brief, "heavy").as_deref() == Some("yes");
     for cite in field_all(brief, "context") {
         if let Some((lo, hi)) = cite.split_once("..") {
@@ -230,7 +234,10 @@ fn item_contexts(px: &Phext, item: &Item) -> Vec<(Coord, Coord)> {
 /// the chain of its universes with the signature
 /// scroll removed. Deterministic in the item record,
 /// the brief, the context selections, the origin
-/// identity, and the attempt — nothing else (§4.3).
+/// identity, the attempt, and the routed bridge
+/// (§9.2 — the choice is cited in the manifest, so a
+/// different route is a different bundle) — nothing
+/// else (§4.3).
 pub fn unsigned_chain_bytes(universes: &[Phext]) -> String {
     let mut us: Vec<Phext> = universes.to_vec();
     if let Some(first) = us.first_mut() {
@@ -262,6 +269,7 @@ pub fn build_bundle_parts(
     attempt: u32,
     resume_from: Option<&str>,
     resume_text: Option<&str>,
+    bridge: Option<(&str, &str)>,
 ) -> Result<(Vec<Phext>, String), String> {
     let raw_record = px
         .get(&item.addr)
@@ -374,6 +382,15 @@ pub fn build_bundle_parts(
     for cap in &facts.capabilities {
         mf.push(("capability", cap.clone()));
     }
+    // The routed bridge (§9.2): the choice the dispatch
+    // walk verified live for this dispatch, cited in the
+    // manifest so the executor routes its work over it —
+    // and so the doctor's recomputation, which reads the
+    // filed manifest verbatim, reproduces this bundle.
+    if let Some((bname, bendpoint)) = bridge {
+        mf.push(("bridge", bname.to_string()));
+        mf.push(("bridge-endpoint", bendpoint.to_string()));
+    }
     if let Some(v) = item.value {
         mf.push(("value", v.to_string()));
     }
@@ -427,8 +444,9 @@ pub fn build_bundle(
     attempt: u32,
     resume_from: Option<&str>,
     resume_text: Option<&str>,
+    bridge: Option<(&str, &str)>,
 ) -> Result<Bundle, String> {
-    let (universes, manifest) = build_bundle_parts(px, item, attempt, resume_from, resume_text)?;
+    let (universes, manifest) = build_bundle_parts(px, item, attempt, resume_from, resume_text, bridge)?;
     let sha256 = sha256_hex(unsigned_chain_bytes(&universes).as_bytes());
     Ok(Bundle {
         item_addr: phext::fmt_coord(&item.addr),
@@ -501,6 +519,12 @@ pub struct ParsedBundle {
     /// The manifest's `resume-from:` cite, when this
     /// bundle resumes a teleported attempt (§6).
     pub resume_from: Option<String>,
+    /// The manifest's routed bridge (§9.2), when the
+    /// item named bridges and the dispatch walk chose
+    /// one: the bridge's name and the endpoint the
+    /// executor routes its work over.
+    pub bridge: Option<String>,
+    pub bridge_endpoint: Option<String>,
 }
 
 pub fn parse_wire_bundle(bytes: &[u8]) -> Result<ParsedBundle, String> {
@@ -527,6 +551,8 @@ pub fn parse_wire_bundle(bytes: &[u8]) -> Result<ParsedBundle, String> {
     let sha256 = sha256_hex(unsigned_chain_bytes(&universes).as_bytes());
     let capabilities = field_all(&manifest, "capability");
     let resume_from = lattice::field(&manifest, "resume-from");
+    let bridge = lattice::field(&manifest, "bridge");
+    let bridge_endpoint = lattice::field(&manifest, "bridge-endpoint");
     Ok(ParsedBundle {
         manifest,
         item_addr,
@@ -538,6 +564,8 @@ pub fn parse_wire_bundle(bytes: &[u8]) -> Result<ParsedBundle, String> {
         universes,
         sha256,
         resume_from,
+        bridge,
+        bridge_endpoint,
     })
 }
 
@@ -1467,6 +1495,81 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         return 1;
     }
 
+    // Bridge routing (§9.2): an item whose brief names
+    // bridges routes only over a bridge verified live
+    // for this dispatch. The walk skips the bridge the
+    // last attempt's mid-execution failover receipt
+    // advances past, probes stale or failed evidence on
+    // the spot (a --check reads the evidence as it
+    // stands and writes nothing), and files a failover
+    // receipt for every candidate it walks past. No
+    // live bridge: the item waits queued, the reason
+    // on its record, the wait receipted — it never
+    // falls back to an unlisted source.
+    let item_s = phext::fmt_coord(&item.addr);
+    let mut route_choice: Option<(String, String, String)> = None;
+    let mut route_notes: Vec<String> = Vec::new();
+    if !facts_brief.bridges.is_empty() {
+        let skip = crate::bridge::mid_execution_skips(&lat.px, &item_s, item.attempts);
+        if check {
+            match crate::bridge::route(&mut lat.px, &item_s, attempt, &facts_brief.bridges, &skip, false) {
+                crate::bridge::Route::Chosen(c) => {
+                    route_notes.push(format!(
+                        "bridge: {} — verified live for this dispatch (probe {})",
+                        c.name,
+                        phext::fmt_coord(&c.probe)
+                    ));
+                    route_choice = Some((c.name, c.endpoint, phext::fmt_coord(&c.probe)));
+                }
+                crate::bridge::Route::WouldProbe(n) => {
+                    route_notes.push(format!(
+                        "bridge: {}'s evidence is stale — a live dispatch probes it before routing; the bundle hash below excludes routing",
+                        n
+                    ));
+                }
+                crate::bridge::Route::NoRoute(why) => {
+                    route_notes.push(format!("bridge: {} — a live dispatch waits queued", why));
+                }
+                crate::bridge::Route::Wait(_) => {
+                    route_notes.push("bridge: no live bridge on current evidence".to_string());
+                }
+            }
+        } else {
+            match crate::bridge::route(&mut lat.px, &item_s, attempt, &facts_brief.bridges, &skip, true) {
+                crate::bridge::Route::Chosen(c) => {
+                    route_choice = Some((c.name, c.endpoint, phext::fmt_coord(&c.probe)));
+                }
+                crate::bridge::Route::Wait(reason) => {
+                    append_receipt(
+                        &mut lat.px,
+                        "bridge-wait",
+                        &[
+                            ("item", &item_s),
+                            ("attempt", &attempt.to_string()),
+                            ("reason", &reason),
+                        ],
+                    );
+                    let rec = lat.px.get(&item.addr).cloned().unwrap_or_default();
+                    let rec = lattice::set_field(&rec, "bridge-wait", &reason);
+                    lat.px.insert(item.addr, rec);
+                    if let Err(e) = lat.save() {
+                        eprintln!("qexo dispatch: cannot save state: {}", e);
+                        return 1;
+                    }
+                    println!(
+                        "{} waits queued — {} (the wait and every failover are receipted; no unlisted source is ever substituted)",
+                        item_s, reason
+                    );
+                    return 0;
+                }
+                _ => {
+                    eprintln!("qexo dispatch: internal — a live routing walk returned a check-mode outcome");
+                    return 1;
+                }
+            }
+        }
+    }
+
     // Teleport (§6, §8): a re-dispatch of an item whose
     // earlier attempt checkpointed resumes from the
     // last checkpoint — the cite the origin's
@@ -1500,9 +1603,23 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
 
     // Build and sign the bundle (§3.4, §4.3).
     let gpg = Gpg::open_in(&lattice::state_dir());
-    let bundle = match build_bundle(&lat.px, &item, attempt, resume_from.as_deref(), resume_text.as_deref()) {
+    let bundle = match build_bundle(
+        &lat.px,
+        &item,
+        attempt,
+        resume_from.as_deref(),
+        resume_text.as_deref(),
+        route_choice.as_ref().map(|(n, e, _)| (n.as_str(), e.as_str())),
+    ) {
         Ok(b) => b,
         Err(e) => {
+            // The routing walk's evidence (probe scrolls,
+            // failover receipts) is already in the state
+            // in memory; it is evidence even when the
+            // bundle cannot be built (§9.2).
+            if !facts_brief.bridges.is_empty() && !check {
+                let _ = lat.save();
+            }
             eprintln!("qexo dispatch: cannot build the bundle: {}", e);
             return 1;
         }
@@ -1510,6 +1627,9 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
     let wire_bytes = match sign_bundle(&gpg, &bundle) {
         Ok(w) => w.into_bytes(),
         Err(e) => {
+            if !facts_brief.bridges.is_empty() && !check {
+                let _ = lat.save();
+            }
             eprintln!("qexo dispatch: cannot sign the bundle: {}", e);
             return 1;
         }
@@ -1523,6 +1643,9 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
     if check {
         println!("dispatch check — {} attempt {}", phext::fmt_coord(&item.addr), attempt);
         println!("bundle-sha256: {}", bundle.sha256);
+        for note in &route_notes {
+            println!("{}", note);
+        }
         println!("bundle: {} bytes over {} universe(s)", wire_bytes.len(), bundle.universes.len());
         for line in placement_lines(&placement, wire_bytes.len() as u64) {
             println!("{}", line);
@@ -1673,6 +1796,9 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
     // self-acceptance already filed the attempt).
     let rec = lat.px.get(&item.addr).cloned().unwrap_or_default();
     let rec = lattice::set_field(&rec, "bundle-sha256", &bundle.sha256);
+    // A routed dispatch clears any bridge wait the
+    // record was carrying (§9.2).
+    let rec = remove_field(&rec, "bridge-wait");
     lat.px.insert(item.addr, rec);
     let actor_name = dispatch::local_actor(&lat.px);
     let mut t = Transition::new(ItemState::Dispatched, Actor::Dispatch, &actor_name);
@@ -1680,6 +1806,11 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         "bundle {} accepted by {} — acceptance receipt {}",
         bundle.sha256, target_name, accept_receipt
     );
+    if let Some((bname, _, bprobe)) = &route_choice {
+        // The probe and the choice are cited in the
+        // dispatch receipt (§9.2).
+        t.evidence = format!("{} — bridge {} (probe {})", t.evidence, bname, bprobe);
+    }
     if let Err(e) = dispatch::apply_transition(&mut lat, item.book, &t) {
         eprintln!("qexo dispatch: the transition was refused by the oracle: {}", e);
         return 1;
@@ -1702,6 +1833,9 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
             if let Some(r) = &resume_line {
                 text.push_str(&format!("resume-from: {}\n", r));
             }
+            if let Some((bname, _, bprobe)) = &route_choice {
+                text.push_str(&format!("bridge: {}\nbridge-probe: {}\n", bname, bprobe));
+            }
             lat.px.insert(rec2.addr, text);
         }
     } else {
@@ -1720,6 +1854,10 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         if let Some(r) = &resume_line {
             owned.push(("resume-from".into(), r.clone()));
         }
+        if let Some((bname, _, bprobe)) = &route_choice {
+            owned.push(("bridge".into(), bname.clone()));
+            owned.push(("bridge-probe".into(), bprobe.clone()));
+        }
         let refs: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         let origin_book = next_assignment_book(&lat);
         write_assignment_at(&mut lat, origin_book, &refs);
@@ -1737,7 +1875,7 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         return 1;
     }
     println!(
-        "dispatched {} attempt {} to {} — bundle {} (acceptance receipt {}){}",
+        "dispatched {} attempt {} to {} — bundle {} (acceptance receipt {}){}{}",
         bundle.item_addr,
         attempt,
         target_name,
@@ -1745,6 +1883,10 @@ pub fn cmd_dispatch(item_arg: Option<&str>, to: Option<&str>, check: bool) -> i3
         accept_receipt,
         match &resume_from {
             Some(cite) => format!(" — resuming from {}", cite),
+            None => String::new(),
+        },
+        match &route_choice {
+            Some((bname, _, _)) => format!(" — bridge {}", bname),
             None => String::new(),
         }
     );
@@ -2170,6 +2312,42 @@ pub fn cmd_heartbeat(item_arg: &str) -> i32 {
                         eprintln!("qexo heartbeat: the failure transition was refused by the oracle: {}", e);
                         return 1;
                     }
+                }
+            }
+            // Bridge failover (§9.2): the attempt routed
+            // over a bridge, and the executor's evidence
+            // names that bridge as what failed — the
+            // failover is receipted in this same save,
+            // and the next dispatch's walk advances past
+            // the bridge (bridge::mid_execution_skips).
+            if let Some(bname) = &asg.bridge {
+                if status.contains(bname.as_str()) {
+                    let brief = lat.px.get(&dispatch::brief_addr(addr[5])).cloned().unwrap_or_default();
+                    let prefs = crate::bridge::brief_prefs(&brief);
+                    let to = prefs
+                        .iter()
+                        .skip_while(|n| *n != bname)
+                        .nth(1)
+                        .cloned()
+                        .unwrap_or_else(|| "none".to_string());
+                    let coord = append_receipt(
+                        &mut lat.px,
+                        "bridge-failover",
+                        &[
+                            ("item", item_arg),
+                            ("attempt", &attempt.to_string()),
+                            ("from", bname.as_str()),
+                            ("to", to.as_str()),
+                            ("evidence", &format!("executor {} reports: {}", node, status)),
+                        ],
+                    );
+                    println!(
+                        "bridge failover for {} — {} failed mid-execution; the next dispatch advances to {} (receipt {})",
+                        item_arg,
+                        bname,
+                        to,
+                        phext::fmt_coord(&coord)
+                    );
                 }
             }
         }
@@ -2775,11 +2953,50 @@ mod tests {
     }
 
     #[test]
+    fn bundle_carries_the_routed_bridge_in_its_identity() {
+        let px = fixture_px();
+        let item = fixture_item(&px);
+        let plain = build_bundle(&px, &item, 1, None, None, None).unwrap();
+        let routed = build_bundle(
+            &px,
+            &item,
+            1,
+            None,
+            None,
+            Some(("claude", "http://127.0.0.1:8791/")),
+        )
+        .unwrap();
+        // The choice is cited in the manifest (§9.2) and
+        // is part of the bundle's identity: a different
+        // route is a different bundle (§4.3).
+        assert!(routed.manifest.contains("bridge: claude"));
+        assert!(routed.manifest.contains("bridge-endpoint: http://127.0.0.1:8791/"));
+        assert_ne!(plain.sha256, routed.sha256);
+        // Deterministic: the same route rebuilds to the
+        // same identity — the property the doctor's
+        // recomputation (which reads the filed manifest
+        // verbatim) relies on.
+        let again = build_bundle(
+            &px,
+            &item,
+            1,
+            None,
+            None,
+            Some(("claude", "http://127.0.0.1:8791/")),
+        )
+        .unwrap();
+        assert_eq!(routed.sha256, again.sha256);
+        // The brief's preference lines parse in order.
+        let facts = brief_facts("brief\nbridge: grok\nbridge: claude\nbridge: grok\n");
+        assert_eq!(facts.bridges, vec!["grok".to_string(), "claude".to_string()]);
+    }
+
+    #[test]
     fn bundle_canonical_form_is_deterministic_and_self_describing() {
         let px = fixture_px();
         let item = fixture_item(&px);
-        let b1 = build_bundle(&px, &item, 1, None, None).unwrap();
-        let b2 = build_bundle(&px, &item, 1, None, None).unwrap();
+        let b1 = build_bundle(&px, &item, 1, None, None, None).unwrap();
+        let b2 = build_bundle(&px, &item, 1, None, None, None).unwrap();
         assert_eq!(b1.sha256, b2.sha256, "an unchanged item re-dispatches to the same identity (§4.3)");
         assert_eq!(b1.universes.len(), 2, "spec universe + one context universe");
         assert!(b1.manifest.contains("item: 11.11.11/2.1.1/1.1.1"));
@@ -2803,7 +3020,7 @@ mod tests {
         let mut px2 = fixture_px();
         px2.insert(dispatch::brief_addr(1), "brief\ncapability: rust\ndo another thing\n".into());
         let item2 = fixture_item(&px2);
-        let b3 = build_bundle(&px2, &item2, 1, None, None).unwrap();
+        let b3 = build_bundle(&px2, &item2, 1, None, None, None).unwrap();
         assert_ne!(b1.sha256, b3.sha256);
     }
 
@@ -2811,7 +3028,7 @@ mod tests {
     fn doctor_recomputation_round_trips_and_detects_divergence() {
         let px = fixture_px();
         let item = fixture_item(&px);
-        let bundle = build_bundle(&px, &item, 1, None, None).unwrap();
+        let bundle = build_bundle(&px, &item, 1, None, None, None).unwrap();
         // Parse the unsigned universes as a wire bundle
         // (parse does not need the signature; verify does).
         let wire = Phext::serialize_universes(&bundle.universes, true);
@@ -2856,7 +3073,7 @@ mod tests {
         let rec2 = lattice::set_field(&rec2, "attempts", "1");
         px2.insert(item.addr, rec2);
         let item2 = fixture_item(&px2);
-        let bundle2 = build_bundle(&px2, &item2, 2, None, None).unwrap();
+        let bundle2 = build_bundle(&px2, &item2, 2, None, None, None).unwrap();
         let wire2 = Phext::serialize_universes(&bundle2.universes, true);
         let pb2 = parse_wire_bundle(wire2.as_bytes()).unwrap();
         let mut lat2 = born_lat(Phext::new());
@@ -2878,7 +3095,7 @@ mod tests {
     fn file_attempt_refuses_a_foreign_bundle_at_the_same_address() {
         let px = fixture_px();
         let item = fixture_item(&px);
-        let bundle = build_bundle(&px, &item, 1, None, None).unwrap();
+        let bundle = build_bundle(&px, &item, 1, None, None, None).unwrap();
         let wire = Phext::serialize_universes(&bundle.universes, true);
         let pb = parse_wire_bundle(wire.as_bytes()).unwrap();
         let mut lat = born_lat(Phext::new());
@@ -2936,7 +3153,7 @@ mod tests {
         px.insert(dispatch::item_addr(1), rec);
         let item = fixture_item(&px);
         let cp_text = "checkpoint\nat: 2026-11-17 10:00 CST\nnote: half the welds done\n";
-        let bundle = build_bundle(&px, &item, 2, Some("$2:11.11.11/2.1.1/1.1.4"), Some(cp_text)).unwrap();
+        let bundle = build_bundle(&px, &item, 2, Some("$2:11.11.11/2.1.1/1.1.4"), Some(cp_text), None).unwrap();
         assert!(bundle.manifest.contains("attempt: 2"));
         assert!(bundle.manifest.contains("resume-from: $2:11.11.11/2.1.1/1.1.4"));
         assert_eq!(bundle.universes.len(), 3, "spec + context + resume");
@@ -2952,7 +3169,7 @@ mod tests {
         assert!(bundle.manifest.contains(&format!("universe: 3 sha256: {}", h)));
         // A cite without held content still names the
         // resume point — and carries no resume universe.
-        let bare = build_bundle(&px, &item, 2, Some("$2:11.11.11/2.1.1/1.1.4"), None).unwrap();
+        let bare = build_bundle(&px, &item, 2, Some("$2:11.11.11/2.1.1/1.1.4"), None, None).unwrap();
         assert!(bare.manifest.contains("resume-from: $2:11.11.11/2.1.1/1.1.4"));
         assert_eq!(bare.universes.len(), 2);
         // File the resume bundle on a receiving lattice:

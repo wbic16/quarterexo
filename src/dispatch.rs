@@ -253,6 +253,23 @@ pub fn enqueue(args: &[String]) -> i32 {
         Ok(l) => l,
         Err(code) => return code,
     };
+    // F6 (§9.2): a brief that names a bridge whose
+    // record carries `burn: never` is refused at
+    // enqueue — dispatch never routes work over such a
+    // bridge, so the item could only ever wait. The
+    // refusal costs no state: nothing has been written
+    // yet, and the state file stays byte-identical.
+    for name in crate::bridge::brief_prefs(&brief) {
+        if let Some(b) = crate::bridge::find_bridge(&lat.px, &name) {
+            if b.burn == "never" {
+                eprintln!(
+                    "qexo enqueue: the brief names bridge '{}', whose record carries burn: never — dispatch never routes work over it (§9.2); the enqueue is refused",
+                    name
+                );
+                return 1;
+            }
+        }
+    }
     let node = lat
         .px
         .get(&lattice::IDENTITY)
@@ -1038,6 +1055,9 @@ pub struct AssignmentRec {
     pub attempt: Option<String>,
     pub heartbeat: Option<String>,
     pub live: bool,
+    /// The bridge this attempt routed over (§9.2),
+    /// when the origin's routing walk chose one.
+    pub bridge: Option<String>,
 }
 
 pub fn load_assignments(px: &phext::Phext) -> Vec<AssignmentRec> {
@@ -1053,6 +1073,7 @@ pub fn load_assignments(px: &phext::Phext) -> Vec<AssignmentRec> {
                 attempt: lattice::field(t, "attempt"),
                 heartbeat: lattice::field(t, "heartbeat"),
                 live: lattice::field(t, "status").is_none(),
+                bridge: lattice::field(t, "bridge"),
             });
         }
     }

@@ -8,8 +8,10 @@
 //! (lattice), the state commands (core), the dispatch
 //! queue's local verbs (dispatch), the register link
 //! (register), the wire dispatch verbs (wire), the
-//! wiring gate (wiring), and this CLI.
+//! inference bridges (bridge), the wiring gate
+//! (wiring), and this CLI.
 
+mod bridge;
 mod cli;
 mod core;
 mod crypto;
@@ -68,6 +70,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Evolve { check: false }
             | Command::Doctor { fix: true }
             | Command::Enqueue(_)
+            | Command::Bridge { write: true, .. }
             | Command::Pause(_)
             | Command::Resume(_)
             | Command::Cancel(_)
@@ -179,6 +182,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         Command::Checkpoint(args) => wire::cmd_checkpoint(&args),
         Command::Fail(args) => wire::cmd_fail(&args),
         Command::Audit(args) => dispatch::audit(&args),
+        Command::Bridge { args, .. } => bridge::cmd_bridge(&args),
         Command::Show(addr) => dispatch::show(&addr),
         Command::Release => core::release(),
         Command::Update { check } => core::update(check),
