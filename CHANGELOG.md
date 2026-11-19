@@ -1,3 +1,51 @@
+## v1.8.2 — 2026-11-19 (the input check)
+
+Motivating finding — the 2026-11-19 evaluation of 2026-11-18
+(EVALUATIONS.md, 2026-11-19 section): the day's largest
+inference cost was a label trusted over its content — the
+ietf.phext corpus's reference extractor labelled the
+newest-format RFCs "parsed" while extracting zero edges
+from them (a Table-of-Contents line parsed as the
+References heading, from ~RFC 8750 on), and the composition
+proceeded on the label until a downstream audit caught it
+and the corpus was rebuilt. qexo's own disk inputs have
+the same failure shapes, unguarded: the caller's history
+read defaults an unparseable telemetry field to zero, so a
+corrupt scroll enters the series as a reading of 0 files
+and 0.00 GB; a state restore or a cross-node merge can
+leave the series out of order, two readings claiming one
+day, or the current reading older than the series' newest
+— and the plan judged all of it as a live, coherent
+picture, silently.
+
+What v1.8.2 does (one change: the plan checks its inputs):
+
+- `src/plan.rs`: new pure `input_check(current, history)`
+  — names, in one line: a current reading that itself
+  carries no measurement (0 files, 0.00 GB used); a current
+  reading older than the series' newest; readings inside
+  the series carrying no measurement, with their count; a
+  series out of order, or two readings claiming one day
+  with different numbers; and, when there is no series, that
+  the plan judges a single unrecorded reading. When nothing
+  fires: "ok — series ordered, current reading is the
+  newest, every reading carries a measurement". Dates are
+  named via a new `civil_from_days` beside its inverse.
+- `PlanData` carries `input_check`; `render` prints an
+  `inputs:` line under the forecast; `plan_cmd` receipts
+  the same text as the plan record's `input check` field
+  (src/core.rs), beside the relief field v1.8.1 added.
+- The check names; it does not alter any verdict. Gating
+  placements on a split picture is a recorded future
+  candidate, not silently folded in.
+- Tests: 161/161 on aletheia-core (1 new: the clean
+  2026-11-17→18 series reads ok; a superseded current, an
+  empty reading in the series, an empty current, an
+  out-of-order seam, a conflicting duplicate day, and the
+  no-series case are each named). Version: Cargo
+  1.8.1 → 1.8.2; VERSION v1.8.2 (PLAN_VERSION derives,
+  per v1.7.2). No other behavior changes.
+
 ## v1.8.1 — 2026-11-18 (the relief line)
 
 Motivating finding — the 2026-11-18 evaluation of 2026-11-17

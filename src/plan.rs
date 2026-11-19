@@ -38,6 +38,21 @@
 //! renders and receipts it, so a cleanup is a sized work
 //! order, not a mood.
 //!
+//! From v1.8.2 the plan checks its own inputs. The gate
+//! judges the telemetry series it is handed — but a series
+//! can lie by shape: the caller's history read defaults an
+//! unparseable field to zero, so a corrupt scroll enters as
+//! a reading of 0 files and 0.00 GB; a restore or a merge
+//! can leave the series out of order, two readings claiming
+//! one day, or the current reading older than the series'
+//! newest. `input_check` names each of those in the plan —
+//! the gate's verdicts are unchanged, but a plan built on a
+//! split picture now says so on its face, instead of
+//! lending the picture its authority. (Motivating finding:
+//! the 2026-11-19 evaluation of 2026-11-18 — a corpus
+//! stage's output carried a "parsed" label its content
+//! contradicted, and only a downstream audit caught it.)
+//!
 //! From-scratch shape: this module is the pure core. It computes
 //! from VALUES — a current disk observation, a history of
 //! observations, task rows, a host snapshot — and renders. Where
@@ -463,6 +478,110 @@ pub fn relief_line(current: &DiskObs, vol: Option<&Volume>, cfg: &GateConfig) ->
     }
 }
 
+/// Inverse of days_from_civil (Hinnant's civil_from_days) —
+/// the date text an epoch day names, for messages a human
+/// reads. Kept beside its inverse so the pair cannot drift.
+pub fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+fn date_text(day: i64) -> String {
+    let (y, m, d) = civil_from_days(day);
+    format!("{:04}-{:02}-{:02}", y, m, d)
+}
+
+/// The input check (v1.8.2): does the picture the gate is
+/// about to judge hold together? Pure, from the same values
+/// compute() receives — the current reading and the series
+/// behind it. Four findings, each named in the plan:
+///
+/// - the current reading itself carries no measurement
+///   (0 files, 0.00 GB used): the gate would judge a parse
+///   failure, not a disk;
+/// - the current reading is older than the series' newest:
+///   the gate would judge a superseded reading as current;
+/// - readings inside the series carry no measurement: the
+///   history read's zero defaults, counted as readings —
+///   they sit in the forecast window and drag its rates;
+/// - the series is out of order, or two readings claim one
+///   day with different numbers: a restore or merge seam
+///   the forecast window spans without knowing.
+///
+/// No series at all is its own finding. When nothing fires
+/// the line says so in one breath. The check names; it does
+/// not alter any verdict — gating on a split picture is a
+/// future candidate, recorded in the 2026-11-19 evaluation.
+pub fn input_check(current: &DiskObs, history: &[DiskObs]) -> String {
+    let mut findings: Vec<String> = Vec::new();
+    let empty = |o: &DiskObs| o.files == 0 && o.used_gb == 0.0;
+    if empty(current) {
+        findings.push(
+            "the current reading itself carries no measurement (0 files, 0.00 GB used) — the gate is judging a parse failure, not a disk"
+                .to_string(),
+        );
+    }
+    if history.is_empty() {
+        findings.push(
+            "no telemetry series — the plan judges a single unrecorded reading".to_string(),
+        );
+        return findings.join("; ");
+    }
+    if let Some(newest) = history.iter().map(|o| o.day).max() {
+        if current.day < newest {
+            findings.push(format!(
+                "the current reading is dated {}, older than the series' newest ({}) — the gate judges a superseded reading",
+                date_text(current.day),
+                date_text(newest)
+            ));
+        }
+    }
+    let empties = history.iter().filter(|o| empty(o)).count();
+    if empties > 0 {
+        findings.push(format!(
+            "{} of the series' {} readings {} no measurement (0 files, 0.00 GB used) — an unparseable record counted as a reading",
+            empties,
+            history.len(),
+            if empties == 1 { "carries" } else { "carry" }
+        ));
+    }
+    for pair in history.windows(2) {
+        let (a, b) = (&pair[0], &pair[1]);
+        if b.day < a.day {
+            findings.push(format!(
+                "the series is out of order: {} follows {} — a restore or merge artifact; the forecast window spans the seam",
+                date_text(b.day),
+                date_text(a.day)
+            ));
+            break;
+        }
+        if b.day == a.day && (b.files != a.files || (b.used_gb - a.used_gb).abs() > f64::EPSILON) {
+            findings.push(format!(
+                "two readings claim {} with different numbers ({:.2} GB / {} files vs {:.2} GB / {} files)",
+                date_text(a.day),
+                a.used_gb,
+                fmt_count(a.files),
+                b.used_gb,
+                fmt_count(b.files)
+            ));
+            break;
+        }
+    }
+    if findings.is_empty() {
+        "ok — series ordered, current reading is the newest, every reading carries a measurement".to_string()
+    } else {
+        findings.join("; ")
+    }
+}
+
 /// A task row as the planner consumes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskInput {
@@ -697,6 +816,9 @@ pub struct PlanData {
     /// The relief line (v1.8.1): the sized distance back to
     /// GREEN, per firing lens — see `relief_line`.
     pub relief: String,
+    /// The input check (v1.8.2): whether the series behind
+    /// this plan holds together — see `input_check`.
+    pub input_check: String,
     pub forecast: Forecast,
     pub ram_available_mb: f64,
     pub load1: f64,
@@ -838,6 +960,7 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         disk_gate: disk_gate.to_string(),
         disk_gate_action,
         relief: relief_line(current, gate.volume.as_ref(), &gate.config),
+        input_check: input_check(current, history),
         forecast,
         ram_available_mb: host.0,
         load1: host.1,
@@ -921,6 +1044,7 @@ pub fn render(plan: &PlanData) -> String {
     ));
     out.push_str(&format!("  relief:    {}\n", plan.relief));
     out.push_str(&format!("  forecast:  {}\n", forecast_line(plan)));
+    out.push_str(&format!("  inputs:    {}\n", plan.input_check));
     out.push_str(&format!(
         "  cpu/ram:   host snapshot — {:.0} MB RAM available, load {:.2}\n",
         plan.ram_available_mb, plan.load1
@@ -1418,5 +1542,68 @@ mod tests {
         // GREEN reports no relief — never an invented number.
         let line = relief_line(&obs(1, 71.0, "GREEN", 1), None, &GateConfig::default());
         assert!(line.starts_with("none"), "relief: {}", line);
+    }
+
+    #[test]
+    fn input_check_names_what_the_gate_cannot_see() {
+        // v1.8.2, from the 2026-11-19 evaluation of 2026-11-18:
+        // a stage's output carried a success label its content
+        // contradicted (a corpus extraction labelled "parsed"
+        // with zero edges extracted), caught only downstream.
+        // qexo's own inputs have the same failure shapes; the
+        // check names them in the plan. The real disk-watch
+        // series anchors the clean case: 2026-11-17 past file
+        // AMBER, 2026-11-18 relieved by the wavefront cleanup.
+        let d = |day: i64| days_from_civil(2026, 11, day);
+        let hist = vec![
+            obs(d(17), 90.83, "GREEN", 1_133_464),
+            obs(d(18), 65.65, "GREEN", 1_000_256),
+        ];
+        let cur = hist[1].clone();
+        let line = input_check(&cur, &hist);
+        assert!(line.starts_with("ok"), "clean series must read ok: {}", line);
+        // The plan carries it and the render prints it.
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &gin());
+        assert!(p.input_check.starts_with("ok"), "plan input check: {}", p.input_check);
+        assert!(render(&p).contains("  inputs:    "), "render:\n{}", render(&p));
+        // A superseded current reading is named, with dates.
+        let stale = obs(d(14), 86.65, "GREEN", 1_092_138);
+        let line = input_check(&stale, &hist);
+        assert!(line.contains("older than the series' newest"), "stale: {}", line);
+        assert!(line.contains("2026-11-14"), "stale names its date: {}", line);
+        // An empty reading inside the series (the history
+        // read's zero default for an unparseable scroll).
+        let h2 = vec![
+            obs(d(16), 89.53, "GREEN", 1_119_598),
+            obs(d(17), 0.0, "?", 0),
+            obs(d(18), 65.65, "GREEN", 1_000_256),
+        ];
+        let cur2 = h2[2].clone();
+        let line = input_check(&cur2, &h2);
+        assert!(line.contains("no measurement"), "empty in series: {}", line);
+        // The current reading itself empty: the gate would
+        // judge a parse failure as a healthy disk.
+        let cur3 = obs(d(18), 0.0, "?", 0);
+        let line = input_check(&cur3, &hist);
+        assert!(line.contains("current reading itself carries no measurement"), "current empty: {}", line);
+        // Out of order: a restore or merge seam.
+        let h3 = vec![
+            obs(d(18), 65.65, "GREEN", 1_000_256),
+            obs(d(17), 90.83, "GREEN", 1_133_464),
+        ];
+        let cur3b = h3[1].clone();
+        let line = input_check(&cur3b, &h3);
+        assert!(line.contains("out of order"), "order: {}", line);
+        // Two readings claiming one day with different numbers.
+        let h4 = vec![
+            obs(d(17), 90.83, "GREEN", 1_133_464),
+            obs(d(17), 65.65, "GREEN", 1_000_256),
+        ];
+        let cur4 = h4[1].clone();
+        let line = input_check(&cur4, &h4);
+        assert!(line.contains("two readings claim 2026-11-17"), "duplicate: {}", line);
+        // No series at all degrades honestly — never invented.
+        let line = input_check(&cur, &[]);
+        assert!(line.contains("no telemetry series"), "no series: {}", line);
     }
 }

@@ -2176,6 +2176,7 @@ pub fn plan_cmd() -> i32 {
         ("fair draw", &draw_receipt),
         ("gate reason", &data.gate_reason),
         ("relief", &data.relief),
+        ("input check", &data.input_check),
         ("open tasks", &data.open_tasks().to_string()),
         ("tasks source", if tasks_source.is_empty() { "(none configured)" } else { &tasks_source }),
         ("observation", &fmt_coord(&oaddr)),
