@@ -1,3 +1,43 @@
+## v1.8.1 — 2026-11-18 (the relief line)
+
+Motivating finding — the 2026-11-18 evaluation of 2026-11-17
+(EVALUATIONS.md, 2026-11-18 section): the disk gate has read
+AMBER on the file lens for two full days (1,133,464 files
+against the 1,100,000 AMBER line) and the nightly evaluations
+have flagged the same 31.73 GB of wavefront staging on the
+Muse VM for ten straight nights. On 2026-11-17 Will ruled
+those WIP files unneeded — and no plan anywhere stated what
+a cleanup must achieve. The gate delivered a verdict
+(AMBER, no new staging) with no size: the distance back to
+GREEN is a number the planner already holds every input
+for, and never computed.
+
+What v1.8.1 does (one change: the plan states its relief):
+
+- `src/plan.rs`: new pure `relief_line(current, vol, cfg)`
+  — for each firing lens, the exact amount that must be
+  removed, moved, or freed to return under its AMBER line:
+  the file lens names the count (`files − file_amber + 1`,
+  an exact integer); the volume lens names the bytes that
+  must be freed for the free fraction to reach the AMBER
+  percentage; the quota lens (where a node configures it)
+  names the GB beyond the ceiling line. Lenses that are
+  not firing contribute nothing; when no lens fires the
+  line reads "none — every lens is under its AMBER line".
+- `PlanData` carries `relief`; `render` prints a `relief:`
+  line under the gate lines; `plan_cmd` receipts the same
+  text as the plan record's `relief` field, so the number
+  a cleanup was sized against survives in the lattice.
+  Relief is computed from the static lenses only — a
+  forecast-escalated gate keeps the forecast's own action
+  text, and its relief line still reports the static truth.
+- Tests: the 2026-11-17 scenario reproduced exactly (file
+  relief 33,465 at 1,133,464 files); volume-lens byte
+  relief; quota-lens relief; combined lenses join in one
+  line; a GREEN reading reports no relief. Version: Cargo
+  1.8.0 → 1.8.1; VERSION v1.8.1 (PLAN_VERSION derives, per
+  v1.7.2). No other behavior changes.
+
 ## v1.8.0 — 2026-11-17 (the dispatch core ships)
 
 The held v1.7.1-line release (task 40.9.7/11.9.17/
