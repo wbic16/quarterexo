@@ -3,6 +3,135 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-19 — nightly evaluation of 2026-11-18 (ships v1.8.2)
+
+- **Disk:** the relief arrived, four times over. disk-watch
+  history: 90.83 GB / 1,133,464 files (2026-11-17) →
+  65.65 GB / 1,000,256 files (2026-11-18) — −25.18 GB,
+  −133,208 files in one interval, the largest single-day
+  drop in the series. The driver was Will's 2026-11-17
+  ruling executed: the wavefront launch-video WIP deleted
+  (viz14 alone 14 GB / 5,157 files; the evening's cleanup
+  total ~25.5 GB with caches and the lossless pair), taking
+  wavefront 31.73 GB → 9.69 GB after ten straight nights as
+  the VM's largest consumer. v1.8.1's relief line, written
+  the same night, asked for 33,465 files; the cleanup
+  delivered ~4× that. The file count now sits 99,744 under
+  the 1.1 M AMBER line, and qexo's file lens and
+  disk-watch's own level agree GREEN for the first time
+  since the count crossed on 2026-11-15. Growth inside the
+  fall: ietf.phext (564,589,207 B) landed in phext/.
+  Largest consumers tonight: goals 19.41 GB, phext
+  10.64 GB, wavefront 9.69 GB, smol 4.47 GB. Tonight's live
+  df reads 68 GB used of 150 GB (45%).
+- **CPU:** placement held. The day's sustained ranch load
+  was NetHack Stage 12 (search12 campaign 29) on
+  aletheia-core — the watchdog's count was 1, that task, at
+  nearly every pass — with the ietf corpus rebuild and
+  re-audit cycle working against ranch-resident copies
+  (mirror on free-fall, hosted SQ on logos-prime) and the
+  Scrollspace coordinators in the late evening (the
+  continuity task ran from Will's 23:54 request to its
+  00:12 close; a multiverse-layout coordinator dispatched
+  at 00:22). The VM's 1.5 shared CPUs carried coordination
+  plus the standing tick/watchdog load (task ticks
+  2353→2491 across the day, ~140 runs). Tonight's
+  snapshots: VM load 4.18 at a harness-busy moment on a
+  47-minute-old VM (replaced again); aletheia-core load
+  0.18, Tctl 32.1 °C before tonight's build.
+- **RAM:** 6 GB shared limit, same envelope — tonight's
+  snapshot ~1.52 GB MemAvailable with ~370 MB swap used,
+  the roomiest reading in this series (the usual band is
+  0.35–0.9 GB). No heavy local resident was recorded on
+  2026-11-18; placement held and RAM held with it, for an
+  eleventh night. Ranch side tonight: aletheia-core
+  20.7 GB available of 30.5 GB.
+- **Inference:** the well-spent bulk was real: the
+  ietf.phext One Day Build closed READY after Judge's
+  re-audit — 10,052 records, 96,168 reference edges, 6,888
+  implementation links across 88 projects, final artifact
+  564,589,207 B (sha256 9ecd7946…); RFC Box proved itself
+  on demand three times the same day (P25 IKI key server
+  22/22, a phext-streaming web browser 32/32, an FTP
+  client 33/33); phweb shipped 13/13; the phext RFC draft
+  was re-based to libphext-rs v0.6.0 with a 16-RFC
+  control-code cross-reference; the Humanities Assay spec
+  was drafted (32,042 B) and humanities.phext founded in
+  wbic16/human; the Boardy receipts bundle passed QC READY
+  and was pushed (register #192 closed); the cluster room
+  was surveyed and a 14-node temperature census taken;
+  Plain View's OpenClaw crash-loop was found and removed
+  at Will's direction; Scrollspace continuity shipped as
+  phext-lattice PR #74 (https://github.com/wbic16/phext-lattice/pull/74),
+  merged and deployed with a 13/13 continuity walk. The
+  waste was again specific: (1) the ietf Leg 3 silent
+  under-extraction (see Counterfactual) — a full corpus
+  rebuild and re-audit spent repairing a defect one sanity
+  check would have caught at extraction; (2) the
+  attribution error — a single extracted line of Will's
+  2026-11-02 statement used as a premise about phext's
+  authorship, corrected of record by Will the same day
+  ("there is no link to AI or LLMs in the format. I wrote
+  it myself.") with a new standing rule (read the whole
+  statement in its original exchange) — inference spent
+  building on a false premise, then spent again correcting
+  everywhere it travelled; (3) the tick loop's ~140 runs
+  re-derived unchanged verdicts all day — the republish to
+  wbic16/exo-plan@exo deferred since tick 2108 is still
+  outstanding (~380 ticks on), and the poll-and-diff
+  candidate is now nine nights old; (4) edit.phext.io's
+  manual stopgap had been serving without its OAuth
+  environment (the missing sign-out button was the visible
+  symptom) until Will restored the systemd unit himself at
+  00:05 — and the restored posture's anonymous 401s on
+  /api/* are the access regression behind his 2026-11-19
+  ruling that traversal and viewing need no login.
+- **Counterfactual:** the strongest case examined is the
+  ietf.phext Leg 3 extraction, and it is the third
+  occurrence of one shape. The v3-era reference extractor
+  parsed the Table-of-Contents line as the References
+  heading from ~RFC 8750 onward; the newest-format RFCs
+  (9000/9001/9002) shipped zero reference edges under a
+  "parsed" label, and RFC 9110 read cited_by=0 against 57
+  citations in its own text. The 564 MB composition
+  proceeded on the label; only Judge's downstream audit
+  caught it, and the fix cost a full corpus rebuild, a new
+  sanity gate in the builder, and a re-audit. A planner
+  that sanity-gates each stage's output against its inputs
+  before the next stage composes on it — a parsed record
+  with zero extracted edges is a failed extraction, not a
+  successful one — catches the defect at extraction time
+  for the price of one check. Same shape as the NetHack
+  episode cap (2026-11-15) and the Chromium shallow clone
+  (2026-11-16): verify the instrument's output, not its
+  label. Tonight's change applies the lesson to qexo's own
+  inputs (see CHANGELOG): the history read behind the plan
+  defaults an unparseable telemetry field to zero, so a
+  corrupt scroll enters the series as a 0-file, 0.00 GB
+  reading; a restore or merge can leave the series out of
+  order or the current reading superseded — and until
+  tonight the plan judged all of it as a live, coherent
+  picture without a word. Secondary case, recorded and not
+  shipped (its fix is a standing rule, not code): the
+  attribution error is the same shape in prose — an
+  extraction (one line) trusted without its context.
+- **Tonight's change:** v1.8.2 — the input check: the plan
+  now names a split disk picture on its face (empty,
+  superseded, out-of-order, or duplicate-claimed readings;
+  no series at all), rendered in the plan and receipted in
+  the plan record; verdicts unchanged. Stacked on the
+  v1.8.1 branch (emise/relief-line-v1.8.1, 6b8e12e — its
+  merge is Will-timed; exo still sits at c001dcb, v1.8.0)
+  so the relief line is not stranded a second time; worked
+  from that branch in ~/qexo-nightly-2026-11-19/ on
+  aletheia-core. Gates: cargo 161/161, wiring ok (20
+  modules), the binary run in sandbox state (the plan
+  prints the new inputs line; the live fleet state,
+  sha256 fc563b56…, was hash-identical before and after).
+  The local ~/workspace/orchestrator/ mirror still sits at
+  v3.2 and was again not used as a source. The wbic16/qexo
+  twin sync remains a separate tracked debt, as before.
+
 ## 2026-11-18 — nightly evaluation of 2026-11-17 (ships v1.8.1)
 
 - **Disk:** the file count stayed past AMBER for a second full
