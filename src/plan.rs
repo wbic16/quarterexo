@@ -53,6 +53,24 @@
 //! stage's output carried a "parsed" label its content
 //! contradicted, and only a downstream audit caught it.)
 //!
+//! From v1.8.3 the plan judges its host snapshot. The disk
+//! currency has carried a gate, a relief line, a forecast,
+//! and an input check; the CPU/RAM snapshot the caller
+//! already takes arrived as two raw numbers and no verdict
+//! — on the fleet's smallest host (1.5 shared CPUs, a few
+//! hundred MB of headroom) a plan could read load 2.34 with
+//! 467 MB available and still say nothing about whether
+//! anything else belongs there. `host_line` judges the
+//! snapshot per core and per MB of headroom — never by
+//! absolute load, the v1.0.2 error of wearing one machine's
+//! numbers on another — and names pressure where it finds
+//! it. Like the input check, it names; it does not yet gate
+//! placements. (Motivating finding: the 2026-11-20
+//! evaluation of 2026-11-19 — a build coordinator died on
+//! a transport timeout on the pressured VM after finishing
+//! its ship, and no plan anywhere had called the host
+//! pressured.)
+//!
 //! From-scratch shape: this module is the pure core. It computes
 //! from VALUES — a current disk observation, a history of
 //! observations, task rows, a host snapshot — and renders. Where
@@ -285,6 +303,12 @@ pub struct GateInputs {
     /// supply fixed seeds, so a plan is reproducible from
     /// its receipt.
     pub draw_seed: u64,
+    /// The host's core count (v1.8.3): the denominator the
+    /// host line judges load against. The caller reads
+    /// `available_parallelism`; 0 means unmeasured, and the
+    /// host line degrades to naming that rather than
+    /// judging load without a denominator.
+    pub cores: usize,
 }
 
 /// The gate's verdict, with its reasons kept as text: which lens
@@ -582,6 +606,76 @@ pub fn input_check(current: &DiskObs, history: &[DiskObs]) -> String {
     }
 }
 
+/// The host line (v1.8.3): judge the CPU/RAM snapshot the
+/// caller already takes — the plan's other two currencies,
+/// which until tonight arrived as raw numbers with no
+/// verdict while the disk currency carried four.
+///
+/// Load is judged PER CORE: pressure at 1.00/core (on
+/// average every core has a runnable thread waiting),
+/// saturated at 2.00/core. An absolute load threshold
+/// would repeat the v1.0.2 error — the VM's numbers worn
+/// on a ranch host, where load 2.34 is an idle machine.
+///
+/// RAM headroom is judged in absolute MB: tight under
+/// 600 MB available, critical under 300 MB. The band is
+/// the fleet's observed envelope (the evaluation series:
+/// 342 MB available on the 2026-11-08 EDQUOT night,
+/// 426–875 MB typical on the Muse VM, tens of GB on
+/// ranch hosts) — and the question the line answers is
+/// the same on every host: could the NEXT resident fit
+/// in what is left? Like the file lens's thresholds,
+/// these are early warnings, not the wall.
+///
+/// A snapshot that was never taken (0 load, 0 MB — the
+/// test idiom for "no snapshot") and a missing core
+/// count each degrade to "unmeasured" with the reason
+/// named. The line names; it does not alter placements —
+/// gating on host pressure is a future candidate,
+/// recorded in the 2026-11-20 evaluation.
+pub fn host_line(avail_mb: f64, load1: f64, cores: usize) -> String {
+    if avail_mb <= 0.0 && load1 <= 0.0 {
+        return "unmeasured — no host snapshot was carried into this plan; CPU and RAM go unjudged rather than invented".to_string();
+    }
+    if cores == 0 {
+        return format!(
+            "unmeasured — load {:.2} and {:.0} MB RAM available were carried in, but no core count, so load has no denominator; CPU goes unjudged rather than invented",
+            load1, avail_mb
+        );
+    }
+    let per = load1 / cores as f64;
+    let cpu_word = if per >= 2.0 {
+        "SATURATED"
+    } else if per >= 1.0 {
+        "PRESSURE"
+    } else {
+        "clear"
+    };
+    let ram_word = if avail_mb < 300.0 {
+        "CRITICAL"
+    } else if avail_mb < 600.0 {
+        "TIGHT"
+    } else {
+        "clear"
+    };
+    if cpu_word == "clear" && ram_word == "clear" {
+        format!(
+            "clear — load {:.2} on {} cores ({:.2}/core), {:.0} MB RAM available; this host can take a resident",
+            load1, cores, per, avail_mb
+        )
+    } else {
+        let word = if cpu_word == "SATURATED" || ram_word == "CRITICAL" {
+            "SATURATED"
+        } else {
+            "PRESSURE"
+        };
+        format!(
+            "{} — load {:.2} on {} cores is {:.2}/core ({}; pressure at 1.00, saturated at 2.00); RAM {} — {:.0} MB available (tight under 600 MB, critical under 300 MB); light coordination fits here, a new resident belongs on the ranch",
+            word, load1, cores, per, cpu_word, ram_word, avail_mb
+        )
+    }
+}
+
 /// A task row as the planner consumes it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskInput {
@@ -819,6 +913,9 @@ pub struct PlanData {
     /// The input check (v1.8.2): whether the series behind
     /// this plan holds together — see `input_check`.
     pub input_check: String,
+    /// The host line (v1.8.3): the plan's judgment of its
+    /// own host's CPU/RAM snapshot — see `host_line`.
+    pub host_line: String,
     pub forecast: Forecast,
     pub ram_available_mb: f64,
     pub load1: f64,
@@ -961,6 +1058,7 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         disk_gate_action,
         relief: relief_line(current, gate.volume.as_ref(), &gate.config),
         input_check: input_check(current, history),
+        host_line: host_line(host.0, host.1, gate.cores),
         forecast,
         ram_available_mb: host.0,
         load1: host.1,
@@ -1045,10 +1143,7 @@ pub fn render(plan: &PlanData) -> String {
     out.push_str(&format!("  relief:    {}\n", plan.relief));
     out.push_str(&format!("  forecast:  {}\n", forecast_line(plan)));
     out.push_str(&format!("  inputs:    {}\n", plan.input_check));
-    out.push_str(&format!(
-        "  cpu/ram:   host snapshot — {:.0} MB RAM available, load {:.2}\n",
-        plan.ram_available_mb, plan.load1
-    ));
+    out.push_str(&format!("  cpu/ram:   {}\n", plan.host_line));
     out.push_str(&format!("  inference: Emise carries all {} open tasks\n", plan.open_tasks()));
     if plan.roster.is_empty() {
         out.push_str("  fair draw: roster empty — heavy placements QUEUED, no silent hub fallback\n");
@@ -1090,7 +1185,7 @@ mod tests {
     /// lens only (no volume supplied in most unit fixtures), file
     /// lens at the standard counts.
     fn gin() -> GateInputs {
-        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42 }
+        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42, cores: 2 }
     }
     /// The old world's configuration: the quota lens on at the
     /// VM's 95/102 GB ceiling. Every pre-v1.0.2 gate expectation is
@@ -1098,7 +1193,7 @@ mod tests {
     fn gin_quota() -> GateInputs {
         let mut config = GateConfig::default();
         config.quota_on = true;
-        GateInputs { volume: None, files_root: "/staging".to_string(), config, roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42 }
+        GateInputs { volume: None, files_root: "/staging".to_string(), config, roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42, cores: 2 }
     }
     fn vol(root: &str, total: u64, used: u64, free: u64) -> Volume {
         Volume { root: root.to_string(), total_bytes: total, used_bytes: used, free_bytes: free }
@@ -1156,7 +1251,7 @@ mod tests {
         // same numbers are what they are: a healthy volume.
         let gib = 1_073_741_824u64;
         let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42, cores: 2 };
         let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &obs(1, 808.96, "GREEN", 6), &[], (0.0, 0.0), &g);
         assert_eq!(p.byte_gate, "GREEN");
         assert_eq!(p.disk_gate, "GREEN");
@@ -1281,7 +1376,7 @@ mod tests {
         // horizon, so no crossing at all.
         let gib = 1_073_741_824u64;
         let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42, cores: 2 };
         let hist = vec![obs(1, 809.07, "GREEN", 6), obs(2, 809.13, "GREEN", 6)];
         let cur = obs(2, 809.13, "GREEN", 6);
         let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &g);
@@ -1305,7 +1400,7 @@ mod tests {
         let gib = 1_073_741_824u64;
         let total = 100 * gib;
         let v = vol("/data", total, 88 * gib, 12 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
+        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42, cores: 2 };
         let hist = vec![obs(1, 85.0, "AMBER", 10), obs(2, 90.0, "AMBER", 10)];
         let f = forecast_gate(&hist, &g.config, Some(total));
         assert!(f.available);
@@ -1605,5 +1700,46 @@ mod tests {
         // No series at all degrades honestly — never invented.
         let line = input_check(&cur, &[]);
         assert!(line.contains("no telemetry series"), "no series: {}", line);
+    }
+
+    #[test]
+    fn host_line_judges_the_snapshot_it_already_takes() {
+        // v1.8.3, from the 2026-11-20 evaluation of 2026-11-19:
+        // the plan printed its host snapshot as raw numbers
+        // while a coordinator died on a transport timeout on
+        // that pressured host. Tonight's real VM snapshot,
+        // reproduced: 467 MB available, load 2.34, 2 cores.
+        let line = host_line(467.0, 2.34, 2);
+        assert!(line.starts_with("PRESSURE"), "host: {}", line);
+        assert!(line.contains("1.17/core"), "host: {}", line);
+        assert!(line.contains("TIGHT"), "host: {}", line);
+        assert!(line.contains("467 MB"), "host: {}", line);
+        // The plan carries it, and the render prints it as
+        // the cpu/ram line.
+        let cur = obs(1, 67.05, "GREEN", 1_019_997);
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &[], (467.0, 2.34), &gin());
+        assert!(p.host_line.starts_with("PRESSURE"), "plan host: {}", p.host_line);
+        let out = render(&p);
+        assert!(out.contains("  cpu/ram:   PRESSURE"), "render:\n{}", out);
+        // A ranch host at the same absolute load is idle:
+        // load is judged per core, never absolutely (the
+        // v1.0.2 lesson). aletheia-core tonight: 23,671 MB
+        // available, load 0.01.
+        let line = host_line(23671.0, 0.01, 16);
+        assert!(line.starts_with("clear"), "ranch host: {}", line);
+        let line = host_line(23671.0, 2.34, 16);
+        assert!(line.starts_with("clear"), "ranch host at VM load: {}", line);
+        // Saturated CPU and critical RAM name both halves.
+        let line = host_line(128.0, 40.0, 16);
+        assert!(line.starts_with("SATURATED"), "saturated: {}", line);
+        assert!(line.contains("2.50/core"), "saturated: {}", line);
+        assert!(line.contains("CRITICAL"), "saturated: {}", line);
+        // Unmeasured degrades honestly — never invented:
+        // no snapshot at all, and a snapshot with no
+        // denominator.
+        let line = host_line(0.0, 0.0, 2);
+        assert!(line.starts_with("unmeasured"), "no snapshot: {}", line);
+        let line = host_line(467.0, 2.34, 0);
+        assert!(line.contains("no core count"), "no cores: {}", line);
     }
 }

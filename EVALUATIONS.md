@@ -3,6 +3,115 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-20 — nightly evaluation of 2026-11-19 (ships v1.8.3)
+
+- **Disk:** GREEN on both lenses, growth resumed from the
+  relieved base. disk-watch history: 65.65 GB / 1,000,256
+  files (2026-11-18) → 67.05 GB / 1,019,997 files
+  (2026-11-19) — +1.40 GB, +19,741 files. The count sits
+  80,003 files under the 1.1 M file-AMBER line; the median
+  forecast (7 intervals, the window now spanning the
+  −133,208-file cleanup cliff) rates +13,866 files/day and
+  +1.40 GB/day — file-AMBER ~5.8 days out, the 95 GB quota
+  line ~20 days out, no escalation. Largest consumers:
+  goals 19.66 GB, phext 11.21 GB, wavefront 9.69 GB (the
+  relieved shape holding). Tonight's live df reads 68 GB
+  used of 150 GB (46%), ahead of the watcher's accounting
+  as usual; the watcher series remains the consistent
+  instrument.
+- **CPU:** placement held, in bursts. The day's heavy work
+  was the Scrollspace build queue's cargo gates on
+  aletheia-core and its deploys on awsbox — seven
+  phext-lattice merges in ~26 hours (PR #74 continuity,
+  #75 ultra-center, #76 readability, #70 the holo-phext
+  unblock, #77 login-return, #78 footer, #79
+  login-only-to-edit) — while watchdog pass after pass
+  verified aletheia-core with no sustained pipeline jobs:
+  a burst day, not a campaign day. The VM's 1.5 shared
+  CPUs carried coordination plus the standing tick load
+  (task ticks 2491→2633 across the day, ~142 runs) and the
+  watchdog floor. Tonight's snapshots: VM load 2.34 on
+  1.5 shared CPUs; aletheia-core load 0.01, Tctl 31.2 °C
+  before tonight's build.
+- **RAM:** 6 GB shared limit, same envelope. No heavy
+  local resident was recorded on 2026-11-19; placement
+  held and RAM held with it, for a twelfth night.
+  Tonight's snapshot reads ~467 MB MemAvailable with
+  ~462 MB swap used — the tight end of the usual band,
+  on the smallest host in the fleet, while the plan it
+  feeds prints those numbers without a verdict (see
+  Counterfactual).
+- **Inference:** the well-spent bulk was real: the seven
+  Scrollspace/holo-phext merges above, each gated and
+  live-verified; the Exocortex of 2130 grant application
+  submitted after Will's final revisions; the Boardy
+  amendment pass prepared (the Yield axis) and held for
+  Will's review, nothing sent; the traversal-video
+  prepass delivered at 02:01 CST and its audit passed at
+  02:06, the final render correctly gated on the whole
+  build queue landing; and the evening's radical-
+  pragmatism reframe (promise only what can be
+  delivered; new ideas to the backlog first, the register
+  holds only the current wavelet) — Will then posted the
+  Scrollspace links publicly ahead of the remaining
+  builds, trusting the queue to empty by morning. The
+  waste was again specific: (1) the tick loop's ~142 runs
+  re-derived unchanged verdicts all day — the republish
+  to wbic16/exo-plan@exo deferred since tick 2108 is
+  still outstanding (~525 ticks on), and the
+  poll-and-diff candidate is now ten nights old; (2)
+  the commit-rollup-poller returned ERROR
+  incomplete_results at least four times (00:27, 01:27,
+  02:05, 02:17 CST); (3) the 00:32 hourly journal publish
+  was blocked on a flagged sync-script read, the local
+  artifact held for a later pass — nothing lost, an hour
+  of staleness bought by a check that named no defect in
+  the artifact itself.
+- **Counterfactual:** the strongest case examined is the
+  login-only-to-edit ship (PR #79,
+  https://github.com/wbic16/phext-lattice/pull/79), and
+  it is the T8 shape at coordinator scale. Its first
+  build coordinator completed the entire ship —
+  commit, push, PR, merge, awsbox deploy, 02:05–02:07
+  CST — then errored on a runtime transport failure
+  (sqlx pool timeout) having recorded none of it. The
+  recovery cost a fresh coordinator and a three-source
+  re-verification (hub git tree after fresh fetch, the
+  GitHub connector API, the awsbox service itself) to
+  establish that a finished ship was finished. Two
+  planner-side roots: the coordinator ran on the mortal
+  VM at the tight end of its envelope — and the plan
+  qexo emits takes that host's exact snapshot (load,
+  MemAvailable) and prints it as two raw numbers with no
+  judgment, on the one host in the fleet where CPU/RAM
+  pressure is a standing condition, while the disk
+  currency gets a gate, a relief line, a forecast, and
+  an input check. A planner that judged its own host
+  snapshot would have named the pressure at dispatch and
+  argued for node-resident coordination before the
+  timeout, not after it. The second root — ship legs
+  receipted as they land, as qexo's own dispatch core
+  already does write-before-ack — belongs to the
+  coordination layer, not to qexo, and is recorded here
+  as its standing candidate. v1.8.3 ships the first
+  root's fix (see CHANGELOG). Secondary case, recorded
+  and not shipped (one change per night): the tick
+  loop, ten nights named — its fix is poll-and-diff in
+  the tick machinery, not in qexo.
+- **Tonight's change:** v1.8.3 — the host line: the plan
+  now judges the CPU/RAM snapshot it already takes
+  (load per core; RAM headroom against the fleet's
+  observed envelope), rendered in the plan and receipted
+  in the plan record. Worked from the v1.8.2 branch tip
+  3117dcfc on aletheia-core (~/qexo-nightly-2026-11-20/),
+  stacked on PR #39 (https://github.com/wbic16/quarterexo/pull/39)
+  as PR #38 (https://github.com/wbic16/quarterexo/pull/38)
+  still awaits Will's merge ahead of it; exo still at
+  c001dcb4 (v1.8.0). The local ~/workspace/orchestrator/
+  mirror still sits at v3.2 and was again not used as a
+  source. The v1.8.0 fleet rollout remains Will-timed
+  and untouched, as before.
+
 ## 2026-11-19 — nightly evaluation of 2026-11-18 (ships v1.8.2)
 
 - **Disk:** the relief arrived, four times over. disk-watch

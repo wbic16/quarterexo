@@ -1,3 +1,56 @@
+## v1.8.3 — 2026-11-20 (the host line)
+
+Motivating finding — the 2026-11-20 evaluation of 2026-11-19
+(EVALUATIONS.md, 2026-11-20 section): the login-only-to-edit
+coordinator completed its entire ship (phext-lattice PR #79:
+commit, push, PR, merge, deploy) and then died on a runtime
+transport timeout having recorded none of it, on the Muse
+VM at the tight end of its envelope — and the plan qexo
+emits takes that host's exact snapshot (1-minute load,
+MemAvailable) and prints it as two raw numbers with no
+judgment. The disk currency carries a gate, a relief line,
+a forecast, and an input check; the CPU and RAM currencies
+— the two that were actually pressured — carried no verdict
+at all, on the one host in the fleet (1.5 shared CPUs, a
+few hundred MB of headroom, ~2-hour replacement cadence)
+where that pressure is a standing condition.
+
+What v1.8.3 does (one change: the plan judges its host):
+
+- `src/plan.rs`: new pure `host_line(avail_mb, load1,
+  cores)` — load is judged PER CORE (pressure at 1.00/core,
+  saturated at 2.00/core), never as an absolute number:
+  the v1.0.2 lesson (one machine's thresholds worn on
+  another) applies to load exactly as it did to bytes.
+  RAM headroom is judged against the fleet's observed
+  envelope (tight under 600 MB available, critical under
+  300 MB — the evaluation series' band: 342 MB on the
+  2026-11-08 EDQUOT night, 426–875 MB typical on the VM,
+  tens of GB on ranch hosts, where the same absolute
+  headroom is what the NEXT resident would consume).
+  A snapshot that was never taken (0 load, 0 MB) and a
+  missing core count each degrade to "unmeasured" with
+  the reason named — a judgment is never invented.
+- The host's core count arrives as a value in
+  `GateInputs` (new `cores` field; the caller reads
+  `available_parallelism`, as the telemetry path already
+  does), following the roster/draw-seed pattern.
+  `PlanData` carries `host_line`; `render` prints it as
+  the plan's `cpu/ram:` line in place of the raw snapshot;
+  `plan_cmd` receipts it as the plan record's `host`
+  field (src/core.rs), beside the relief and input-check
+  fields. The line names; it does not alter placements —
+  gating on host pressure is a recorded future candidate,
+  the same discipline as the input check.
+- Tests: tonight's real VM snapshot reproduced (467 MB,
+  load 2.34, 2 cores → PRESSURE at 1.17/core, RAM TIGHT);
+  a ranch snapshot reads clear (23,671 MB, load 0.01,
+  16 cores); a saturated + critical case; both
+  unmeasured degradations; the plan carries the line and
+  the render prints it. Version: Cargo 1.8.2 → 1.8.3;
+  VERSION v1.8.3 (PLAN_VERSION derives, per v1.7.2).
+  No other behavior changes.
+
 ## v1.8.2 — 2026-11-19 (the input check)
 
 Motivating finding — the 2026-11-19 evaluation of 2026-11-18
