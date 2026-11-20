@@ -2080,6 +2080,11 @@ pub fn plan_cmd() -> i32 {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
             .unwrap_or(0),
+        // v1.8.3 host line: the host's core count, the
+        // denominator the plan judges load against.
+        cores: std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(0),
     };
     let (day, stamp) = now_stamp();
     let (y, m, d) = civil_from_days(day);
@@ -2177,6 +2182,7 @@ pub fn plan_cmd() -> i32 {
         ("gate reason", &data.gate_reason),
         ("relief", &data.relief),
         ("input check", &data.input_check),
+        ("host", &data.host_line),
         ("open tasks", &data.open_tasks().to_string()),
         ("tasks source", if tasks_source.is_empty() { "(none configured)" } else { &tasks_source }),
         ("observation", &fmt_coord(&oaddr)),
