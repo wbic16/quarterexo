@@ -1,3 +1,38 @@
+## v1.8.4 — 2026-11-22 (the forecast reports its own basis)
+
+Motivating finding — the 2026-11-22 evaluation of 2026-11-21
+(EVALUATIONS.md, 2026-11-22 section): the forecast gate rates
+growth from the median of the recent intervals (v1.2.1), and
+the plan's forecast line says so — but the FORECAST AMBER gate
+action in the same plan still claimed the crossing was
+projected "at the last interval's growth rate", and the
+lattice telemetry scroll still described the gate as reading
+"the last two, as it always has". On 2026-11-21 the two bases
+gave opposite verdicts (last interval −106,788 files/day on a
+cleanup day; median +13,866 files/day), so the stale sentence
+was not cosmetic: a reader trusting the action line would
+believe a warning the numbers do not support, or dismiss one
+they do. Self-report drift, the v1.7.2 class, in the one
+output whose whole job is to be believed.
+
+What v1.8.4 does (one change: the basis is derived, not
+written):
+
+- New `forecast_basis` helper in src/plan.rs renders the
+  basis ("last interval" / "median of N intervals") from the
+  Forecast's own interval count. The forecast line and the
+  FORECAST AMBER gate action both render from it, so the two
+  can no longer disagree.
+- The lattice telemetry scroll (src/lattice.rs) now
+  describes the gate as rating growth from the median of
+  the recent intervals.
+- Regression test: a history whose last interval falls
+  while the median rises escalates on the median and the
+  action text names the median basis.
+- Version: Cargo 1.8.3 → 1.8.4; VERSION v1.8.4. No other
+  behavior changes.
+
+
 ## v1.8.3 — 2026-11-20 (the host line)
 
 Motivating finding — the 2026-11-20 evaluation of 2026-11-19

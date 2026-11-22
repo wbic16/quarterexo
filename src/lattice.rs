@@ -506,7 +506,7 @@ pub fn regen_indexes(px: &mut Phext) {
     // ---- telemetry index ----
     let obs = component_values(px, &[8, 8, 8, TELEM_DISK_C, 1], 5);
     let mut tel = String::new();
-    tel.push_str("telemetry & forecasts — homeland anchor 8.8.8/8.8.8/8.8.8\n\nSignals country: disk observations as a run of scrolls; the\nforecast gate reads the last two, as it always has.\n\n");
+    tel.push_str("telemetry & forecasts — homeland anchor 8.8.8/8.8.8/8.8.8\n\nSignals country: disk observations as a run of scrolls; the\nforecast gate rates growth from the median of the recent intervals.\n\n");
     tel.push_str(&format!("disk observations: {}\n", obs.len()));
     if let Some(last) = obs.last() {
         let addr = at(HL_TELEMETRY, [TELEM_DISK_C, 1, *last, 1, 1, 1]);

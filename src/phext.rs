@@ -388,7 +388,7 @@ mod tests {
     "\u{1c}\u{1c}\u{1c}\u{1c}\u{1a}\u{1a}\u{1a}\u{1a}\u{1a}\u{1a}\u{1a}\u{19}\u{19}\u{19}\u{19}\u{19}",
     "\u{19}\u{19}\u{18}\u{18}\u{18}\u{18}\u{18}\u{18}\u{18}\u{17}\u{17}\u{17}\u{17}\u{17}\u{17}\u{17}tele",
     "metry & forecasts — homeland anchor 8.8.8/8.8.8/8.8.8\n\nSignals country: disk observations as a run",
-    " of scrolls; the\nforecast gate reads the last two, as it always has.\n\ndisk observations: 0\n\u{2}",
+    " of scrolls; the\nforecast gate rates growth from the median of the recent intervals.\n\ndisk observations: 0\n\u{2}",
     "\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}\u{1f}\u{1e}\u{1e}\u{1e}\u{1e}\u{1e}\u{1e}\u{1e}\u{1e}",
     "\u{1d}kind: qexo config\nollama endpoint: http://127.0.0.1:11434\nmodel: gemma4:e4b\ntasks source: ",
     "\ndisk root: /home/wbic16/workspace\nvolume_lens: on\ndisk_gate_free_amber_pct: 25\ndisk_gate_free_r",

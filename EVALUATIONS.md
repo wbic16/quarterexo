@@ -3,6 +3,106 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-22 — nightly evaluation of 2026-11-21 (ships v1.8.4)
+
+- **Disk:** GREEN, and the day's shape is a cleanup, not a
+  trend. disk-watch history: 67.95 GB / 1,035,920 files
+  (2026-11-20) → 68.94 GB / 929,132 files (2026-11-21) —
+  +0.99 GB but −106,788 files, as the wavefront staging
+  that sat on this VM for a fortnight finally shrank
+  (state.json top ranks now: goals 18.65 GB, phext
+  11.21 GB, wavefront 9.69 GB — wavefront was 31.73 GB
+  in every snapshot from 2026-11-08 to 2026-11-17).
+  Tonight's live df reads 73 GB used of 150 GB (49%).
+  The median forecast (v1.2.1 semantics, on exo since
+  the v3-line port) reads the series correctly through
+  the cleanup: median of the last 7 intervals is
+  +13,866 files/day and +1.30 GB/day, putting file
+  AMBER ~12.3 days out and byte AMBER ~20 days out —
+  where the last interval alone (−106,788 files/day)
+  would have reported no file crossing at all.
+- **CPU:** the day's heavy work ran ranch-side — the
+  Inkling HIP reader verified on plain-view's Radeon
+  780M (11/11 fixture cases, worst rel L2 1.5e-7), the
+  X-archive merge and EE-mailbox proof work coordinated
+  from the VM, Phextron stages on aletheia-core. The
+  VM's 1.5 shared CPUs carried coordination plus the
+  standing tick/watchdog load (task ticks 2779→2921
+  across the day, ~140 runs). Tonight's snapshots are
+  the finding, not a footnote: aletheia-core at load
+  19.55 on 16 cores with Tctl 82.5 °C — over the 75 °C
+  pause line — while ni-knight sat at load 1.03,
+  Tctl 41.8 °C, 33 GB RAM available. Tonight's build
+  therefore went to ni-knight under the thermal/load
+  gates, not to the hub by habit.
+- **RAM:** 6 GB shared limit on the VM, same envelope;
+  tonight's snapshot ~3.19 GB MemAvailable, ~350 MB
+  swap used, on a 1:26-old VM (replaced again). No
+  heavy local resident was recorded on 2026-11-21;
+  placement held. Ranch side: ni-knight 44 GB total /
+  33 GB available (48 GB bin); aletheia-core 29 GB /
+  8 GB available under its load. Tonight's build
+  carried a <2 GB RAM estimate and ran in-RAM on
+  ni-knight.
+- **Inference:** the well-spent bulk was real: the
+  unified-backend design language landed (virtualized
+  kernel, declarative, multiversal phext); the Inkling
+  reader's GPU correction (every ranch box carries a
+  Radeon 780M — the nvidia-smi "no GPU" conclusion was
+  a probe error, retracted the same day); the X archive
+  extended to 2026-11-21 (33,063 tweets, Singular lists
+  rebuilt); the multiversal EE mailbox implemented and
+  proof-passed twice against libphext-rs; Neon brought
+  into the loop; Phextron panels advanced. The waste
+  was specific and late: two Claude fleet-install `cp`
+  jobs wedged in D-state reading a 381 MB payload from
+  orchid-flow's NFS share (~23:52 CST), collapsing
+  plain-view's LAN path (RTT 1.5–3.7 s with loss) —
+  first misread as plain-view itself going down, and
+  vLLM's stranded downloads were fellow victims, not
+  the cause (EE 29 forensics, 2026-11-22). Inference
+  spent on the first story, then on the correction.
+- **Counterfactual:** the strongest case examined is
+  the plain-view wedge, and it is a staging plan
+  failure before it is an NFS failure. Two jobs from
+  the same install program were dispatched onto the
+  same node's share at the same time, each streaming
+  the same 381 MB payload over NFS; either job alone
+  was survivable. A planner that serializes same-share
+  bulk staging — or stages once and fans out locally —
+  never wedges the node, and the night's vLLM verdict
+  is reached on its serve evidence alone, without an
+  outage investigation in front of it. That fix belongs
+  to the fleet-install machinery, not to qexo, and is
+  recorded here. Tonight's qexo change is the smaller
+  defect the same day exposed in qexo's own house: on
+  a cleanup day the forecast and its own gate action
+  tell two different stories (see Tonight's change).
+- **Tonight's change:** v1.8.4 — the forecast's basis
+  is reported from the forecast itself. The plan's
+  forecast line correctly renders "median of N
+  intervals" (v1.2.1 semantics), but the FORECAST
+  AMBER gate action in the same plan still claims the
+  crossing is projected "at the last interval's growth
+  rate", and the lattice's telemetry scroll still says
+  the gate "reads the last two, as it always has" —
+  both false since the median re-base, and on
+  2026-11-21's cleanup interval the two bases give
+  opposite verdicts (−106,788 files/day vs a median
+  +13,866). One helper now derives the basis text from
+  the Forecast's own interval count and both render
+  sites use it; a regression test drives a history
+  whose last interval falls while the median rises
+  and asserts the action names the median. Worked
+  from a fresh clone on ni-knight (~/qexo-nightly-2026-11-22/),
+  parented on the stacked nightly tip abfcd0e (v1.8.3,
+  branch emise/host-line-v1.8.3 — v1.8.1–v1.8.3 sit as
+  stacked branches awaiting Will's merge, exo itself
+  still at c001dcb4 / v1.8.0); the local
+  ~/workspace/orchestrator/ mirror still sits at v3.2
+  and was not used as a source. The wbic16/qexo twin
+  sync remains a separate tracked debt, as before.
+
 ## 2026-11-20 — nightly evaluation of 2026-11-19 (ships v1.8.3)
 
 - **Disk:** GREEN on both lenses, growth resumed from the

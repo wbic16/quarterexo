@@ -996,8 +996,8 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         if near_days <= 3.0 && disk_gate == "GREEN" {
             disk_gate = "AMBER";
             disk_gate_action = format!(
-                "FORECAST AMBER — {} projected in {:.1} days at the last interval's growth rate; no new staging, heavy execution ranch-only, move staging before the crossing",
-                forecast.nearest_label, near_days
+                "FORECAST AMBER — {} projected in {:.1} days at the forecast rate ({}); no new staging, heavy execution ranch-only, move staging before the crossing",
+                forecast.nearest_label, near_days, forecast_basis(&forecast)
             );
         }
     }
@@ -1082,6 +1082,22 @@ pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     era * 146097 + doe - 719468
 }
 
+/// The forecast's basis, rendered from the Forecast itself —
+/// the one place the words come from (v1.8.4). Until v1.8.4 the
+/// FORECAST AMBER action hard-coded "the last interval's growth
+/// rate" while the forecast line in the same plan correctly
+/// said "median of N intervals": two self-reports of one
+/// computation, free to disagree — and on a cleanup day
+/// (2026-11-21: last interval −106,788 files/day, median
+/// +13,866) they gave opposite verdicts.
+pub fn forecast_basis(f: &Forecast) -> String {
+    if f.intervals <= 1 {
+        "last interval".to_string()
+    } else {
+        format!("median of {} intervals", f.intervals)
+    }
+}
+
 fn forecast_line(plan: &PlanData) -> String {
     let f = &plan.forecast;
     if !f.available {
@@ -1093,11 +1109,7 @@ fn forecast_line(plan: &PlanData) -> String {
             None => "never at this rate".to_string(),
         }
     };
-    let basis = if f.intervals <= 1 {
-        format!("last interval, {} d", f.span_days as i64)
-    } else {
-        format!("median of {} intervals, {} d", f.intervals, f.span_days as i64)
-    };
+    let basis = format!("{}, {} d", forecast_basis(f), f.span_days as i64);
     format!(
         "growth {:+.0} files/day, {:+.2} GB/day ({}) — nearest crossing: {} in {}; file AMBER {}, byte AMBER {}",
         f.files_per_day,
@@ -1345,6 +1357,41 @@ mod tests {
         assert!(nd > 1.3 && nd < 1.5, "nearest_days {} should be ~1.4", nd);
         assert_eq!(p.disk_gate, "AMBER");
         assert!(p.disk_gate_action.starts_with("FORECAST AMBER"));
+    }
+
+    #[test]
+    fn forecast_action_names_median_basis() {
+        // The 2026-11-21 shape (v1.8.4 regression): the last
+        // interval FALLS (a cleanup day, -10,000 files) while
+        // the median interval rises (+60,000/day). The gate
+        // must escalate on the median — file AMBER is
+        // (1,100,000 - 1,010,000) / 60,000 = 1.5 days out —
+        // and the action text must NAME the median basis,
+        // not claim the last interval's rate.
+        let hist = vec![
+            obs(1, 70.0, "GREEN", 900_000),
+            obs(2, 71.0, "GREEN", 960_000),
+            obs(3, 72.0, "GREEN", 1_020_000),
+            obs(4, 72.5, "GREEN", 1_010_000),
+        ];
+        let cur = obs(4, 72.5, "GREEN", 1_010_000);
+        let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &gin());
+        assert!(p.forecast.available);
+        assert_eq!(p.forecast.files_per_day, 60000.0);
+        assert_eq!(p.disk_gate, "AMBER");
+        assert!(
+            p.disk_gate_action.contains("median of 3 intervals"),
+            "action must name the median basis: {}",
+            p.disk_gate_action
+        );
+        assert!(
+            !p.disk_gate_action.contains("last interval"),
+            "action must not claim the last interval: {}",
+            p.disk_gate_action
+        );
+        // And the forecast line renders the same basis.
+        let line = forecast_line(&p);
+        assert!(line.contains("median of 3 intervals"), "forecast line: {}", line);
     }
 
     #[test]
