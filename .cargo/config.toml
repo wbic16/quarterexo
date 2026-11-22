@@ -1,0 +1,4 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+[source.vendored-sources]
+directory = "/mnt/mirrorborn/shared/qexo-vendor-2026-11-22/vendor"
