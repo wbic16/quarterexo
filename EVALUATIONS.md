@@ -3,6 +3,115 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-23 — nightly evaluation of 2026-11-22 (ships v1.8.5)
+
+- **Disk:** a burst day, and the shape matters more than the
+  totals. disk-watch history: 68.94 GB / 929,132 files
+  (2026-11-21) → 71.55 GB / 1,007,559 files (2026-11-22) —
+  +2.61 GB and +78,427 files in one day, the largest
+  single-day file growth since the wavefront cleanup
+  reversed (−106,788 on 2026-11-21), carrying the count
+  back over 1,000,000. The median of the last 7 intervals
+  reads +15,923 files/day and +1.30 GB/day — calm — while
+  the day itself ran at ~4.9× that rate. Tonight's live df
+  agrees with the state file's direction (the series is
+  the record; the snapshot is a freshly replaced VM).
+  The day's own record names the burst's engines: bulk
+  staging and sync work (the X-archive fold-in, corpus
+  syncs, deploy roll-ups) — the same staging class that
+  produced both of the day's placement failures below.
+- **CPU:** placement held in the large. Heavy work ran
+  ranch-side or on awsbox: the docs.phext.io multi-project
+  deploy roll-up (awsbox), ranch Jenkins replacing the
+  removed GitHub Actions (aletheia-core controller,
+  ni-knight agent), the Inkling fleet pulls (node-resident
+  retry units), Scrolltown work ranch-side. The VM's 1.5
+  shared CPUs carried coordination plus the standing
+  tick/watchdog load (task ticks 2923→~3091 across the
+  day, ~170 runs). The exception is I/O, not cycles: two
+  seats' full-workspace recursive greps on this VM sat in
+  D-state at once and a plain `du -sh ~/` could not finish
+  in 54 s before a VM replacement — I/O pressure "full"
+  ran ~29–43% over 5-minute windows (AGENTS.md records
+  the lesson; the no-scan convention is its fix). Tonight's
+  snapshots: aletheia-core load 18.33, Tctl 82.4 °C — over
+  the 75 °C pause line — so tonight's build went to
+  ni-knight (load 0.11, Tctl 38.5 °C) under the gates, not
+  to the hub by habit, for the second night running.
+- **RAM:** 6 GB shared limit on the VM, same envelope
+  (~200–400 MB typical headroom). No heavy local resident
+  was recorded on 2026-11-22; the day's RAM story is
+  ranch-side: aletheia-core stayed HELD out of the
+  Inkling rollout on headroom (its model footprint vs
+  available RAM), and tonight's qexo build carried a
+  <2 GB estimate and ran on ni-knight (44 GB total).
+- **Inference:** the well-spent bulk was real: EE 1
+  ignition and the epoch system's first full day; the
+  docs.phext.io roll-up under the 4-reviewer parity rule;
+  the Shear excavation, where every checkable claim of
+  Will's was confirmed exactly as stated (53 replies, his
+  own number); the qexo audit that dissolved the phantom
+  "v1.8.4 awaiting merge" wait (zero open PRs; exo already
+  carried v1.8.0) and the production programme that
+  installed v1.8.0 on this VM; GitHub Actions removed
+  fleet-wide with ranch Jenkins standing in the same day;
+  the day's meter read 111.1× on the completions side.
+  The waste was specific, and twice it was the same
+  shape — inference spent executing a plan whose inputs
+  were never audited: (1) the awsbox prepass wedge, ~80
+  minutes streaming a staging tar from awsbox through
+  this VM to plain-view, a relay route already banned,
+  because nobody audited the job's input path before it
+  started; (2) the Fall Home render's 195 MB copy-back to
+  hatch, ordered in a brief, killed mid-transfer when
+  Will caught it — deliverables stay on the ranch, hatch
+  gets links. Both failures are now standing rules
+  (input audit; links-not-copies), which is the correct
+  landing — but both were paid for in inference first.
+- **Counterfactual:** the strongest case examined is the
+  awsbox prepass wedge, and it is an input-audit failure
+  before it is a routing failure. The job's inputs were
+  never declared or checked: not the path (a banned
+  relay), not the payload's size against the route, not
+  the destination's headroom. A planner that audits a
+  job's inputs before launch — declared set, expected
+  hash + source, sound path — stages awsbox→ranch
+  directly and the ~80 minutes, the VM's I/O pressure,
+  and the mid-flight facepalm all never happen. Will
+  laid the rule down the same day ("always audit the
+  inputs to a job; no unexpected inputs allowed"); the
+  fix belongs to the dispatch machinery generally, and
+  is recorded here as the planning lesson. Tonight's
+  qexo change is the smaller defect the same day exposed
+  in qexo's own house: on a burst day the plan's median
+  forecast reads calm (+15,923 files/day) while the last
+  interval ran +78,427 — a planner watching only the
+  median cannot see a staging burst, and burst days are
+  exactly the days this fleet gets hurt (see Disk).
+- **Tonight's change:** v1.8.5 — the forecast reports the
+  burst it smoothed over. `Forecast` gains
+  `last_files_per_day` (the last interval's own file
+  rate) and `spike` (last interval ≥ 3× the median rate
+  — or the median flat/falling — and ≥ 10,000 files/day);
+  the plan's forecast line appends a SPIKE note naming
+  both rates when the flag fires. The median itself is
+  unchanged: crossings still project from the median
+  (v1.2.1 semantics), the spike is a report, not a
+  re-rating. Regression tests replay 2026-11-22's actual
+  series (spike fires, last rate exact) and a calm series
+  (no spike). Base note: tonight's ship is parented on
+  fresh exo HEAD c001dcb4 (v1.8.0, the dispatch-core
+  ship, PR #37) — per the 2026-11-22 qexo audit, exo is
+  again the nightly line's base; the v1.8.1–v1.8.4 stacked
+  branches stand as their own record and are not ported
+  tonight (one change per night). Recorded secondary
+  finding, not shipped: exo's FORECAST AMBER action text
+  still says "at the last interval's growth rate" while
+  the forecast rates from the median — the v1.8.4 branch
+  carries that fix; porting it is a future night's
+  candidate. Build and gates on ni-knight (hub over the
+  thermal line at placement time).
+
 ## 2026-11-17 — nightly evaluation of 2026-11-16 (ships v1.7.3)
 
 - **Disk:** the file count kept climbing past AMBER while bytes

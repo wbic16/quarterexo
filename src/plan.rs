@@ -425,6 +425,17 @@ pub struct Forecast {
     /// median of (v1.2.1): 1 means the single-interval rate, the
     /// pre-v1.2.1 behavior, kept for a two-observation history.
     pub intervals: usize,
+    /// The last interval's own file rate (files/day), reported
+    /// alongside the median so a burst day stays visible in
+    /// the plan instead of being smoothed away by it (v1.8.5).
+    pub last_files_per_day: f64,
+    /// True when the last interval is a burst: its file rate
+    /// is at least SPIKE_RATIO x the median rate (or the
+    /// median is flat/falling) and at least SPIKE_FLOOR
+    /// files/day (v1.8.5; from the 2026-11-23 evaluation of
+    /// 2026-11-22: +78,427 files in one day against a
+    /// +15,923/day median).
+    pub spike: bool,
     pub nearest_label: String,
     pub nearest_days: Option<f64>,
     pub file_amber_days: Option<f64>,
@@ -439,6 +450,8 @@ impl Forecast {
             gb_per_day: 0.0,
             span_days: 0.0,
             intervals: 0,
+            last_files_per_day: 0.0,
+            spike: false,
             nearest_label: "none".to_string(),
             nearest_days: None,
             file_amber_days: None,
@@ -462,6 +475,15 @@ pub const FORECAST_HORIZON_DAYS: f64 = 365.0;
 /// and a history shorter than the window simply contributes
 /// every interval it has.
 pub const FORECAST_WINDOW_INTERVALS: usize = 7;
+
+/// Burst detection for the forecast (v1.8.5): the last
+/// interval is a spike when its file rate reaches
+/// SPIKE_RATIO times the median rate and clears
+/// SPIKE_FLOOR files/day in absolute terms — the floor
+/// keeps a small series (a few hundred files a day) from
+/// "spiking" on a doubling nobody needs to act on.
+pub const SPIKE_RATIO: f64 = 3.0;
+pub const SPIKE_FLOOR: f64 = 10_000.0;
 
 /// The median of a set of per-interval rates: the middle rate
 /// (the mean of the two middle rates for an even count). A
@@ -530,8 +552,17 @@ pub fn forecast_gate(history: &[DiskObs], cfg: &GateConfig, total_bytes: Option<
         fc_rates.push((pair[1].files as f64 - pair[0].files as f64) / ispan);
     }
     let intervals = gb_rates.len();
+    let last_fc_rate = fc_rates.last().copied().unwrap_or(0.0);
     let gb_rate = median(&mut gb_rates);
     let fc_rate = median(&mut fc_rates);
+    // The burst report (v1.8.5): the median rates the
+    // crossings, but a single staging-burst day must stay
+    // visible next to it. A flat or falling median cannot
+    // mask a burst either — any last interval clearing the
+    // floor against a non-positive median is a spike.
+    let spike = intervals >= 2
+        && last_fc_rate >= SPIKE_FLOOR
+        && (fc_rate <= 0.0 || last_fc_rate >= SPIKE_RATIO * fc_rate);
     let span = (b.day - window[0].day).max(1) as f64;
     let days_to = |target: f64, cur: f64, rate: f64| -> Option<f64> {
         if cur >= target || rate <= 0.0 {
@@ -601,6 +632,8 @@ pub fn forecast_gate(history: &[DiskObs], cfg: &GateConfig, total_bytes: Option<
         gb_per_day: round2(gb_rate),
         span_days: span,
         intervals,
+        last_files_per_day: last_fc_rate.round(),
+        spike,
         nearest_label: near_label,
         nearest_days: near_days.map(round2),
         file_amber_days: file_amber_days.map(round2),
@@ -817,15 +850,24 @@ fn forecast_line(plan: &PlanData) -> String {
     } else {
         format!("median of {} intervals, {} d", f.intervals, f.span_days as i64)
     };
+    let spike_note = if f.spike {
+        format!(
+            " — SPIKE: last interval {:+.0} files/day vs median {:+.0}",
+            f.last_files_per_day, f.files_per_day
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "growth {:+.0} files/day, {:+.2} GB/day ({}) — nearest crossing: {} in {}; file AMBER {}, byte AMBER {}",
+        "growth {:+.0} files/day, {:+.2} GB/day ({}) — nearest crossing: {} in {}; file AMBER {}, byte AMBER {}{}",
         f.files_per_day,
         f.gb_per_day,
         basis,
         f.nearest_label,
         fmt_days(f.nearest_days),
         fmt_days(f.file_amber_days),
-        fmt_days(f.byte_amber_days)
+        fmt_days(f.byte_amber_days),
+        spike_note
     )
 }
 
@@ -1310,6 +1352,39 @@ mod tests {
             parse_roster(Some(" rock-mountain, aletheia-core ,rock-mountain,,".to_string())),
             vec!["rock-mountain".to_string(), "aletheia-core".to_string()]
         );
+    }
+
+    #[test]
+    fn forecast_spike_reports_2026_11_22_burst() {
+        // The 2026-11-22 disk-watch series, verbatim: a calm
+        // median (+15,923 files/day over the last 7 intervals)
+        // and a burst last interval (+78,427). The crossings
+        // still rate from the median; the burst is reported.
+        let days: Vec<i64> = (15..=22).map(|d| days_from_civil(2026, 11, d)).collect();
+        let files = [1_103_268u64, 1_119_598, 1_133_464, 1_000_256, 1_019_997, 1_035_920, 929_132, 1_007_559];
+        let gbs = [88.13f64, 89.53, 90.83, 65.65, 67.05, 67.95, 68.94, 71.55];
+        let hist: Vec<DiskObs> = days.iter().enumerate().map(|(i, &d)| obs(d, gbs[i], "GREEN", files[i])).collect();
+        let cur = obs(days[7], 71.55, "GREEN", 1_007_559);
+        let p = compute(&[], &cur, &hist, (0.0, 0.0), &gin());
+        assert!(p.forecast.available);
+        assert_eq!(p.forecast.files_per_day, 15923.0);
+        assert_eq!(p.forecast.last_files_per_day, 78427.0);
+        assert!(p.forecast.spike, "the 2026-11-22 burst must read as a spike");
+        let line = forecast_line(&p);
+        assert!(line.contains("SPIKE: last interval +78427 files/day vs median +15923"), "line: {}", line);
+    }
+
+    #[test]
+    fn forecast_no_spike_on_calm_series() {
+        // Steady growth: last interval equals the median and
+        // sits under the floor — no spike, no note.
+        let days: Vec<i64> = (15..=18).map(|d| days_from_civil(2026, 11, d)).collect();
+        let hist: Vec<DiskObs> = days.iter().enumerate().map(|(i, &d)| obs(d, 70.0 + i as f64, "GREEN", 900_000 + 5_000 * i as u64)).collect();
+        let cur = obs(days[3], 73.0, "GREEN", 915_000);
+        let p = compute(&[], &cur, &hist, (0.0, 0.0), &gin());
+        assert!(p.forecast.available);
+        assert!(!p.forecast.spike);
+        assert!(!forecast_line(&p).contains("SPIKE"));
     }
 
     #[test]

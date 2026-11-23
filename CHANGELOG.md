@@ -1,3 +1,42 @@
+## v1.8.5 — 2026-11-23 (the forecast reports its burst)
+
+Motivating finding — the 2026-11-23 evaluation of
+2026-11-22 (EVALUATIONS.md, 2026-11-23 section): the VM
+gained +78,427 files in one day (+2.61 GB), the largest
+single-day file growth since the wavefront cleanup
+reversed, while the forecast's median of the last 7
+intervals read a calm +15,923 files/day. The median is
+doing its v1.2.1 job — crossings must not whipsaw — but
+nothing in the plan reported the burst it smoothed
+over, and burst days (bulk staging, syncs, roll-ups)
+are exactly the days this fleet gets hurt: the same
+day produced the awsbox prepass wedge and the Fall
+Home copy-back, both unaudited staging bursts.
+
+What v1.8.5 does (one change: the forecast reports the
+last interval alongside the median):
+
+- `Forecast` gains `last_files_per_day` — the last
+  interval's own file rate — and `spike`, true when
+  that rate is at least 3× the median rate (or the
+  median is flat/falling) and at least 10,000
+  files/day (`SPIKE_RATIO`, `SPIKE_FLOOR`).
+- The plan's forecast line appends, when the flag
+  fires: `— SPIKE: last interval +N files/day vs
+  median +M`. Crossings still project from the
+  median; the spike is a report, not a re-rating,
+  and never escalates or softens the gate.
+- Regression tests replay 2026-11-22's actual
+  disk-watch series (spike fires; last rate exact at
+  +78,427) and a calm series (no spike).
+- Version: Cargo 1.8.0 → 1.8.5; VERSION v1.8.5.
+  Numbering continues the nightly sequence
+  (v1.8.1–v1.8.4 shipped on stacked branches awaiting
+  Will's merge, per their own entries); this ship is
+  parented on exo HEAD c001dcb4 (v1.8.0) per the
+  2026-11-22 qexo audit, which made exo the nightly
+  line's base again. No other behavior changes.
+
 ## v1.8.0 — 2026-11-17 (the dispatch core ships)
 
 The held v1.7.1-line release (task 40.9.7/11.9.17/
