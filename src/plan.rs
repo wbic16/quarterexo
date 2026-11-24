@@ -751,7 +751,7 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         if near_days <= 3.0 && disk_gate == "GREEN" {
             disk_gate = "AMBER";
             disk_gate_action = format!(
-                "FORECAST AMBER — {} projected in {:.1} days at the last interval's growth rate; no new staging, heavy execution ranch-only, move staging before the crossing",
+                "FORECAST AMBER — {} projected in {:.1} days at the median growth rate (last 7 intervals); no new staging, heavy execution ranch-only, move staging before the crossing",
                 forecast.nearest_label, near_days
             );
         }
@@ -1107,6 +1107,10 @@ mod tests {
         assert!(nd > 1.3 && nd < 1.5, "nearest_days {} should be ~1.4", nd);
         assert_eq!(p.disk_gate, "AMBER");
         assert!(p.disk_gate_action.starts_with("FORECAST AMBER"));
+        // v1.8.6: the action must name the basis the projection
+        // actually uses (the median), never the last interval.
+        assert!(p.disk_gate_action.contains("at the median growth rate (last 7 intervals)"), "action: {}", p.disk_gate_action);
+        assert!(!p.disk_gate_action.contains("last interval's growth rate"), "action: {}", p.disk_gate_action);
     }
 
     #[test]

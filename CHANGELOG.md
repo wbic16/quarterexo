@@ -1,3 +1,37 @@
+## v1.8.6 — 2026-11-24 (the forecast names its basis)
+
+Motivating finding — the 2026-11-24 evaluation of
+2026-11-23 (EVALUATIONS.md, 2026-11-24 section), carrying
+the secondary finding recorded on 2026-11-23: since
+v1.2.1 the forecast rates its crossings from the median
+of the last 7 intervals, and v1.8.5 added the last
+interval as a separate SPIKE report — but the FORECAST
+AMBER action line still read "projected in N days at
+the last interval's growth rate", naming exactly the
+rate the projection does not use. On a burst day that
+sentence invites the reader to reason from the spike
+instead of the median, the opposite of the v1.8.5
+design; a plan whose stated basis is wrong is a
+self-report defect of the same class as the v1.7.2
+version-stamp drift.
+
+What v1.8.6 does (one change: the action text names
+the true basis):
+
+- The FORECAST AMBER action now reads "projected in
+  N days at the median growth rate (last 7 intervals);
+  no new staging, heavy execution ranch-only, move
+  staging before the crossing".
+- A regression test asserts the corrected wording is
+  present and the old "last interval's growth rate"
+  wording is absent from the escalated action.
+- No rating, gate, forecast, or spike behavior
+  changes: crossings still project from the median,
+  the spike is still a report only.
+- Version: Cargo 1.8.5 → 1.8.6; VERSION v1.8.6.
+  Parented on the v1.8.5 ship (2231f1b) so the nightly
+  sequence stays linear.
+
 ## v1.8.5 — 2026-11-23 (the forecast reports its burst)
 
 Motivating finding — the 2026-11-23 evaluation of

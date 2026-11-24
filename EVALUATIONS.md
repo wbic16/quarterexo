@@ -3,6 +3,97 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-24 — nightly evaluation of 2026-11-23 (ships v1.8.6)
+
+- **Disk:** a calm day after the burst. disk-watch history:
+  71.55 GB / 1,007,559 files (2026-11-22) → 73.22 GB /
+  1,025,552 files (2026-11-23) — +1.67 GB, +17,993 files.
+  The median of the last 7 intervals still reads +15,923
+  files/day, and the last interval ran at only ~1.13× that
+  median — so the v1.8.5 spike flag, shipped last night for
+  exactly this lens, correctly stayed silent today: the
+  burst detector fires on bursts, not on ordinary growth.
+  The count remains over 1,000,000 files, ~74,448 under the
+  1.1 M file-AMBER line; at the median rate that crossing
+  is ~4.7 days out, and byte-AMBER (95 GB) ~13 days out at
+  +1.67 GB/day. The day's disk lesson was not growth but
+  shape: the workspace audit found 672 top-level
+  directories on this VM, 603 of them holding no repo and
+  no project markers and 34 buried projects with code and
+  no git repo at all — inventory the planner cannot see is
+  inventory it cannot gate.
+- **CPU:** placement held in the large. Heavy work ran
+  ranch-side: the Nim fleet install (hub verified Nim
+  2.4.2, EE 389), SQ / phext-lattice work, and node-resident
+  programme work. The VM's 1.5 shared CPUs carried
+  coordination plus the standing tick/watchdog load (task
+  ticks ~3066→3197 across the day, ~130 runs, plus watchdog
+  top-ups at EE 394 and overnight). aletheia-core's load
+  swung widely across the day (~0.7 to ~21 in watchdog
+  snapshots), which is why tonight's build placement is
+  probed live rather than assumed — hub by habit is not a
+  plan when the hub is the fleet's busiest node.
+- **RAM:** 6 GB shared limit on the VM, same ~200–400 MB
+  typical headroom envelope. No heavy local resident was
+  recorded on 2026-11-23; RAM held because placement held.
+  Ranch-side, tonight's qexo build carries a <2 GB
+  estimate and goes to the probed-cool node, as last night.
+- **Inference:** the well-spent bulk was real: Memory
+  Liberation Day (the active set cut to a 75 KB cache with
+  the phext as source of truth); SQ made the top-priority
+  substrate and its health discipline written down; the
+  dispatch audit completed at EE 213 with 24 verified
+  failures catalogued in a standing tracker; the Nim
+  challenge for phcc registered and the v2.4.2 tag pushed
+  to Will's fork from the hub clone, verified on the
+  remote; Emise font v2 built from measured kerning. The
+  waste was specific: (1) the tick loop's ~130 runs again
+  re-derived unchanged verdicts — the poll-and-diff
+  candidate is now over a week old and still unbuilt;
+  (2) EE stamping lapsed in Emise's own messages overnight
+  until Will asked at 00:46 CST whether epochs were still
+  being tracked (they were; the stamping was not) — a
+  self-report drift, the same class as tonight's qexo fix;
+  (3) rfcbox payload/E2E work was prepared and then stood
+  down whole under PEN flags, its remaining pipeline
+  mechanical but gated on a single clearance decision —
+  inference spent arriving at a gate that a pre-dispatch
+  flag check would have surfaced first.
+- **Counterfactual:** the strongest case examined is the
+  rfcbox stand-down. The build-side work proceeded until
+  the PEN flags stopped the flagged legs (payload
+  generation, the 16-member E2E, commit/push) entirely,
+  leaving the unblock as one yes/no for Will's morning
+  packet. A planner that checks a job's standing flags
+  before dispatch — the input-audit rule of 2026-11-22
+  applied to permissions as well as paths — surfaces the
+  gate at minute zero, queues the clearance question
+  immediately, and spends the day's inference on unflagged
+  work instead. The fix belongs to the dispatch machinery
+  generally and is recorded here as the planning lesson.
+  Tonight's qexo change is the smaller defect in qexo's
+  own house, recorded as a secondary finding last night
+  and still live on the v1.8.5 tip: the FORECAST AMBER
+  action text.
+- **Tonight's change:** v1.8.6 — the FORECAST AMBER action
+  tells the truth about its basis. Since v1.2.1 the
+  forecast rates crossings from the median of the last 7
+  intervals, and v1.8.5 added the last interval as a
+  separate SPIKE report — but the gate's action line still
+  read "projected in N days at the last interval's growth
+  rate", naming exactly the rate the projection does not
+  use. On a burst day that sentence invites the reader to
+  reason from the spike instead of the median — the
+  opposite of the v1.8.5 design. v1.8.6 corrects the
+  action text to name the median basis, with a regression
+  test asserting the corrected wording and the absence of
+  the old one. No rating, gate, or spike behavior changes.
+  Base note: tonight's ship is parented on last night's
+  ship, branch emise/forecast-spike-v1.8.5 tip 2231f1b
+  (itself parented on exo HEAD c001dcb4, v1.8.0), so the
+  nightly sequence stays linear and the spike work is
+  carried, not rebased away.
+
 ## 2026-11-23 — nightly evaluation of 2026-11-22 (ships v1.8.5)
 
 - **Disk:** a burst day, and the shape matters more than the
