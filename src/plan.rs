@@ -256,6 +256,14 @@ pub struct GateInputs {
     /// Empty means no eligible node: heavy placements queue
     /// by name, never default to a hub.
     pub roster: Vec<String>,
+    /// Nodes named out of the draw (v1.8.7): the caller
+    /// reads them from its config record (key
+    /// `ranch_roster_exclude`) — planned-off, removed,
+    /// sick-disk, hung, unreachable: whatever the reason,
+    /// a named-out node is not eligible tonight, and the
+    /// draw must not pick it. Applied before the draw;
+    /// the applied exclusions are receipted in the plan.
+    pub excluded: Vec<String>,
     /// Seed for this plan's fair draw (v1.7.3). The caller
     /// supplies a per-plan seed (wall-clock nanos); tests
     /// supply fixed seeds, so a plan is reproducible from
@@ -682,6 +690,11 @@ pub struct PlanData {
     /// empty roster means no picks — heavy rows QUEUED.
     pub draw_seed: u64,
     pub roster: Vec<String>,
+    /// The named-out nodes that actually removed a roster
+    /// node from this plan's draw (v1.8.7), in roster
+    /// order. An exclusion naming a node not on the
+    /// roster removes nothing and is not receipted.
+    pub excluded: Vec<String>,
     pub draw_picks: Vec<String>,
 }
 
@@ -757,6 +770,23 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         }
     }
 
+    // v1.8.7: named-out nodes leave the draw before it
+    // starts. The effective roster is what the draw runs
+    // over and what the plan receipts as its roster; the
+    // applied exclusions ride beside it.
+    let excluded_applied: Vec<String> = gate
+        .roster
+        .iter()
+        .filter(|n| gate.excluded.contains(n))
+        .cloned()
+        .collect();
+    let roster: Vec<String> = gate
+        .roster
+        .iter()
+        .filter(|n| !gate.excluded.contains(n))
+        .cloned()
+        .collect();
+
     let (mut nv, mut nb, mut nl) = (0usize, 0usize, 0usize);
     let mut rows: Vec<PlanRow> = Vec::new();
     let mut draw_state = gate.draw_seed;
@@ -774,12 +804,12 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
             "vm:light-coordination (no staging)".to_string()
         } else if class == Class::Light {
             "vm:light-coordination".to_string()
-        } else if gate.roster.is_empty() {
+        } else if roster.is_empty() {
             // The ruling's named outcome: no eligible node is a
             // QUEUED placement, never a silent hub fallback.
             "ranch:QUEUED (fair draw — roster empty, no eligible node)".to_string()
         } else {
-            let pick = gate.roster[(draw_next(&mut draw_state) % gate.roster.len() as u64) as usize].clone();
+            let pick = roster[(draw_next(&mut draw_state) % roster.len() as u64) as usize].clone();
             draw_picks.push(pick.clone());
             match class {
                 Class::Video => format!("ranch:{} (video — never on VM)", pick),
@@ -817,7 +847,8 @@ pub fn compute(tasks: &[TaskInput], current: &DiskObs, history: &[DiskObs], host
         counts: (nv, nb, nl),
         rows,
         draw_seed: gate.draw_seed,
-        roster: gate.roster.clone(),
+        roster: roster.clone(),
+        excluded: excluded_applied,
         draw_picks,
     }
 }
@@ -907,13 +938,25 @@ pub fn render(plan: &PlanData) -> String {
         plan.ram_available_mb, plan.load1
     ));
     out.push_str(&format!("  inference: Emise carries all {} open tasks\n", plan.open_tasks()));
-    if plan.roster.is_empty() {
+    if plan.roster.is_empty() && !plan.excluded.is_empty() {
+        out.push_str(&format!(
+            "  fair draw: roster empty — every configured node named out [{}] — heavy placements QUEUED, no silent hub fallback\n",
+            plan.excluded.join(", ")
+        ));
+    } else if plan.roster.is_empty() {
         out.push_str("  fair draw: roster empty — heavy placements QUEUED, no silent hub fallback\n");
-    } else {
+    } else if plan.excluded.is_empty() {
         out.push_str(&format!(
             "  fair draw: seed {} over roster [{}] — no node holds a default\n",
             plan.draw_seed,
             plan.roster.join(", ")
+        ));
+    } else {
+        out.push_str(&format!(
+            "  fair draw: seed {} over roster [{}] — named out: [{}] — no node holds a default\n",
+            plan.draw_seed,
+            plan.roster.join(", "),
+            plan.excluded.join(", ")
         ));
     }
     out.push_str("\nplacements (inference → Emise for every task):\n");
@@ -947,7 +990,7 @@ mod tests {
     /// lens only (no volume supplied in most unit fixtures), file
     /// lens at the standard counts.
     fn gin() -> GateInputs {
-        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42 }
+        GateInputs { volume: None, files_root: "/staging".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], excluded: vec![], draw_seed: 42 }
     }
     /// The old world's configuration: the quota lens on at the
     /// VM's 95/102 GB ceiling. Every pre-v1.0.2 gate expectation is
@@ -955,7 +998,7 @@ mod tests {
     fn gin_quota() -> GateInputs {
         let mut config = GateConfig::default();
         config.quota_on = true;
-        GateInputs { volume: None, files_root: "/staging".to_string(), config, roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], draw_seed: 42 }
+        GateInputs { volume: None, files_root: "/staging".to_string(), config, roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string(), "scroll-central".to_string()], excluded: vec![], draw_seed: 42 }
     }
     fn vol(root: &str, total: u64, used: u64, free: u64) -> Volume {
         Volume { root: root.to_string(), total_bytes: total, used_bytes: used, free_bytes: free }
@@ -1013,7 +1056,7 @@ mod tests {
         // same numbers are what they are: a healthy volume.
         let gib = 1_073_741_824u64;
         let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], excluded: vec![], draw_seed: 42 };
         let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &obs(1, 808.96, "GREEN", 6), &[], (0.0, 0.0), &g);
         assert_eq!(p.byte_gate, "GREEN");
         assert_eq!(p.disk_gate, "GREEN");
@@ -1142,7 +1185,7 @@ mod tests {
         // horizon, so no crossing at all.
         let gib = 1_073_741_824u64;
         let v = vol("/", 3_586 * gib, 754 * gib, 2_700 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
+        let g = GateInputs { volume: Some(v), files_root: "/var/lib/qexo".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], excluded: vec![], draw_seed: 42 };
         let hist = vec![obs(1, 809.07, "GREEN", 6), obs(2, 809.13, "GREEN", 6)];
         let cur = obs(2, 809.13, "GREEN", 6);
         let p = compute(&[task("1.1.1/1.1.1/1.1.1", "think")], &cur, &hist, (0.0, 0.0), &g);
@@ -1166,7 +1209,7 @@ mod tests {
         let gib = 1_073_741_824u64;
         let total = 100 * gib;
         let v = vol("/data", total, 88 * gib, 12 * gib);
-        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], draw_seed: 42 };
+        let g = GateInputs { volume: Some(v), files_root: "/data".to_string(), config: GateConfig::default(), roster: vec!["aletheia-core".to_string(), "rock-mountain".to_string()], excluded: vec![], draw_seed: 42 };
         let hist = vec![obs(1, 85.0, "AMBER", 10), obs(2, 90.0, "AMBER", 10)];
         let f = forecast_gate(&hist, &g.config, Some(total));
         assert!(f.available);
@@ -1335,6 +1378,56 @@ mod tests {
         assert!(p.draw_picks.is_empty());
         let out = render(&p);
         assert!(out.contains("roster empty"), "render must name the empty roster:\n{}", out);
+    }
+
+    #[test]
+    fn excluded_nodes_leave_the_draw_and_are_receipted() {
+        // v1.8.7: a named-out node is never drawn, across
+        // seeds; the plan's roster is the roster actually
+        // drawn over, and the applied exclusion is
+        // receipted. An exclusion naming a non-roster node
+        // removes nothing and is not receipted.
+        let tasks = vec![task("1.1.1/1.1.1/1.1.1", "cargo build the thing")];
+        let cur = obs(100, 10.0, "GREEN", 100);
+        let mut seen = std::collections::HashSet::new();
+        for seed in 0..300u64 {
+            let mut g = gin();
+            g.draw_seed = seed;
+            g.excluded = vec!["rock-mountain".to_string(), "not-a-node".to_string()];
+            let p = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+            let node = p.draw_picks[0].clone();
+            assert_ne!(node, "rock-mountain", "named-out node was drawn");
+            assert_eq!(p.roster, vec!["aletheia-core".to_string(), "scroll-central".to_string()]);
+            assert_eq!(p.excluded, vec!["rock-mountain".to_string()]);
+            seen.insert(node);
+        }
+        assert_eq!(seen.len(), 2, "draw must cover the surviving roster: {:?}", seen);
+        let mut g = gin();
+        g.excluded = vec!["rock-mountain".to_string()];
+        let p = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+        let out = render(&p);
+        assert!(out.contains("named out: [rock-mountain]"), "render must name the exclusion:\n{}", out);
+    }
+
+    #[test]
+    fn all_excluded_queues_heavy_and_names_it() {
+        // v1.8.7: naming out every roster node is the
+        // empty-roster outcome by another road — QUEUED by
+        // name, never a fallback, and the render says why.
+        let tasks = vec![
+            task("1.1.1/1.1.1/1.1.1", "render the film"),
+            task("1.1.1/1.1.1/1.1.2", "cargo build the thing"),
+        ];
+        let cur = obs(100, 10.0, "GREEN", 100);
+        let mut g = gin();
+        g.excluded = g.roster.clone();
+        let p = compute(&tasks, &cur, &[], (1024.0, 0.5), &g);
+        assert!(p.rows[0].execution.starts_with("ranch:QUEUED"), "{}", p.rows[0].execution);
+        assert!(p.rows[1].execution.starts_with("ranch:QUEUED"), "{}", p.rows[1].execution);
+        assert!(p.draw_picks.is_empty());
+        assert_eq!(p.excluded.len(), 3);
+        let out = render(&p);
+        assert!(out.contains("every configured node named out"), "render must name it:\n{}", out);
     }
 
     #[test]

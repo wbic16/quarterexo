@@ -1,3 +1,48 @@
+## v1.8.7 — 2026-11-25 (the roster exclusion)
+
+Motivating finding — the 2026-11-25 evaluation of
+2026-11-24 (EVALUATIONS.md, 2026-11-25 section): the
+standing fleet changed by the hour that day —
+rock-mountain shut down at 23:33 CST (planned
+sabbatical), great-white removed for disk repair,
+delta-wood emergency read-only, yeet-max hung until
+power-cycled, aurora-continuum offline and
+key-blocked, trust-fall and victory-galleon
+unreachable — and every placement was routed around
+those facts by hand. qexo's fair draw (v1.7.3) draws
+uniformly over the configured `ranch_roster` with no
+way to name a node out: a plan emitted that evening
+could have drawn rock-mountain minutes after its
+planned shutdown and receipted it as eligible.
+
+What v1.8.7 does (one change: nodes can be named
+out of the draw):
+
+- New config key `ranch_roster_exclude`, parsed with
+  the same roster parser (comma-separated, trimmed,
+  deduped), carried into the plan as GateInputs'
+  `excluded` list.
+- The draw runs over the roster minus the named-out
+  nodes, order preserved. PlanData's roster is the
+  roster actually drawn over; the exclusions that
+  removed a roster node are receipted in the plan
+  (PlanData `excluded`, and the rendered fair-draw
+  line names them: "named out: [...]").
+- Naming out every roster node is the empty-roster
+  outcome by another road: heavy placements QUEUE
+  by name — never a silent hub fallback, never a
+  draw over a node the operator named out.
+- An exclusion naming a node not on the roster
+  removes nothing and is not receipted as applied.
+- Tests: excluded nodes are never drawn across 300
+  seeds and the receipt carries them; all-excluded
+  queues heavy rows and names it in the render.
+- Version: Cargo 1.8.6 → 1.8.7; VERSION v1.8.7.
+  Parented on the v1.8.6 ship (4c2cb931) so the
+  nightly sequence stays linear. No gate, forecast,
+  or spike behavior changes.
+
+
 ## v1.8.6 — 2026-11-24 (the forecast names its basis)
 
 Motivating finding — the 2026-11-24 evaluation of

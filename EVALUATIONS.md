@@ -3,6 +3,106 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-25 — nightly evaluation of 2026-11-24 (ships v1.8.7)
+
+- **Disk:** the calmest interval in a week. disk-watch history:
+  73.22 GB / 1,025,552 files (2026-11-23) → 73.76 GB /
+  1,040,183 files (2026-11-24) — +0.54 GB, +14,631 files,
+  GREEN on both halves. The count sits 59,817 under the
+  1.1 M file-AMBER line; at the 7-interval median rate
+  (+15,923 files/day) that crossing is ~3.8 days out, and
+  byte-AMBER (95 GB) ~15 days out at the median +1.40
+  GB/day. Largest consumers: goals 19.22 GB, phext
+  11.36 GB, wavefront 9.69 GB — wavefront is down from
+  31.73 GB at the start of the month, the staging debt
+  finally retired. Tonight's live df reads 77 GB used of
+  150 GB (52%), ahead of the state file as usual.
+- **CPU:** placement held in the large, and the day's
+  defining work was the ranch fabric itself: the OSPF
+  extension deployed to 15 nodes with adjacency proofs
+  (free-fall→scroll-central 2 hops at 1.7 ms over wire;
+  ni-knight→aletheia-core 3 USB4 hops at 3.5 ms), the
+  T10 training-film render moved to plain-view — measured
+  coolest idle at 34.5 °C — and completed there, and the
+  phcc distributed-compilation prototype compiled phcc's
+  own 10 core units across rock-mountain, scroll-central,
+  and quacked-hill with byte-identical objects. The VM's
+  1.5 shared CPUs carried coordination plus the standing
+  tick/watchdog load. Tonight's snapshots: VM load 3.66
+  at a harness-busy moment; aletheia-core load 2.00 but
+  Tctl 73.2 °C — the hub is the fleet's hottest node in
+  the new TEMP-BASELINE (85.4 °C at census, also its #1
+  WiFi talker), which is why tonight's build is small and
+  watched, not assumed cool.
+- **RAM:** 6 GB shared limit on the VM. Tonight's snapshot
+  reads ~2.97 GB MemAvailable with 449 MB swap used, on a
+  VM up 3:50 — a snapshot, not a trend. No heavy local
+  resident was recorded on 2026-11-24; placement held and
+  RAM held with it. Tonight's qexo build carries a <2 GB
+  estimate on aletheia-core (22 GB available there).
+- **Inference:** the well-spent bulk was real: the fabric
+  pass verified end to end (OSPF proofs, a 19-node
+  temperature baseline, an island map with named physical
+  actions for Will); T10 completed at 23:32 CST, verified
+  byte-identical on plain-view and in the workspace, both
+  QC gates PASS; phcc gained distributed compilation,
+  proven end to end; the Rust moat-prep pre-processor
+  passed its emulation test (Papers 050–052 re-derived
+  exactly), projecting half to two-thirds of a MOAT pass's
+  inference eliminated; the Singular league went live and
+  public on Softmax. The waste was the stale-instrument
+  class, three times in one evening: (1) Emise told Will
+  the T9 film was unrendered — a complete r9 build
+  (13,020 frames, BUILD-COMPLETE) sat on aletheia-core the
+  whole time; the correction cost a brief rewrite
+  (deviation D3) and the lesson is the standing one: an
+  absence in an instrument is the instrument's boundary;
+  (2) delta-wood was recorded as taken upstairs — it never
+  left the basement stack; (3) great-white's blocker was
+  recorded as an SSH key refusal — live check showed SSH
+  connects and its disk is sick. Each was corrected the
+  same evening, but each correction was inference spent
+  re-deriving what a live-surface check would have shown
+  first. The tick loop's poll-and-diff candidate, named
+  since 2026-11-10, remains unbuilt — recorded, not
+  shipped, again.
+- **Counterfactual:** the strongest case examined is the
+  fleet's availability churn against qexo's static roster.
+  On 2026-11-24 the standing fleet changed by the hour:
+  rock-mountain shut down at 23:33 CST (planned
+  sabbatical), great-white removed ~23:40 for disk
+  repair, delta-wood emergency read-only in its stack,
+  yeet-max hung since 2026-11-23 21:10 until Will
+  power-cycled it, aurora-continuum offline and
+  key-blocked, trust-fall and victory-galleon unreachable.
+  Every placement that day was routed around those facts
+  by hand — T10 to plain-view on a measured temperature,
+  the fabric pass node by node against a live island map.
+  qexo's fair draw, by contrast, draws uniformly over the
+  configured `ranch_roster` with no way to name a node
+  out: a plan emitted at 23:45 could have drawn
+  rock-mountain minutes after its planned shutdown and
+  receipted it as eligible. A planner carrying a named
+  exclusion list — applied before the draw, receipted in
+  the plan — would have kept every draw inside the fleet
+  actually standing. v1.8.7 ships exactly that (see
+  CHANGELOG). Secondary case, recorded and not shipped:
+  the hub's heat — a temperature-aware draw is the larger
+  change the TEMP-BASELINE now argues for, and it needs
+  per-node telemetry in the plan path, more than one
+  night's change.
+- **Tonight's change:** v1.8.7 — the roster exclusion
+  (`ranch_roster_exclude`): named-out nodes leave the
+  fair draw before it starts, the receipt names them,
+  and naming out every node queues heavy placements by
+  name instead of falling back. Parented on last night's
+  ship, branch emise/forecast-basis-v1.8.6 tip 4c2cb931
+  (itself parented on exo HEAD c001dcb4, v1.8.0), so the
+  nightly sequence stays linear; worked from a fresh
+  clone on aletheia-core (~/qexo-nightly-2026-11-25/).
+  The local ~/workspace/orchestrator/ mirror still sits
+  at v3.2 and was again not used as a source.
+
 ## 2026-11-24 — nightly evaluation of 2026-11-23 (ships v1.8.6)
 
 - **Disk:** a calm day after the burst. disk-watch history:

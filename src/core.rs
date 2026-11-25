@@ -2076,6 +2076,9 @@ pub fn plan_cmd() -> i32 {
         // this plan's wall-clock draw seed, receipted in the
         // plan record below.
         roster: plan::parse_roster(lattice::field(&cfg, "ranch_roster")),
+        // v1.8.7: nodes named out of tonight's draw
+        // (config key `ranch_roster_exclude`).
+        excluded: plan::parse_roster(lattice::field(&cfg, "ranch_roster_exclude")),
         draw_seed: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos() as u64)
