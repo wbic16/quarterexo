@@ -1165,9 +1165,24 @@ fn endpoint_parts(endpoint: &str) -> (String, String) {
 
 /// Minimal HTTP over TcpStream — the house client
 /// pattern (register.rs's tcp_request): a short read
-/// timeout, the body after the blank line.
+/// timeout, the body after the blank line. The
+/// connect is bounded too (v1.9.0): an unbounded
+/// connect to a dead tailnet peer costs a full TCP
+/// SYN timeout (~2 minutes), and a placement round
+/// gathers facts from every registered peer — with
+/// the agent daemon driving dispatch, one round over
+/// a stale peer set would otherwise block the daemon
+/// for the better part of an hour. Three seconds is
+/// generous on a tailnet and bounds the round.
 fn http_exchange(addr: &str, request: &[u8], timeout_secs: u64) -> Result<(u32, String), String> {
-    let mut stream = TcpStream::connect(addr).map_err(|e| format!("connect {}: {}", addr, e))?;
+    use std::net::ToSocketAddrs;
+    let sock = addr
+        .to_socket_addrs()
+        .map_err(|e| format!("connect {}: {}", addr, e))?
+        .next()
+        .ok_or_else(|| format!("connect {}: no address resolves", addr))?;
+    let mut stream = TcpStream::connect_timeout(&sock, std::time::Duration::from_secs(3))
+        .map_err(|e| format!("connect {}: {}", addr, e))?;
     stream
         .set_read_timeout(Some(std::time::Duration::from_secs(timeout_secs)))
         .map_err(|e| e.to_string())?;

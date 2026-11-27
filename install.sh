@@ -13,10 +13,13 @@
 #   3. Install the binary to /usr/local/bin/qexo.
 #   4. The `qexo` group + state permissions that end the
 #      "state not born" diversion: state dir 2775, state file
-#      0664, gnupg 0750/0640, all group qexo; the invoking
-#      operator joins the group. (Zero resolution-code
-#      changes: the probe reports the system state writable,
-#      and operator verbs work against the system node.)
+#      0664, group qexo; the invoking operator joins the group.
+#      (Zero resolution-code changes: the probe reports the
+#      system state writable, and operator verbs work against
+#      the system node. The keyring is NOT group-readable: it
+#      stays owner-private 0700, enforced by the binary itself
+#      at every open — signing acts belong to the daemon,
+#      which runs as root, or to sudo.)
 #   5. State birth via `qexo config` (idempotent).
 #   6. Units via `qexo config --agent` — the binary writes
 #      qexo-serve.service + qexo-agent.service itself and
@@ -117,18 +120,14 @@ $SUDO chmod 2775 "$STATE_DIR"
 $SUDO "$BIN_DEST" config
 
 # Permissions land after birth too: birth may have just created
-# the state file and keyring root-owned.
+# the state file root-owned. The keyring is deliberately not
+# touched — the binary enforces its 0700 itself at every open.
 for f in "$STATE_DIR"/state.phext*; do
     [ -e "$f" ] || continue
     $SUDO chgrp qexo "$f"
     $SUDO chmod 0664 "$f"
 done
-if [ -d "$STATE_DIR/gnupg" ]; then
-    $SUDO chgrp -R qexo "$STATE_DIR/gnupg"
-    $SUDO find "$STATE_DIR/gnupg" -type d -exec chmod 0750 {} +
-    $SUDO find "$STATE_DIR/gnupg" -type f -exec chmod 0640 {} +
-fi
-say "state permissions: dir 2775, state 0664, gnupg 0750/0640, group qexo"
+say "state permissions: dir 2775, state 0664, group qexo (keyring stays owner-private 0700)"
 
 # --- 6. agent units ----------------------------------------------
 

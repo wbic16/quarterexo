@@ -61,16 +61,23 @@ with one new verb and no new machinery:
   from the ranch mirror or a vendored on-node build,
   the `qexo` group + state permissions that end the
   "state not born" diversion (state 0664, state dir
-  2775, gnupg 0750/0640 — zero resolution-code
-  changes; doctor's keyring rule learns the group
-  model in this release: 0700 or 0750 is private,
-  anything wider or group-writable is repaired to
-  0700), state birth via `qexo config`, units via
+  2775 — zero resolution-code changes; the keyring
+  stays owner-private 0700, enforced by the crypto
+  layer at every open, so the group model ends at
+  the state file and signing acts belong to the
+  daemon or sudo), state birth via `qexo config`, units via
   `qexo config --agent`, `doctor --fix`, and a HARD
   doctor-clean gate: the install fails if doctor
   isn't clean. A pre-1.9.0 binary self-reports
   NOT-READY rather than pretend. Upgrades ride the
   existing signed phextnet release channel.
+- **Bounded connects on the wire.** http_exchange's
+  TCP connect is capped at 3 seconds (the read
+  timeout always was bounded; the connect was not):
+  a dead tailnet peer otherwise costs a full SYN
+  timeout per fetch, and a daemon-driven placement
+  round over a stale peer set would block for the
+  better part of an hour.
 
 ## v1.8.0 — 2026-11-17 (the dispatch core ships)
 

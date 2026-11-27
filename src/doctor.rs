@@ -2,10 +2,8 @@
 //!
 //! Two layers. The FILESYSTEM facts: the state directory exists
 //! and is writable, the state file exists and parses as phext,
-//! the keyring directory (gnupg) is private (0700, or 0750 under
-//! the v1.9.0 group model — the node's operator group reads the
-//! keyring, the world never does; on unix — modes do not exist
-//! elsewhere and the finding says so), no stale
+//! the keyring directory (gnupg) is private (0700, on unix — modes
+//! do not exist elsewhere and the finding says so), no stale
 //! state lock is held by a dead process. The LATTICE facts (Layer 2):
 //! the home index and every homeland index exist, and every
 //! record (peer, persona, session) is named by its homeland's
@@ -214,12 +212,12 @@ pub fn check(state_dir: &Path, state_file: &Path) -> Report {
         });
     }
 
-    // keyring privacy: private means owner-only (0700), or —
-    // since v1.9.0's group model — group-readable by the
-    // node's operator group (0750, group qexo, files 0640:
-    // install.sh's shape, so operator verbs can sign against
-    // the system node). Anything wider, or group-writable,
-    // is a finding; the repair is the conservative 0700.
+    // keyring privacy: 0700, owner only — the crypto layer
+    // enforces the same mode at every keyring open, so the
+    // two can never disagree. (v1.9.0's group model ends at
+    // the state file: the operator group writes state, the
+    // keyring stays private, and signing acts belong to the
+    // daemon or to sudo.)
     let gnupg = state_dir.join("gnupg");
     if gnupg.is_dir() {
         #[cfg(unix)]
@@ -227,9 +225,9 @@ pub fn check(state_dir: &Path, state_file: &Path) -> Report {
             let mode = mode_of(&gnupg).unwrap_or(0);
             findings.push(Finding {
                 item: "gnupg keyring".into(),
-                ok: mode == 0o700 || mode == 0o750,
+                ok: mode == 0o700,
                 detail: format!("{} mode {:o}", gnupg.display(), mode),
-                fixable: mode != 0o700 && mode != 0o750,
+                fixable: mode != 0o700,
             });
         }
         #[cfg(not(unix))]
@@ -286,7 +284,7 @@ pub fn fix(state_dir: &Path, state_file: &Path) -> Vec<String> {
         // repair; elsewhere mode_of is None — nothing to do, and
         // nothing to claim was done.
         if let Some(mode) = mode_of(&gnupg) {
-            if mode != 0o700 && mode != 0o750 && set_mode(&gnupg, 0o700).is_ok() {
+            if mode != 0o700 && set_mode(&gnupg, 0o700).is_ok() {
                 done.push(format!("set {} to mode 700", gnupg.display()));
             }
         }
@@ -994,38 +992,6 @@ mod tests {
         assert!(done.iter().any(|d| d.contains("removed stale lock")), "{:?}", done);
         #[cfg(unix)]
         assert!(done.len() >= 2, "{:?}", done);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn keyring_group_model_mode_is_private_enough() {
-        // v1.9.0: under the group model the keyring stands at
-        // 0750 (operator group reads, world shut out) — doctor
-        // accepts it and --fix leaves it standing; the repair
-        // target stays the conservative 0700.
-        let dir = std::env::temp_dir().join(format!("qexo-doctor-group-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let state_file = dir.join("state.phext");
-        let gnupg = dir.join("gnupg");
-        std::fs::create_dir_all(&gnupg).unwrap();
-        #[cfg(unix)]
-        {
-            set_mode(&gnupg, 0o750).unwrap();
-            let report = check(&dir, &state_file);
-            assert!(
-                report.findings.iter().any(|f| f.item == "gnupg keyring" && f.ok),
-                "0750 keyring must read ok: {:?}",
-                report.findings.iter().map(|f| &f.detail).collect::<Vec<_>>()
-            );
-            let done = fix(&dir, &state_file);
-            assert_eq!(mode_of(&gnupg), Some(0o750), "fix must not tighten 0750: {:?}", done);
-            // group-writable is NOT private — repaired to 0700.
-            set_mode(&gnupg, 0o770).unwrap();
-            let report = check(&dir, &state_file);
-            assert!(report.findings.iter().any(|f| f.item == "gnupg keyring" && !f.ok && f.fixable));
-            fix(&dir, &state_file);
-            assert_eq!(mode_of(&gnupg), Some(0o700));
-        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
