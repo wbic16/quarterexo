@@ -62,7 +62,10 @@ with one new verb and no new machinery:
   the `qexo` group + state permissions that end the
   "state not born" diversion (state 0664, state dir
   2775, gnupg 0750/0640 — zero resolution-code
-  changes), state birth via `qexo config`, units via
+  changes; doctor's keyring rule learns the group
+  model in this release: 0700 or 0750 is private,
+  anything wider or group-writable is repaired to
+  0700), state birth via `qexo config`, units via
   `qexo config --agent`, `doctor --fix`, and a HARD
   doctor-clean gate: the install fails if doctor
   isn't clean. A pre-1.9.0 binary self-reports
