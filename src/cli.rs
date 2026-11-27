@@ -16,7 +16,7 @@ pub enum Command {
     /// parse / explode / implode / seal / unseal / select / get,
     /// with their raw argument tails.
     FileOp(Vec<String>),
-    Config { auto_update: bool, evolve: bool, release_signer: Option<String> },
+    Config { auto_update: bool, evolve: bool, release_signer: Option<String>, agent: bool },
     Doctor { fix: bool },
     List { json: bool },
     Learn { status: bool, app: bool },
@@ -45,6 +45,12 @@ pub enum Command {
     Status,
     Plan,
     Serve(Option<u16>),
+    /// The agent daemon (v1.9.0): executor + coordinator +
+    /// telemetry passes over this node's state. `--once`
+    /// runs a single pass and exits; `--interval <secs>`
+    /// sets the pass cadence (default: the config record's
+    /// agent_interval_secs, else 60).
+    Agent { once: bool, interval: Option<u64> },
     Bare,
     Unknown(String),
 }
@@ -81,7 +87,21 @@ pub fn parse(args: &[String]) -> Command {
                 auto_update: args.iter().any(|a| a == "--auto-update"),
                 evolve: args.iter().any(|a| a == "--evolve"),
                 release_signer,
+                agent: args.iter().any(|a| a == "--agent"),
             }
+        }
+        "agent" => {
+            let mut interval: Option<u64> = None;
+            let mut i = 1;
+            while i < args.len() {
+                if args[i] == "--interval" && i + 1 < args.len() {
+                    interval = args[i + 1].parse().ok();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            Command::Agent { once: args.iter().any(|a| a == "--once"), interval }
         }
         "doctor" => Command::Doctor { fix: args.iter().any(|a| a == "--fix") },
         "list" => Command::List { json: args.iter().any(|a| a == "--json") },
@@ -285,6 +305,10 @@ pub fn help_text() -> String {
     s.push_str("  qexo config --evolve      set evolve: on — the automatic timer's trigger becomes a full evolve pass\n");
     s.push_str("  qexo config --release-signer <FP>\n                            set the trusted release signer fingerprint in the config record\n");
     s.push_str("                            instead of update alone (update is one stage of evolve; see below)\n");
+    s.push_str("  qexo config --agent       turn this node into a dispatch agent node: set agent: on, declare\n");
+    s.push_str("                            capability: shell on the identity scroll, and install the systemd\n");
+    s.push_str("                            units (qexo-serve + qexo-agent) where possible — the install.sh\n");
+    s.push_str("                            path; upgrades ride the signed release channel as always\n");
     s.push_str("  qexo list                 the phextnet as a navigation tree: this node and its peers nested\n");
     s.push_str("                            under the peers anchor 3.3.3/3.3.3/3.3.3, named by hostname\n");
     s.push_str("  qexo list --json          the flat machine shape (JSON is the interop gasket, unchanged)\n");
@@ -421,6 +445,30 @@ pub fn help_text() -> String {
     s.push_str("                            a line containing only '.' (a line '..' unstuffs to '.'). cancel\n");
     s.push_str("                            has no --app form — it stays a CLI act\n\n");
 
+    s.push_str("The agent daemon (v1.9.0):\n");
+    s.push_str("  qexo agent [--once] [--interval <secs>]\n");
+    s.push_str("                            the node's resident agent, three passes per cycle: TELEMETRY\n");
+    s.push_str("                            (writes the temp/load/free/mem observations placement reads —\n");
+    s.push_str("                            an unmeasured node is ineligible, so the series is kept fresh);\n");
+    s.push_str("                            DISPATCH (queued machine-work briefs — briefs carrying `run:`\n");
+    s.push_str("                            stage lines — are placed through the §6 gates; briefs without\n");
+    s.push_str("                            `run:` remain agent work and are never auto-dispatched);\n");
+    s.push_str("                            EXECUTOR (for each live execution assignment whose brief\n");
+    s.push_str("                            carries `run:` stages: heartbeat, run the stages in order as\n");
+    s.push_str("                            shell, checkpoint per stage, then a completion receipt the\n");
+    s.push_str("                            final checkpoint cites as its output — or a fail receipt naming\n");
+    s.push_str("                            the stage and its exit code. A brief's `ram-gb:` estimate above\n");
+    s.push_str("                            the host's total memory holds the item, spool parity: it beats\n");
+    s.push_str("                            and waits, it does not run); COORDINATOR (the heartbeat\n");
+    s.push_str("                            reconcile, plus the F4 closer: an executor's completion is\n");
+    s.push_str("                            closed running → done only on evidence read back and verified\n");
+    s.push_str("                            in the pass itself — the executor's assignment record, its\n");
+    s.push_str("                            final checkpoint, and the checkpoint's cited outputs re-read\n");
+    s.push_str("                            and hash-matched; anything less is receipted unverified and\n");
+    s.push_str("                            left open). Machine work routes only to nodes declaring\n");
+    s.push_str("                            capability: shell — the daemon declares it on its own identity\n");
+    s.push_str("                            scroll at startup. Installed by `qexo config --agent`\n\n");
+
     s.push_str("Personas & inference:\n");
     s.push_str("  qexo host <persona>       load a persona into local inference (--boot <path> for a boot text file;\n");
     s.push_str("                            --boot against an existing, unhosted home with different text is a local\n");
@@ -473,10 +521,15 @@ mod tests {
         assert_eq!(parse(&v(&["--help"])), Command::Help);
         assert_eq!(parse(&v(&["-h"])), Command::Help);
         assert_eq!(parse(&v(&["help"])), Command::Help);
-        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false, evolve: false, release_signer: None });
-        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true, evolve: false, release_signer: None });
-        assert_eq!(parse(&v(&["config", "--evolve"])), Command::Config { auto_update: false, evolve: true, release_signer: None });
-        assert_eq!(parse(&v(&["config", "--release-signer", "A4E7277FB3EB0E589604BE5B506DBE3FC209E755"])), Command::Config { auto_update: false, evolve: false, release_signer: Some("A4E7277FB3EB0E589604BE5B506DBE3FC209E755".to_string()) });
+        assert_eq!(parse(&v(&["config"])), Command::Config { auto_update: false, evolve: false, release_signer: None, agent: false });
+        assert_eq!(parse(&v(&["config", "--auto-update"])), Command::Config { auto_update: true, evolve: false, release_signer: None, agent: false });
+        assert_eq!(parse(&v(&["config", "--evolve"])), Command::Config { auto_update: false, evolve: true, release_signer: None, agent: false });
+        assert_eq!(parse(&v(&["config", "--release-signer", "A4E7277FB3EB0E589604BE5B506DBE3FC209E755"])), Command::Config { auto_update: false, evolve: false, release_signer: Some("A4E7277FB3EB0E589604BE5B506DBE3FC209E755".to_string()), agent: false });
+        assert_eq!(parse(&v(&["config", "--agent"])), Command::Config { auto_update: false, evolve: false, release_signer: None, agent: true });
+        assert_eq!(parse(&v(&["agent"])), Command::Agent { once: false, interval: None });
+        assert_eq!(parse(&v(&["agent", "--once"])), Command::Agent { once: true, interval: None });
+        assert_eq!(parse(&v(&["agent", "--interval", "30"])), Command::Agent { once: false, interval: Some(30) });
+        assert_eq!(parse(&v(&["agent", "--once", "--interval", "5"])), Command::Agent { once: true, interval: Some(5) });
         assert_eq!(parse(&v(&["release"])), Command::Release);
         assert_eq!(parse(&v(&["update"])), Command::Update { check: false });
         assert_eq!(parse(&v(&["update", "--check"])), Command::Update { check: true });
@@ -590,6 +643,7 @@ mod tests {
             "pause", "resume", "cancel", "audit", "--explain", "drain", "11.11.11/6.1.1/1.1.1", "qexo.env",
             "bridge", "burn: never", "11.11.11/5.1.1/1.1.1",
             "--app", "end: <command>", "launcher",
+            "agent", "run:", "ram-gb:", "capability: shell", "completion receipt", "F4 closer",
         ] {
             assert!(h.contains(word), "help is missing {}", word);
         }

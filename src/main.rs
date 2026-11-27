@@ -9,8 +9,10 @@
 //! queue's local verbs (dispatch), the register link
 //! (register), the wire dispatch verbs (wire), the
 //! inference bridges (bridge), the dispatch app surface
-//! (app), the wiring gate (wiring), and this CLI.
+//! (app), the agent daemon (agent), the wiring gate
+//! (wiring), and this CLI.
 
+mod agent;
 mod app;
 mod bridge;
 mod cli;
@@ -80,6 +82,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             | Command::Heartbeat(_)
             | Command::Checkpoint(_)
             | Command::Fail(_)
+            | Command::Agent { .. }
     );
     if write_intent {
         lattice::set_write_intent();
@@ -171,7 +174,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
             2
         }
         Command::Bare | Command::Plan => core::plan_cmd(),
-        Command::Config { auto_update, evolve, release_signer } => core::config(auto_update, evolve, release_signer),
+        Command::Config { auto_update, evolve, release_signer, agent } => core::config(auto_update, evolve, release_signer, agent),
         Command::List { json } => core::list(json),
         Command::Learn { status, app } => {
             if app {
@@ -213,6 +216,7 @@ fn run(cmd: Command, args: &[String]) -> i32 {
         Command::Message { persona, text } => core::message(&persona, &text),
         Command::Status => core::status(),
         Command::Serve(port) => core::serve(port.unwrap_or(8484)),
+        Command::Agent { once, interval } => agent::run_agent(once, interval),
     }
 }
 

@@ -300,7 +300,7 @@ fn apply_release_signer(lat: &mut Lattice, signer: &str) {
     lat.px.insert(lattice::CONFIG_RECORD, text);
 }
 
-pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>) -> i32 {
+pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>, agent: bool) -> i32 {
     let node = hostname();
     // Resolution first (the order is stated in lattice.rs): an
     // existing state — system or per-user — IS the node. Only a
@@ -363,6 +363,9 @@ pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>) -
             println!("release signer set: {}", signer);
         }
         println!("home: {}", fmt_coord(&lattice::HOME));
+        if agent {
+            return finish_agent_flag();
+        }
         if evolve {
             let code = finish_evolve_flag();
             if code != 0 {
@@ -497,6 +500,9 @@ pub fn config(auto_update: bool, evolve: bool, release_signer: Option<String>) -
     println!("birth receipt: {}", fmt_coord(&receipt));
     if let Some(signer) = &release_signer {
         println!("release signer set: {}", signer);
+    }
+    if agent {
+        return finish_agent_flag();
     }
     if evolve {
         let code = finish_evolve_flag();
@@ -659,6 +665,158 @@ fn install_update_timer(hours: u64, evolve_trigger: bool) -> String {
         }
     }
     format!("timer installed: {}\n", steps.join("; "))
+}
+
+/// Declare `capability: shell` on the identity scroll
+/// when it is not already declared (v1.9.0): the
+/// declaration is what routes machine work to this
+/// node through the §6 gates — only agent nodes
+/// declare it. Returns true when the line was added.
+/// The caller owns the save.
+pub(crate) fn ensure_shell_capability(lat: &mut Lattice) -> bool {
+    let text = lat.px.get(&lattice::IDENTITY).cloned().unwrap_or_default();
+    if crate::wire::field_all(&text, "capability").iter().any(|c| c == "shell") {
+        return false;
+    }
+    let mut text = text;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str("capability: shell\n");
+    lat.px.insert(lattice::IDENTITY, text);
+    true
+}
+
+/// `qexo config --agent`'s second act (v1.9.0): set
+/// `agent: on` in the config record, declare
+/// `capability: shell` on the identity scroll, and
+/// install the systemd units — qexo-serve and
+/// qexo-agent, written by this binary by its own path,
+/// on the install_update_timer precedent. The flag and
+/// the declaration stand in state either way; where
+/// systemd, root, or systemctl is missing, the report
+/// says exactly that and prints the units for manual
+/// installation.
+fn finish_agent_flag() -> i32 {
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let mut text = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_else(|| "kind: qexo config\n".to_string());
+    text = lattice::set_field(&text, "agent", "on");
+    if lattice::field(&text, "agent_interval_secs").is_none() {
+        text = lattice::set_field(&text, "agent_interval_secs", "60");
+    }
+    let interval = lattice::field(&text, "agent_interval_secs").unwrap_or_else(|| "60".to_string());
+    lat.px.insert(lattice::CONFIG_RECORD, text);
+    let declared = ensure_shell_capability(&mut lat);
+    if let Err(e) = lat.save() {
+        eprintln!("qexo config: cannot save state: {}", e);
+        return 1;
+    }
+    println!(
+        "agent: on (pass interval {}s; capability: shell {})",
+        interval,
+        if declared { "declared on the identity scroll" } else { "already declared" }
+    );
+    print!("{}", install_agent_units());
+    0
+}
+
+/// The systemd units for an agent node (v1.9.0): the
+/// serve endpoint and the agent daemon, both by this
+/// binary's own path. Restart=always with a short
+/// RestartSec — a serve that starts before its bind
+/// address exists (the tailnet address at boot) must
+/// heal itself, not die after five tries (the v1.6.1
+/// unit's failure on plain-view, 2026-11-25). Pure
+/// text — tested, and printed verbatim when
+/// installation isn't possible here.
+fn agent_unit_texts(exe: &Path) -> (String, String) {
+    let serve = format!(
+        "[Unit]\nDescription=qexo serve - phextnet endpoint\nAfter=network-online.target tailscaled.service\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} serve\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n",
+        exe.display()
+    );
+    let agent = format!(
+        "[Unit]\nDescription=qexo agent - dispatch executor, coordinator, telemetry daemon\nAfter=network-online.target qexo-serve.service\nWants=network-online.target\n\n[Service]\nType=simple\nExecStart={} agent\nRestart=always\nRestartSec=5\nUser=root\n\n[Install]\nWantedBy=multi-user.target\n",
+        exe.display()
+    );
+    (serve, agent)
+}
+
+/// Why a systemd unit install cannot proceed here, as
+/// a list of named reasons (empty = proceed): running
+/// as root, systemd the running init, systemctl
+/// answering — the install_update_timer gates.
+fn systemd_install_why_not() -> Vec<String> {
+    let mut why_not: Vec<String> = Vec::new();
+    let uid0 = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("Uid:"))
+                .and_then(|l| l.split_whitespace().nth(1).map(|v| v.to_string()))
+        })
+        .map(|u| u == "0")
+        .unwrap_or(false);
+    if !uid0 {
+        why_not.push("not running as root (the units live in /etc/systemd/system)".to_string());
+    }
+    if !Path::new("/run/systemd/system").is_dir() {
+        why_not.push("systemd is not the running init here (no /run/systemd/system)".to_string());
+    }
+    let systemctl_ok = std::process::Command::new("systemctl")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !systemctl_ok {
+        why_not.push("systemctl does not answer on this node".to_string());
+    }
+    why_not
+}
+
+/// Attempt the agent units installation; return the
+/// report either way (the install_update_timer shape).
+fn install_agent_units() -> String {
+    let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("qexo"));
+    let (serve, agent) = agent_unit_texts(&exe);
+    let why_not = systemd_install_why_not();
+    if !why_not.is_empty() {
+        return format!(
+            "agent units NOT installed: {}.\nagent is on in the config record; a node's operator can install the units by hand —\n/etc/systemd/system/qexo-serve.service:\n{}\n/etc/systemd/system/qexo-agent.service:\n{}\nthen: systemctl daemon-reload && systemctl enable --now qexo-serve.service qexo-agent.service\n",
+            why_not.join("; "),
+            serve,
+            agent
+        );
+    }
+    let dir = Path::new("/etc/systemd/system");
+    let mut steps: Vec<String> = Vec::new();
+    for (name, text) in [("qexo-serve.service", &serve), ("qexo-agent.service", &agent)] {
+        match std::fs::write(dir.join(name), text) {
+            Ok(()) => steps.push(format!("wrote {}", dir.join(name).display())),
+            Err(e) => return format!("agent units NOT installed: cannot write {}: {}\n", dir.join(name).display(), e),
+        }
+    }
+    for args in [
+        &["daemon-reload"][..],
+        &["enable", "--now", "qexo-serve.service", "qexo-agent.service"][..],
+    ] {
+        match std::process::Command::new("systemctl").args(args).output() {
+            Ok(o) if o.status.success() => steps.push(format!("systemctl {} ok", args.join(" "))),
+            Ok(o) => {
+                return format!(
+                    "agent units NOT fully installed: systemctl {} failed: {}\n",
+                    args.join(" "),
+                    String::from_utf8_lossy(&o.stderr).trim()
+                )
+            }
+            Err(e) => return format!("agent units NOT installed: systemctl {}: {}\n", args.join(" "), e),
+        }
+    }
+    format!("agent units installed: {}\n", steps.join("; "))
 }
 
 // ----------------------------------------------------------------
@@ -2051,11 +2209,84 @@ fn tasks_from_source(path: &Path) -> Vec<plan::TaskInput> {
     out
 }
 
-pub fn plan_cmd() -> i32 {
-    let mut lat = match require_born() {
-        Ok(l) => l,
-        Err(c) => return c,
-    };
+/// Format a millidegree reading as °C text, the
+/// observation's `temp:` shape.
+fn format_millidegrees(raw: &str) -> Option<String> {
+    raw.trim().parse::<i64>().ok().map(|m| format!("{:.1}", m as f64 / 1000.0))
+}
+
+/// The node's CPU temperature as °C text: the k10temp
+/// Tctl — the fleet's silicon fact — when the hwmon
+/// carries it, else the ACPI thermal zone. The zone
+/// alone would be a false measurement on these nodes:
+/// it reads a fixed ambient 20.0 °C while the silicon
+/// runs at 80+ °C, passing every §6 thermal gate on a
+/// fiction (measured on plain-view and aletheia-core,
+/// 2026-11-26). Empty when neither reads — unmeasured,
+/// which §6 eligibility treats as ineligible.
+fn probe_temp_c() -> String {
+    for i in 0..16 {
+        let base = format!("/sys/class/hwmon/hwmon{}", i);
+        let name = std::fs::read_to_string(format!("{}/name", base)).unwrap_or_default();
+        if name.trim() == "k10temp" {
+            if let Ok(raw) = std::fs::read_to_string(format!("{}/temp1_input", base)) {
+                if let Some(t) = format_millidegrees(&raw) {
+                    return t;
+                }
+            }
+        }
+    }
+    std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
+        .ok()
+        .and_then(|s| format_millidegrees(&s))
+        .unwrap_or_default()
+}
+
+/// Parse /proc/meminfo's MemTotal (kB) into bytes.
+fn parse_mem_total(text: &str) -> Option<u64> {
+    text.lines()
+        .find(|l| l.starts_with("MemTotal:"))
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|kb| kb.parse::<u64>().ok())
+        .map(|kb| kb * 1024)
+}
+
+/// This host's total memory in bytes (v1.9.0): the
+/// denominator of the brief `ram-gb:` gate — read by
+/// the telemetry writer (the observation's `mem_bytes:`
+/// field) and by the agent executor's local HELD
+/// check. 0 when unreadable; an unmeasured host is
+/// judged unmeasured, never zero-capacity.
+pub(crate) fn total_mem_bytes() -> u64 {
+    std::fs::read_to_string("/proc/meminfo").ok().and_then(|t| parse_mem_total(&t)).unwrap_or(0)
+}
+
+/// A recorded telemetry observation's facts, for the
+/// caller's own use (v1.9.0).
+pub(crate) struct TelemetryObservation {
+    pub addr: crate::phext::Coord,
+    pub used_gb: f64,
+    pub files: u64,
+    pub level: String,
+    pub volume: Option<plan::Volume>,
+    pub staging_root: String,
+}
+
+/// Probe this host and record one telemetry
+/// observation (v1.9.0): the probe + insert half of
+/// `qexo plan`, factored out so the agent daemon's
+/// telemetry pass writes the same series the plan
+/// always wrote — one writer shape for the §6 facts,
+/// whoever calls it. The observation carries the probe
+/// fields placement eligibility is judged from
+/// (temp/load/cores/free_bytes) plus v1.9.0's
+/// `mem_bytes:` (the ram-gb denominator) and a
+/// minute-resolution `stamp:` (the freshness the
+/// telemetry pass reckons by; the day/date fields the
+/// plan's history reads are unchanged). An unreadable
+/// probe records empty, which eligibility reads as
+/// unmeasured. The caller owns the save.
+pub(crate) fn record_telemetry_observation(lat: &mut Lattice) -> TelemetryObservation {
     let cfg = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_default();
     let gate_cfg = plan::GateConfig::from_lookup(|k| lattice::field(&cfg, k));
     let disk_root_s = lattice::field(&cfg, "disk root").unwrap_or_else(|| lattice::state_dir().display().to_string());
@@ -2067,9 +2298,79 @@ pub fn plan_cmd() -> i32 {
         .map(|v| (v.used_bytes as f64 / 1.0e9 * 100.0).round() / 100.0)
         .unwrap_or(0.0);
     let files = probe.files;
+    let (day, stamp) = now_stamp();
+    let (y, m, d) = civil_from_days(day);
+
+    // The level recorded with the observation is the gate's own
+    // evaluation of this reading (pre-forecast): the telemetry
+    // series carries qexo's verdicts, computed from the node's
+    // configured thresholds — never a probe's private constants.
+    let draft = plan::DiskObs { day, used_gb, level: String::new(), files };
+    let level = plan::evaluate_gate(&draft, probe.volume.as_ref(), &staging_root_s, &gate_cfg).disk_gate;
+    let (total_bytes, free_bytes) = probe
+        .volume
+        .as_ref()
+        .map(|v| (v.total_bytes.to_string(), v.free_bytes.to_string()))
+        .unwrap_or_else(|| ("".to_string(), "".to_string()));
+
+    // Slice 4 (§6): temperature joins the observation
+    // as a probe field, with load and cores beside it —
+    // placement eligibility is judged from telemetry,
+    // never assumed. An unreadable probe records empty,
+    // which eligibility reads as unmeasured.
+    let temp_s = probe_temp_c();
+    let load_s = format!("{:.2}", plan::host_snapshot().1);
+    let cores_s = std::thread::available_parallelism()
+        .map(|n| n.get().to_string())
+        .unwrap_or_default();
+    let mem = total_mem_bytes();
+    let mem_s = if mem > 0 { mem.to_string() } else { String::new() };
+
+    // Record the observation in the telemetry homeland: the
+    // series is native now; the forecast reads its own lattice.
+    let ob = lattice::next_free_book(&lat.px, [8, 8, 8, lattice::TELEM_DISK_C, 1], 1);
+    let oaddr = lattice::at(lattice::HL_TELEMETRY, [lattice::TELEM_DISK_C, 1, ob, 1, 1, 1]);
+    lat.px.insert(
+        oaddr,
+        lattice::record(&[
+            ("kind", "disk observation"),
+            ("day", &day.to_string()),
+            ("date", &format!("{:04}-{:02}-{:02}", y, m, d)),
+            ("stamp", &stamp),
+            ("used_gb", &format!("{:.2}", used_gb)),
+            ("total_bytes", &total_bytes),
+            ("free_bytes", &free_bytes),
+            ("mem_bytes", &mem_s),
+            ("temp", &temp_s),
+            ("load", &load_s),
+            ("cores", &cores_s),
+            ("level", &level),
+            ("files", &files.to_string()),
+            ("files root", &staging_root_s),
+            ("root", &disk_root_s),
+        ]),
+    );
+    lattice::regen_indexes(&mut lat.px);
+    TelemetryObservation { addr: oaddr, used_gb, files, level, volume: probe.volume, staging_root: staging_root_s }
+}
+
+pub fn plan_cmd() -> i32 {
+    let mut lat = match require_born() {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+    let cfg = lat.px.get(&lattice::CONFIG_RECORD).cloned().unwrap_or_default();
+    let gate_cfg = plan::GateConfig::from_lookup(|k| lattice::field(&cfg, k));
+    // The probe + observation insert is one writer shape,
+    // shared with the agent daemon's telemetry pass (v1.9.0).
+    let obs = record_telemetry_observation(&mut lat);
+    let used_gb = obs.used_gb;
+    let files = obs.files;
+    let level = obs.level.clone();
+    let oaddr = obs.addr;
     let gate_inputs = plan::GateInputs {
-        volume: probe.volume.clone(),
-        files_root: staging_root_s.clone(),
+        volume: obs.volume.clone(),
+        files_root: obs.staging_root.clone(),
         config: gate_cfg,
         // v1.7.3 fair draw: the roster is the node's configured
         // eligible set (config key `ranch_roster`); the seed is
@@ -2083,56 +2384,6 @@ pub fn plan_cmd() -> i32 {
     };
     let (day, stamp) = now_stamp();
     let (y, m, d) = civil_from_days(day);
-
-    // The level recorded with the observation is the gate's own
-    // evaluation of this reading (pre-forecast): the telemetry
-    // series carries qexo's verdicts, computed from the node's
-    // configured thresholds — never a probe's private constants.
-    let draft = plan::DiskObs { day, used_gb, level: String::new(), files };
-    let level = plan::evaluate_gate(&draft, gate_inputs.volume.as_ref(), &gate_inputs.files_root, &gate_inputs.config).disk_gate;
-    let (total_bytes, free_bytes) = probe
-        .volume
-        .as_ref()
-        .map(|v| (v.total_bytes.to_string(), v.free_bytes.to_string()))
-        .unwrap_or_else(|| ("".to_string(), "".to_string()));
-
-    // Slice 4 (§6): temperature joins the observation
-    // as a probe field, with load and cores beside it —
-    // placement eligibility is judged from telemetry,
-    // never assumed. An unreadable probe records empty,
-    // which eligibility reads as unmeasured.
-    let temp_s = std::fs::read_to_string("/sys/class/thermal/thermal_zone0/temp")
-        .ok()
-        .and_then(|s| s.trim().parse::<i64>().ok())
-        .map(|m| format!("{:.1}", m as f64 / 1000.0))
-        .unwrap_or_default();
-    let load_s = format!("{:.2}", plan::host_snapshot().1);
-    let cores_s = std::thread::available_parallelism()
-        .map(|n| n.get().to_string())
-        .unwrap_or_default();
-
-    // Record the observation in the telemetry homeland: the
-    // series is native now; the forecast reads its own lattice.
-    let ob = lattice::next_free_book(&lat.px, [8, 8, 8, lattice::TELEM_DISK_C, 1], 1);
-    let oaddr = lattice::at(lattice::HL_TELEMETRY, [lattice::TELEM_DISK_C, 1, ob, 1, 1, 1]);
-    lat.px.insert(
-        oaddr,
-        lattice::record(&[
-            ("kind", "disk observation"),
-            ("day", &day.to_string()),
-            ("date", &format!("{:04}-{:02}-{:02}", y, m, d)),
-            ("used_gb", &format!("{:.2}", used_gb)),
-            ("total_bytes", &total_bytes),
-            ("free_bytes", &free_bytes),
-            ("temp", &temp_s),
-            ("load", &load_s),
-            ("cores", &cores_s),
-            ("level", &level),
-            ("files", &files.to_string()),
-            ("files root", &staging_root_s),
-            ("root", &disk_root_s),
-        ]),
-    );
 
     // History = every observation scroll, in address (arrival) order.
     let mut history: Vec<plan::DiskObs> = Vec::new();
@@ -3976,6 +4227,37 @@ mod tests {
         let (service, timer) = update_unit_texts(Path::new("/usr/local/bin/qexo"), 12, true);
         assert!(service.contains("ExecStart=/usr/local/bin/qexo evolve"), "{}", service);
         assert!(timer.contains("Run qexo evolve every 12h"), "{}", timer);
+    }
+
+    #[test]
+    fn agent_units_run_the_daemons_and_heal_themselves() {
+        // v1.9.0: the agent units are long-running services by
+        // this binary's own path, Restart=always — a serve
+        // that starts before its bind address exists heals
+        // instead of dying after five tries.
+        let (serve, agent) = agent_unit_texts(Path::new("/usr/local/bin/qexo"));
+        assert!(serve.contains("ExecStart=/usr/local/bin/qexo serve"), "{}", serve);
+        assert!(serve.contains("Type=simple"), "{}", serve);
+        assert!(serve.contains("Restart=always"), "{}", serve);
+        assert!(serve.contains("RestartSec=5"), "{}", serve);
+        assert!(agent.contains("ExecStart=/usr/local/bin/qexo agent"), "{}", agent);
+        assert!(agent.contains("Type=simple"), "{}", agent);
+        assert!(agent.contains("Restart=always"), "{}", agent);
+        assert!(agent.contains("WantedBy=multi-user.target"), "{}", agent);
+    }
+
+    #[test]
+    fn mem_total_parses_meminfo() {
+        assert_eq!(parse_mem_total("MemTotal:       16384000 kB\nMemFree: 1 kB\n"), Some(16384000 * 1024));
+        assert_eq!(parse_mem_total("MemFree: 1 kB\n"), None);
+        assert_eq!(parse_mem_total("MemTotal: not-a-number kB\n"), None);
+    }
+
+    #[test]
+    fn millidegrees_format_as_celsius() {
+        assert_eq!(format_millidegrees("86500"), Some("86.5".to_string()));
+        assert_eq!(format_millidegrees(" 20000\n"), Some("20.0".to_string()));
+        assert_eq!(format_millidegrees("warm"), None);
     }
 
     // ---- v1.2.0: evolve — gossip trust, persona lineage ----

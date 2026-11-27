@@ -162,7 +162,7 @@ fn remove_field(text: &str, key: &str) -> String {
 
 /// This node's name (the identity record's `node:`
 /// field) — placement and receipts name nodes by it.
-fn local_node(px: &Phext) -> String {
+pub(crate) fn local_node(px: &Phext) -> String {
     px.get(&lattice::IDENTITY)
         .and_then(|t| lattice::field(t, "node"))
         .unwrap_or_else(|| "unknown-node".to_string())
@@ -187,6 +187,25 @@ pub struct BriefFacts {
     /// The item's acceptable bridges in preference
     /// order (§9.2): `bridge:` lines in the brief.
     pub bridges: Vec<String>,
+    /// Machine work (v1.9.0): `run:` lines in order —
+    /// the shell stages the agent daemon's executor
+    /// pass runs. A brief with no `run:` lines is
+    /// agent work: no daemon pass ever executes or
+    /// auto-dispatches it.
+    pub run_stages: Vec<String>,
+    /// The brief's memory estimate (v1.9.0): a
+    /// `ram-gb:` line. Above a host's total memory
+    /// the item is HELD there — the stage-1 spool's
+    /// rule, carried into placement and the executor.
+    pub ram_gb: Option<f64>,
+}
+
+impl BriefFacts {
+    /// The `ram-gb:` estimate in bytes (decimal GB,
+    /// the spool's reckoning); 0 when unestimated.
+    pub fn ram_bytes(&self) -> u64 {
+        self.ram_gb.map(|g| (g * 1.0e9) as u64).unwrap_or(0)
+    }
 }
 
 pub fn brief_facts(brief: &str) -> BriefFacts {
@@ -198,6 +217,12 @@ pub fn brief_facts(brief: &str) -> BriefFacts {
     }
     out.bridges = crate::bridge::brief_prefs(brief);
     out.heavy = lattice::field(brief, "heavy").as_deref() == Some("yes");
+    for stage in field_all(brief, "run") {
+        if !stage.is_empty() {
+            out.run_stages.push(stage);
+        }
+    }
+    out.ram_gb = lattice::field(brief, "ram-gb").and_then(|s| s.parse().ok());
     for cite in field_all(brief, "context") {
         if let Some((lo, hi)) = cite.split_once("..") {
             if let (Some(a), Some(b)) = (phext::parse_coord(lo.trim()), phext::parse_coord(hi.trim())) {
@@ -766,7 +791,7 @@ pub enum AcceptOutcome {
 /// An assignment record's full text by its parsed
 /// record (load_assignments reads the lenient shape;
 /// writers and reconciliation need the whole scroll).
-fn assignment_text(lat: &Lattice, rec: &dispatch::AssignmentRec) -> Option<String> {
+pub(crate) fn assignment_text(lat: &Lattice, rec: &dispatch::AssignmentRec) -> Option<String> {
     lat.px.get(&rec.addr).cloned()
 }
 
@@ -792,7 +817,7 @@ fn live_assignment_for(lat: &Lattice, item: &Coord, attempt: u32) -> Option<(dis
 /// Retire an assignment record in place: set its
 /// `status:` line — the one write that ends liveness
 /// (§3.1). Callers own the save.
-fn retire_assignment(lat: &mut Lattice, addr: &Coord, status: &str) {
+pub(crate) fn retire_assignment(lat: &mut Lattice, addr: &Coord, status: &str) {
     if let Some(t) = lat.px.get(addr).cloned() {
         let t = lattice::set_field(&t, "status", status);
         lat.px.insert(*addr, t);
@@ -1035,6 +1060,10 @@ pub struct NodeFacts {
     pub load1: Option<f64>,
     pub cores: Option<u32>,
     pub free_bytes: Option<u64>,
+    /// Total host memory (v1.9.0): the telemetry
+    /// observation's `mem_bytes:` probe field — the
+    /// denominator of the brief `ram-gb:` gate.
+    pub mem_bytes: Option<u64>,
     pub resident_working: bool,
     pub reachable: bool,
 }
@@ -1158,7 +1187,7 @@ fn http_exchange(addr: &str, request: &[u8], timeout_secs: u64) -> Result<(u32, 
 /// GET one scroll from a peer's endpoint over the
 /// shipped route (§6: no new transport for reads). The
 /// coordinate may carry a `$N:` universe prefix.
-fn fetch_scroll(endpoint: &str, coord: &str) -> Result<String, String> {
+pub(crate) fn fetch_scroll(endpoint: &str, coord: &str) -> Result<String, String> {
     let (host, addr) = endpoint_parts(endpoint);
     let req = format!("GET /v1/scroll/{} HTTP/1.0\r\nHost: {}\r\n\r\n", coord, host);
     let (status, body) = http_exchange(&addr, req.as_bytes(), 5)?;
@@ -1195,13 +1224,14 @@ fn observe(f: &mut NodeFacts, obs: &str) {
     f.load1 = lattice::field(obs, "load").and_then(|s| s.parse().ok());
     f.cores = lattice::field(obs, "cores").and_then(|s| s.parse().ok());
     f.free_bytes = lattice::field(obs, "free_bytes").and_then(|s| s.parse().ok());
+    f.mem_bytes = lattice::field(obs, "mem_bytes").and_then(|s| s.parse().ok());
     f.resident_working = lattice::field(obs, "resident").as_deref() == Some("working");
 }
 
 /// The newest observation coordinate an index names
 /// (`latest: <coord> — …`, the telemetry index's own
 /// line, as regen_indexes writes it).
-fn latest_observation(index: &str) -> Option<String> {
+pub(crate) fn latest_observation(index: &str) -> Option<String> {
     index
         .lines()
         .find_map(|l| l.trim().strip_prefix("latest:"))
@@ -1223,6 +1253,7 @@ fn peer_facts(name: &str, endpoint: &str) -> NodeFacts {
         load1: None,
         cores: None,
         free_bytes: None,
+        mem_bytes: None,
         resident_working: false,
         reachable: false,
     };
@@ -1258,6 +1289,7 @@ fn self_facts(px: &Phext) -> NodeFacts {
         load1: None,
         cores: None,
         free_bytes: None,
+        mem_bytes: None,
         resident_working: false,
         reachable: true,
     };
@@ -1310,11 +1342,31 @@ pub struct Placement {
 /// eligibility is still computed and recorded, and an
 /// ineligible named node places nothing (§6: naming
 /// overrides the draw, never the gates).
-pub fn place(facts: &[NodeFacts], required_caps: &[String], bundle_bytes: u64, to: Option<&str>) -> Placement {
+/// `required_ram_bytes` is the brief's `ram-gb:`
+/// estimate (v1.9.0; 0 = unestimated): a (d)-family
+/// gate judged after §6 eligibility proper — a host
+/// whose total memory is unmeasured cannot be judged
+/// against an estimate, and one whose total is under
+/// it cannot hold the work (the spool's HELD rule,
+/// moved into placement).
+pub fn place(facts: &[NodeFacts], required_caps: &[String], bundle_bytes: u64, required_ram_bytes: u64, to: Option<&str>) -> Placement {
     let mut eligible = Vec::new();
     let mut excluded = Vec::new();
     for f in facts {
-        match eligibility(f, required_caps, bundle_bytes) {
+        let verdict = eligibility(f, required_caps, bundle_bytes).and_then(|()| {
+            if required_ram_bytes == 0 {
+                return Ok(());
+            }
+            match f.mem_bytes {
+                None => Err("(d) total memory unmeasured — the brief's ram-gb estimate cannot be judged".to_string()),
+                Some(m) if m < required_ram_bytes => Err(format!(
+                    "(d) memory cannot hold the work: {} total bytes under the brief's ram-gb estimate of {} bytes",
+                    m, required_ram_bytes
+                )),
+                _ => Ok(()),
+            }
+        });
+        match verdict {
             Ok(()) => eligible.push(f.name.clone()),
             Err(why) => excluded.push((f.name.clone(), why)),
         }
@@ -1657,7 +1709,7 @@ fn dispatch_run(item_arg: Option<&str>, to: Option<&str>, check: bool, live: boo
 
     // Placement (§6): facts, eligibility, the draw.
     let facts = gather_facts(&lat.px);
-    let placement = place(&facts, &facts_brief.capabilities, wire_bytes.len() as u64, to);
+    let placement = place(&facts, &facts_brief.capabilities, wire_bytes.len() as u64, facts_brief.ram_bytes(), to);
     let self_name = local_node(&lat.px);
 
     if check {
@@ -1974,7 +2026,7 @@ fn dispatch_run(item_arg: Option<&str>, to: Option<&str>, check: bool, live: boo
 /// node is the executor (the record carries `home:` —
 /// origin-side records name the target under `node:`
 /// instead). Returns (record, text, attempt).
-fn my_execution_assignment(lat: &Lattice, item: &Coord) -> Option<(dispatch::AssignmentRec, String, u32)> {
+pub(crate) fn my_execution_assignment(lat: &Lattice, item: &Coord) -> Option<(dispatch::AssignmentRec, String, u32)> {
     let item_s = phext::fmt_coord(item);
     for rec in dispatch::load_assignments(&lat.px) {
         if !rec.live || rec.item.as_deref() != Some(item_s.as_str()) {
@@ -1993,7 +2045,7 @@ fn my_execution_assignment(lat: &Lattice, item: &Coord) -> Option<(dispatch::Ass
 /// This node's origin-side live assignment for an item
 /// (names the executor under `node:`, carries no
 /// `home:`). Returns (record, text, attempt, node).
-fn my_origin_assignment(lat: &Lattice, item: &Coord) -> Option<(dispatch::AssignmentRec, String, u32, String)> {
+pub(crate) fn my_origin_assignment(lat: &Lattice, item: &Coord) -> Option<(dispatch::AssignmentRec, String, u32, String)> {
     let item_s = phext::fmt_coord(item);
     for rec in dispatch::load_assignments(&lat.px) {
         if !rec.live || rec.item.as_deref() != Some(item_s.as_str()) {
@@ -2013,7 +2065,7 @@ fn my_origin_assignment(lat: &Lattice, item: &Coord) -> Option<(dispatch::Assign
 /// The endpoint of a node by name, from the peer
 /// records (3.3.3) — the origin reads the executor's
 /// assignment through it.
-fn endpoint_of(lat: &Lattice, name: &str) -> Option<String> {
+pub(crate) fn endpoint_of(lat: &Lattice, name: &str) -> Option<String> {
     for (_, _, t) in peer_records(&lat.px) {
         if lattice::field(&t, "name").as_deref() == Some(name) {
             return lattice::field(&t, "endpoint");
@@ -2024,7 +2076,7 @@ fn endpoint_of(lat: &Lattice, name: &str) -> Option<String> {
 
 /// The item record this node holds for an assignment
 /// (its universe-1 copy), parsed.
-fn held_item(lat: &Lattice, addr: &Coord) -> Option<Item> {
+pub(crate) fn held_item(lat: &Lattice, addr: &Coord) -> Option<Item> {
     let text = lat.px.get(addr)?;
     Some(dispatch::parse_item(addr[5], text))
 }
@@ -2904,6 +2956,7 @@ mod tests {
             load1: Some(0.5),
             cores: Some(8),
             free_bytes: Some(1_000_000_000),
+            mem_bytes: Some(16_000_000_000),
             resident_working: false,
             reachable: true,
         }
@@ -2965,19 +3018,52 @@ mod tests {
         let mut hot = facts("hot");
         hot.temp_c = Some(81.0);
         let cool = facts("cool");
-        let p = place(&[hot.clone(), cool], &["rust".into()], 100, None);
+        let p = place(&[hot.clone(), cool], &["rust".into()], 100, 0, None);
         assert_eq!(p.eligible, vec!["cool".to_string()]);
         assert_eq!(p.excluded.len(), 1);
         assert!(p.excluded[0].1.contains("81"));
         assert_eq!(p.chosen.as_deref(), Some("cool"));
-        let p = place(&[hot], &["rust".into()], 100, None);
+        let p = place(&[hot], &["rust".into()], 100, 0, None);
         assert!(p.eligible.is_empty());
         assert!(p.chosen.is_none());
         // A named ineligible node is never chosen.
         let cold = facts("cold");
-        let p = place(&[cold], &["rust".into()], 100, Some("hot"));
+        let p = place(&[cold], &["rust".into()], 100, 0, Some("hot"));
         assert!(p.chosen.is_none());
         assert!(p.named);
+    }
+
+    #[test]
+    fn brief_facts_read_run_stages_in_order_and_the_ram_estimate() {
+        let f = brief_facts("title: x\ncapability: shell\nrun: echo one\nrun: echo two\nram-gb: 4.5\n");
+        assert_eq!(f.run_stages, vec!["echo one".to_string(), "echo two".to_string()]);
+        assert_eq!(f.ram_gb, Some(4.5));
+        assert_eq!(f.ram_bytes(), 4_500_000_000);
+        // No run: lines — agent work, no stages, no estimate.
+        let f = brief_facts("title: y\ncapability: rust\n");
+        assert!(f.run_stages.is_empty());
+        assert_eq!(f.ram_gb, None);
+        assert_eq!(f.ram_bytes(), 0);
+    }
+
+    #[test]
+    fn placement_ram_gate_excludes_small_and_unmeasured_hosts() {
+        // v1.9.0: a brief's ram-gb estimate is a placement
+        // gate — under it, or unmeasured against it, the
+        // host is excluded with the reason recorded.
+        let big = facts("big");
+        let mut small = facts("small");
+        small.mem_bytes = Some(2_000_000_000);
+        let mut unmeasured = facts("unmeasured");
+        unmeasured.mem_bytes = None;
+        let p = place(&[big.clone(), small, unmeasured], &["rust".into()], 100, 4_000_000_000, None);
+        assert_eq!(p.eligible, vec!["big".to_string()]);
+        assert_eq!(p.excluded.len(), 2);
+        assert!(p.excluded.iter().any(|(n, w)| n == "small" && w.contains("ram-gb")));
+        assert!(p.excluded.iter().any(|(n, w)| n == "unmeasured" && w.contains("unmeasured")));
+        // No estimate in the brief — memory is not judged.
+        let p = place(&[big], &["rust".into()], 100, 0, None);
+        assert_eq!(p.eligible, vec!["big".to_string()]);
     }
 
     fn fixture_px() -> Phext {

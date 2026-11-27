@@ -1,3 +1,74 @@
+## v1.9.0 — 2026-11-26 (the daemon becomes the executor)
+
+Will's ruling (2026-11-26): the qexo CLI/daemon is
+the executor; the stage-1 spool retires into it. The
+dispatch core (v1.8.0) had three load-bearing gaps —
+no executor caller, no production completion path,
+no telemetry writer. This build closes all three
+with one new verb and no new machinery:
+
+- **`qexo agent` — the resident daemon** (src/agent.rs).
+  Three passes per cycle. TELEMETRY: writes the
+  temp/load/free/mem observations §6 placement reads,
+  whenever the latest is 10+ minutes old (the probe +
+  insert half of `qexo plan`, factored into
+  core::record_telemetry_observation so both writers
+  keep one series shape; observations gain `stamp:`
+  and `mem_bytes:` fields). The temperature probe is
+  honest on this fleet: k10temp Tctl when present —
+  the ACPI thermal zone reads a fixed 20.0 °C while
+  the silicon runs hot, and a gate judged on it would
+  be a fiction. DISPATCH: a queued item
+  whose brief carries `run:` stages is placed through
+  the shipped `qexo dispatch` — §6 gates, fair draw,
+  signed bundle. EXECUTOR: heartbeat → run the brief's
+  `run:` stages in order as shell, checkpoint per
+  stage (progress on the assignment record, so a
+  daemon restart resumes mid-brief) → a `run complete`
+  receipt the final checkpoint cites as its output —
+  or the fail verb with the stage and exit code as
+  evidence. COORDINATOR: the shipped heartbeat
+  reconcile, plus the missing F4 closer — a completion
+  closes running → done only on evidence the pass
+  reads back itself (the executor's assignment
+  record, its final checkpoint, the checkpoint's
+  cited outputs re-read and hash-matched); anything
+  less is receipted `progress unverified` and left
+  open.
+- **Machine work is a brief shape.** `run:` lines
+  (repeatable, ordered) mark a brief as machine work;
+  briefs without them remain agent work, untouched.
+  `capability: shell` routes machine work only to
+  daemon nodes: the daemon declares it on its
+  identity scroll at startup, and `qexo config
+  --agent` declares it at install. `ram-gb:` is the
+  spool's HELD rule carried in: placement excludes
+  hosts whose total memory (the new `mem_bytes:`
+  telemetry field) is unmeasured or under the
+  estimate, and the executor holds — beats, marks
+  the assignment held once, never runs — an item
+  whose estimate exceeds its host's total.
+- **`qexo config --agent`** — the install act: sets
+  `agent: on`, declares the capability, and installs
+  the systemd units (qexo-serve + qexo-agent, written
+  by the binary by its own path, on the
+  install_update_timer precedent). The units are
+  Restart=always with RestartSec=5: a serve that
+  starts before its bind address exists heals itself
+  instead of dying after five tries (the v1.6.1
+  unit's plain-view failure, 2026-11-25).
+- **install.sh** — one idempotent installer: binary
+  from the ranch mirror or a vendored on-node build,
+  the `qexo` group + state permissions that end the
+  "state not born" diversion (state 0664, state dir
+  2775, gnupg 0750/0640 — zero resolution-code
+  changes), state birth via `qexo config`, units via
+  `qexo config --agent`, `doctor --fix`, and a HARD
+  doctor-clean gate: the install fails if doctor
+  isn't clean. A pre-1.9.0 binary self-reports
+  NOT-READY rather than pretend. Upgrades ride the
+  existing signed phextnet release channel.
+
 ## v1.8.0 — 2026-11-17 (the dispatch core ships)
 
 The held v1.7.1-line release (task 40.9.7/11.9.17/
