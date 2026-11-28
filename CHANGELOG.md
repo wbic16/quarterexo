@@ -1,3 +1,51 @@
+## v1.9.1 — 2026-11-28 (the file gate speaks file)
+
+Motivating findings — the 2026-11-26, 2026-11-27, and
+2026-11-28 evaluations (EVALUATIONS.md): the file count
+crossed file-AMBER on 2026-11-25 (1,123,140 files) and
+kept climbing — 1,154,646 (2026-11-26), then 1,220,773
+(2026-11-27, +66,127 in one interval) — while bytes
+stayed calm (80.34 GB, 14.66 GB under byte-AMBER) and
+disk-watch's own level flipped to AMBER for the first
+time. File-RED (1,300,000) is 79,227 files away, ~1.2
+days at the last interval's rate. qexo's gate action
+was one sentence for both halves — "no new staging
+under <root>" — which directs byte remediation at a
+file-count crossing. November proved the halves
+independent: wavefront's bytes fell from 31.73 GB to
+~9.69 GB while the file count kept climbing.
+
+Ship note: this change was designed as v1.8.8 on
+2026-11-26 but failed to ship two consecutive nights,
+and the v1.9.0 tree (exo HEAD 6e00239) was verified
+tonight to still carry the generic action. It ships
+now as v1.9.1, parented on v1.9.0, unchanged in design.
+
+What v1.9.1 does (one change: the action names the
+firing half):
+
+- In `evaluate_gate`, when the file half is strictly
+  worse than the byte half, the AMBER action reads:
+  "no new file-heavy staging under <root> — file
+  count is the binding half: prune or consolidate
+  file-heavy trees and keep heavy execution
+  ranch-only until the file gate clears (<reason>)";
+  the RED action reads: "HOLD all new heavy
+  placements — file count is the binding half:
+  prune or consolidate file-heavy trees under
+  <root> until the file gate clears (<reason>)".
+- When the byte half fires (or ties), the existing
+  byte action text is unchanged, byte for byte.
+- Tests: file-AMBER and file-RED cases (at
+  2026-11-27's own shape: 1,220,773 files, calm
+  bytes) assert the file-specific wording; a
+  byte-AMBER case asserts the legacy wording is
+  retained and carries no file-remediation language.
+- Version: Cargo 1.9.0 → 1.9.1; VERSION v1.9.1.
+  Parented on exo HEAD 6e00239 (v1.9.0). No gate
+  thresholds, forecast, spike, or draw behavior
+  changes.
+
 ## v1.9.0 — 2026-11-26 (the daemon becomes the executor)
 
 Will's ruling (2026-11-26): the qexo CLI/daemon is

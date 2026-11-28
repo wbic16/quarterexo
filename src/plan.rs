@@ -393,16 +393,38 @@ pub fn evaluate_gate(current: &DiskObs, vol: Option<&Volume>, files_root: &str, 
         (byte_gate.clone(), byte_detail.clone())
     };
     let root = vol.map(|v| v.root.as_str()).unwrap_or(files_root);
-    let action = match disk_gate.as_str() {
-        "RED" => format!(
-            "HOLD all new heavy placements — stage nothing under {} until the disk gate clears ({})",
-            root, reason
-        ),
-        "AMBER" => format!(
-            "no new staging under {} — heavy execution ranch-only until the disk gate clears ({})",
-            root, reason
-        ),
-        _ => format!("staging within headroom ({})", byte_detail),
+    // v1.9.1 (designed as v1.8.8, 2026-11-26): the action names
+    // the firing half. When the file half is strictly worse,
+    // byte remediation does not clear the gate — November
+    // proved the halves independent (wavefront bytes fell
+    // 31.73 GB -> ~9.69 GB while the file count kept climbing
+    // past AMBER to 1,220,773 on 2026-11-27) — so the action
+    // directs file-count remediation explicitly. When the
+    // byte half fires (or ties), the legacy text is unchanged.
+    let action = if file_sev > byte_sev {
+        match disk_gate.as_str() {
+            "RED" => format!(
+                "HOLD all new heavy placements — file count is the binding half: prune or consolidate file-heavy trees under {} until the file gate clears ({})",
+                root, reason
+            ),
+            "AMBER" => format!(
+                "no new file-heavy staging under {} — file count is the binding half: prune or consolidate file-heavy trees and keep heavy execution ranch-only until the file gate clears ({})",
+                root, reason
+            ),
+            _ => format!("staging within headroom ({})", byte_detail),
+        }
+    } else {
+        match disk_gate.as_str() {
+            "RED" => format!(
+                "HOLD all new heavy placements — stage nothing under {} until the disk gate clears ({})",
+                root, reason
+            ),
+            "AMBER" => format!(
+                "no new staging under {} — heavy execution ranch-only until the disk gate clears ({})",
+                root, reason
+            ),
+            _ => format!("staging within headroom ({})", byte_detail),
+        }
     };
     GateEval { byte_gate, file_gate, disk_gate, byte_detail, file_detail, reason, action }
 }
@@ -961,6 +983,34 @@ mod tests {
         assert_eq!(p.rows[0].execution, "HELD (disk gate RED)");
         let p = gate(obs(1, 71.0, "GREEN", 1_099_999));
         assert_eq!(p.disk_gate, "GREEN");
+    }
+
+    #[test]
+    fn file_gate_action_speaks_file() {
+        // 2026-11-27's shape: bytes calm, files past AMBER at
+        // 1,220,773. The action must direct file-count
+        // remediation, not byte staging language alone (v1.9.1).
+        let o = obs(1, 80.34, "AMBER", 1_220_773);
+        let e = evaluate_gate(&o, None, "/home", &GateConfig::default());
+        assert_eq!(e.file_gate, "AMBER");
+        assert_eq!(e.disk_gate, "AMBER");
+        assert!(e.action.contains("file count is the binding half"), "action: {}", e.action);
+        assert!(e.action.contains("prune or consolidate file-heavy trees"), "action: {}", e.action);
+        // File RED: the HOLD names the file half too.
+        let o = obs(1, 71.0, "GREEN", 1_310_000);
+        let e = evaluate_gate(&o, None, "/home", &GateConfig::default());
+        assert_eq!(e.disk_gate, "RED");
+        assert!(e.action.contains("file count is the binding half"), "action: {}", e.action);
+        // Byte AMBER (volume lens, 15% free): legacy wording,
+        // no file-remediation language.
+        let gib = 1_073_741_824u64;
+        let v = vol("/data", 100 * gib, 85 * gib, 15 * gib);
+        let o = obs(1, 85.0, "GREEN", 10);
+        let e = evaluate_gate(&o, Some(&v), "/data", &GateConfig::default());
+        assert_eq!(e.byte_gate, "AMBER");
+        assert_eq!(e.disk_gate, "AMBER");
+        assert!(e.action.contains("no new staging under /data"), "action: {}", e.action);
+        assert!(!e.action.contains("binding half"), "action: {}", e.action);
     }
 
     #[test]

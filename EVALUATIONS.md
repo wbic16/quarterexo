@@ -3,6 +3,99 @@
 Four-currency snapshots and counterfactual planner reviews, one section
 per night (skill: nightly-orchestrator).
 
+## 2026-11-28 — nightly evaluation of 2026-11-27 (ships v1.9.1)
+
+- **Disk:** the file half accelerated again, and disk-watch
+  itself flipped for the first time. disk-watch history:
+  78.54 GB / 1,154,646 files (2026-11-26) → 80.34 GB /
+  1,220,773 files (2026-11-27) — +1.80 GB, +66,127 files
+  in one interval, and the history's level column reads
+  AMBER (every prior row is GREEN). The count sits
+  120,773 files past file-AMBER; file-RED (1,300,000) is
+  79,227 files away — ~1.2 days at the last interval's
+  rate, ~4–5 days at the recent median (~+18k/day).
+  Bytes remain the calm half: 14.66 GB under byte-AMBER.
+  Tonight's live df reads 82 GB used of 150 GB (55%).
+  Largest consumers: goals 21.68 GB, phext 11.41 GB,
+  wavefront 9.69 GB (the retired staging debt stays
+  retired), cac-dist 7.33 GB newly in the top list.
+- **CPU:** placement held on the biggest ship day of the
+  month. qexo v1.9.0 was built and tested ranch-side
+  (166/166), Nova Fox e2e ran through ranch Jenkins,
+  Softmax training rounds ran on the ranch, Enki and the
+  wiki fixes deployed from the hub/awsbox. The VM's 1.5
+  shared CPUs carried coordination plus the standing
+  load: ~115 task-progress ticks and the watchdog series
+  in the day's note. Tonight's snapshots: VM load 2.06
+  on a 1 h 11 m-old replacement; aletheia-core load
+  1.36, Tctl 52.5 °C — cool, in pointed contrast to the
+  89.8 °C that helped sink the 2026-11-27 ship attempt.
+- **RAM:** 6 GB shared limit, same envelope. Tonight's
+  snapshot reads ~2.57 GB MemAvailable with 321 MB swap
+  used — a snapshot on a fresh VM, not a trend. No heavy
+  local resident was recorded on 2026-11-27; placement
+  held and RAM held with it. Tonight's qexo build
+  carries a <2 GB estimate on aletheia-core (23 GB
+  available there).
+- **Inference:** the well-spent bulk was very real: qexo
+  v1.9.0 completed on all four surfaces (lightweight tag
+  at 6e00239, signed channel announcement, fleet rollout
+  18/19 nodes, crates.io verified newest at 1.9.0) and
+  the stage-1 spool retired into the daemon; the
+  qexo-gateway daemon backend landed (27 tests, both
+  backends); Nova Fox build 42's composition completed
+  and its playtest leg shipped; Enki went live; the wiki
+  feedback-book privacy fix closed the pre-publish gate;
+  STITCH++ fuzzing found 3 confirmed phext-lattice bugs
+  with fixes ready. The day's speedup meter read
+  148,359.1× (net 14,424,975 lines, 186 commits, 4.0
+  active hours). The waste was consent- and
+  verification-shaped: (1) the v1.9.0 release's attempts
+  1–3 were stopped by platform execution-risk flags
+  around ranch clones and Will had to give the go-ahead
+  in plain words at 01:11 CST before the tag leg ran —
+  inference spent re-asking inside standing authority;
+  (2) the tick loop's ~115 runs re-derived unchanged
+  verdicts (register parity verified again and again) —
+  the poll-and-diff candidate named since 2026-11-10 is
+  now seventeen nights old and still belongs to the
+  tick machinery, not qexo; (3) this cycle's own debt —
+  see Counterfactual.
+- **Counterfactual:** the strongest case examined is
+  this cycle's own v1.8.8. Designed 2026-11-26, it
+  failed to ship two consecutive nights (a re-minted
+  go-ahead, then a substrate-layer execution-risk stop
+  on the ranch clone), and tonight's fresh clone of exo
+  HEAD 6e00239 (v1.9.0) proves the change never landed
+  by any other route either: `evaluate_gate` in the
+  shipped tree still emits the one generic action
+  sentence for both disk halves. Had v1.8.8 shipped on
+  2026-11-26 as designed and ridden the v1.9.0 base Will
+  approved the next morning ("quarterexo v1.8.8+1.9.0
+  approved"), then on the day disk-watch flipped AMBER
+  with file-RED ~1.2 days out at the last rate, qexo's
+  plan would have directed file-count remediation.
+  Instead the shipped planner's AMBER action says only
+  "no new staging" — byte language aimed at a file
+  fire. Tonight closes the gap by shipping that exact
+  change as v1.9.1 (see CHANGELOG). Secondary case,
+  recorded and not shipped (one change per night): the
+  forecast gate escalates only GREEN → AMBER; an AMBER
+  gate whose RED crossing is ≤3 days out — tonight's
+  exact position at the last interval's rate — gets no
+  forecast escalation. That is the standing candidate
+  for a future night.
+- **Tonight's change:** v1.9.1 — the file gate speaks
+  file, ported onto exo v1.9.0: when the file half is
+  the worse half, the AMBER/RED action names file-count
+  remediation explicitly; the byte action is unchanged.
+  Designed as v1.8.8 on 2026-11-26, shipped tonight
+  (EE 1275) from a fresh clone of exo HEAD
+  6e00239d270c2e4575118523e4c39e0009ab2f7b on
+  aletheia-core (~/qexo-nightly-2026-11-28/). The local
+  ~/workspace/orchestrator/ mirror still sits at v3.2
+  and was again not used as a source.
+
 ## 2026-11-17 — nightly evaluation of 2026-11-16 (ships v1.7.3)
 
 - **Disk:** the file count kept climbing past AMBER while bytes
